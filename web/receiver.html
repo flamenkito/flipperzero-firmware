@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pocket AirBridge — Receiver</title>
+<style>
+  :root { --bg: #0f0f23; --fg: #e0e0ff; --accent: #00f0ff; --error: #ff3366; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); max-width: 640px; margin: 40px auto; padding: 20px; }
+  h1 { color: var(--accent); }
+  .legacy-banner { margin-bottom: 16px; padding: 12px 14px; border: 1px solid #ffb347; border-radius: 10px; background: rgba(255, 179, 71, 0.14); color: #ffd8a8; }
+  .legacy-banner a { color: #ffdf91; font-weight: 600; }
+  button { font-size: 1rem; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--accent); background: transparent; color: var(--fg); cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; border-color: #555; }
+  button:hover:not(:disabled) { background: rgba(0,240,255,0.1); }
+  #status { margin-top: 16px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.04); white-space: pre-wrap; min-height: 120px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.85rem; }
+  #progressWrap { margin-top: 16px; height: 20px; background: rgba(255,255,255,0.06); border-radius: 10px; overflow: hidden; }
+  #progressBar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #a0f); transition: width 0.2s; }
+  .error { color: var(--error); }
+  .ok { color: #00ffaa; }
+  #downloadArea { margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="legacy-banner">This page is legacy. Use the new chat pages: <a href="chat-usb.html">chat-usb.html</a> (WebHID) and <a href="chat-ble.html">chat-ble.html</a> (Web Bluetooth).</div>
+<h1>Pocket AirBridge — Receiver</h1>
+<p>Connect to the Flipper Zero bridge via Web Bluetooth and receive the file.</p>
+
+<button type="button" id="connectBtn">1. Pair with Flipper (BLE)</button>
+<button type="button" id="disconnectBtn" disabled>Disconnect</button>
+
+<div id="progressWrap"><div id="progressBar"></div></div>
+<div id="status">Waiting...</div>
+<div id="downloadArea"></div>
+
+<script>
+/* Pocket AirBridge — Receiver (Web Bluetooth)
+ * Receives files from a Flipper Zero acting as a BLE GATT bridge.
+ */
+
+const MSG = { HELLO: 0x01, META: 0x02, DATA: 0x03, ACK: 0x04, NACK: 0x05, DONE: 0x06, ERROR: 0x07 };
+
+// Flipper Serial-over-BLE UUIDs. Flipper firmware stores 128-bit UUIDs in the
+// controller byte order; Web Bluetooth exposes the browser-canonical form.
+const SERIAL_UUIDS = [
+  {
+    name: 'browser-canonical',
+    service: '8fe5b3d5-2e7f-4a98-2a48-7acc60fe0000',
+    tx: '19ed82ae-ed21-4c9d-4145-228e61fe0000', // Flipper -> Receiver (indicate)
+    rx: '19ed82ae-ed21-4c9d-4145-228e62fe0000', // Receiver -> Flipper (write)
+  },
+  {
+    name: 'firmware-byte-order',
+    service: '0000fe60-cc7a-482a-984a-7f2ed5b3e58f',
+    tx: '0000fe61-8e22-4541-9d4c-21edae82ed19',
+    rx: '0000fe62-8e22-4541-9d4c-21edae82ed19',
+  },
+];
+
+let device = null;
+let server = null;
+let txChar = null;
+let rxChar = null;
+let state = 'IDLE';
+let meta = null;
+let metaChunks = new Map();
+let expectedMetaChunks = 0;
+let chunks = new Map(); // seq -> Uint8Array
+let expectedChunk = 0;
+let lastSeq = -1;
+
+const $ = id => document.getElementById(id);
+const log = (text, cls='') => {
+  const t = new Date().toLocaleTimeString();
+  $('status').innerHTML += `<div class="${cls}">[${t}] ${text}</div>`;
+  $('status').scrollTop = $('status').scrollHeight;
+};
+const setProgress = pct => $('progressBar').style.width = `${pct}%`;
+
+async function sha256(buf) {
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function buildMessage(type, seq, payload=new Uint8Array(0)) {
+  const len = payload.length;
+  const buf = new Uint8Array(5 + len);
+  buf[0] = type;
+  buf[1] = (seq >> 8) & 0xFF;
+  buf[2] = seq & 0xFF;
+  buf[3] = (len >> 8) & 0xFF;
+  buf[4] = len & 0xFF;
+  buf.set(payload, 5);
+  return buf;
+}
+
+function parseMessage(data) {
+  if (data.length < 5) return null;
+  const type = data[0];
+  const seq = (data[1] << 8) | data[2];
+  const len = (data[3] << 8) | data[4];
+  const payload = data.slice(5, 5 + len);
+  return { type, seq, len, payload };
+}
+
+/* ---------- BLE ---------- */
+
+$('connectBtn').onclick = async () => {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: SERIAL_UUIDS.map(uuids => uuids.service)
+    });
+    log(`Selected: ${device.name || 'Unknown'}`, 'ok');
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    server = await device.gatt.connect();
+
+    let matched = null;
+    let service = null;
+    for (const uuids of SERIAL_UUIDS) {
+      try {
+        service = await server.getPrimaryService(uuids.service);
+        matched = uuids;
+        break;
+      } catch (_) {
+        // Try the next UUID representation.
+      }
+    }
+    if (!matched || !service) throw new Error('Flipper Serial BLE service not found');
+
+    txChar = await service.getCharacteristic(matched.tx);
+    rxChar = await service.getCharacteristic(matched.rx);
+    await txChar.startNotifications();
+    txChar.addEventListener('characteristicvaluechanged', onNotify);
+    log(`Connected and subscribed to notifications (${matched.name}).`, 'ok');
+    $('disconnectBtn').disabled = false;
+    state = 'CONNECTED';
+  } catch (e) {
+    log(`BLE error: ${e.message}`, 'error');
+  }
+};
+
+$('disconnectBtn').onclick = async () => {
+  if (device && device.gatt.connected) { await device.gatt.disconnect(); }
+  onDisconnected();
+};
+
+function onDisconnected() {
+  log('Disconnected.','ok');
+  state = 'IDLE';
+  device = null; server = null; txChar = null; rxChar = null;
+  $('disconnectBtn').disabled = true;
+}
+
+async function sendAck(seq) {
+  if (!rxChar) return;
+  const payload = new Uint8Array(2);
+  payload[0] = (seq >> 8) & 0xFF;
+  payload[1] = seq & 0xFF;
+  await rxChar.writeValueWithResponse(buildMessage(MSG.ACK, 0, payload));
+}
+
+/* ---------- Protocol ---------- */
+
+function onNotify(event) {
+  const value = event.target.value;
+  const data = new Uint8Array(value.buffer);
+  const msg = parseMessage(data);
+  if (!msg) { log('Malformed message received', 'error'); return; }
+
+  switch (msg.type) {
+    case MSG.HELLO:
+      handleHello(msg);
+      break;
+    case MSG.META:
+      handleMeta(msg);
+      break;
+    case MSG.DATA:
+      handleData(msg);
+      break;
+    case MSG.DONE:
+      handleDone(msg);
+      break;
+    case MSG.ERROR: {
+      const err = new TextDecoder().decode(msg.payload);
+      log(`ERROR received: ${err}`, 'error');
+      state = 'FAILED';
+      break;
+    }
+    default:
+      log(`Unexpected type 0x${msg.type.toString(16)}`, 'error');
+  }
+}
+
+async function handleHello(msg) {
+  const sessionId = (msg.payload[0] << 24) | (msg.payload[1] << 16) | (msg.payload[2] << 8) | msg.payload[3];
+  log(`HELLO session=${sessionId}`, 'ok');
+  state = 'WAITING_META';
+  await sendAck(0);
+}
+
+async function handleMeta(msg) {
+  try {
+    if (msg.payload.length < 2) throw new Error('META fragment too short');
+
+    const total = (msg.payload[0] << 8) | msg.payload[1];
+    if (total <= 0) throw new Error('META fragment count is invalid');
+    if (!expectedMetaChunks || msg.seq === 0) {
+      expectedMetaChunks = total;
+      metaChunks = new Map();
+    }
+    if (total !== expectedMetaChunks) throw new Error('META fragment count changed');
+
+    metaChunks.set(msg.seq, msg.payload.slice(2));
+    await sendAck(msg.seq);
+
+    if (metaChunks.size < expectedMetaChunks) {
+      log(`META fragment ${msg.seq + 1}/${expectedMetaChunks}`);
+      return;
+    }
+
+    const ordered = [];
+    for (let i = 0; i < expectedMetaChunks; i++) {
+      if (!metaChunks.has(i)) return;
+      ordered.push(metaChunks.get(i));
+    }
+
+    const totalLen = ordered.reduce((sum, c) => sum + c.length, 0);
+    const metaPayload = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const chunk of ordered) { metaPayload.set(chunk, offset); offset += chunk.length; }
+
+    const json = new TextDecoder().decode(metaPayload);
+    meta = JSON.parse(json);
+    log(`META: ${meta.filename} (${meta.size} bytes, ${meta.chunks} chunks)`, 'ok');
+    chunks = new Map();
+    expectedChunk = 0;
+    state = 'RECEIVING_DATA';
+  } catch (e) {
+    log(`META parse error: ${e.message}`, 'error');
+  }
+}
+
+async function handleData(msg) {
+  const seq = msg.seq;
+  if (chunks.has(seq)) {
+    log(`Duplicate chunk ${seq} ignored`);
+    await sendAck(seq);
+    return;
+  }
+  chunks.set(seq, msg.payload);
+  log(`Received chunk ${seq + 1}${meta ? '/' + meta.chunks : ''}`);
+  await sendAck(seq);
+
+  if (meta) {
+    const received = chunks.size;
+    setProgress((received / meta.chunks) * 100);
+  }
+}
+
+async function handleDone(msg) {
+  log('DONE received. Verifying...');
+  state = 'VERIFYING';
+  await sendAck(0);
+
+  if (!meta) { log('No metadata. Cannot finalize.', 'error'); return; }
+
+  // Reassemble in order
+  const ordered = [];
+  for (let i = 0; i < meta.chunks; i++) {
+    if (!chunks.has(i)) { log(`Missing chunk ${i}`, 'error'); state = 'FAILED'; return; }
+    ordered.push(chunks.get(i));
+  }
+
+  const totalLen = ordered.reduce((sum, c) => sum + c.length, 0);
+  const assembled = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const c of ordered) { assembled.set(c, offset); offset += c.length; }
+
+  const hash = await sha256(assembled.buffer);
+  const expectedHash = meta.hash.replace('sha256:', '');
+  if (hash !== expectedHash) {
+    log(`Hash mismatch! Expected ${expectedHash}, got ${hash}`, 'error');
+    state = 'FAILED';
+    return;
+  }
+
+  log(`Hash verified: ${hash.substring(0,16)}...`, 'ok');
+  state = 'COMPLETE';
+  setProgress(100);
+
+  // Offer download
+  const blob = new Blob([assembled], { type: meta.mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = meta.filename;
+  a.textContent = `Download ${meta.filename}`;
+  a.style.cssText = 'display:inline-block;padding:10px 16px;border-radius:8px;border:1px solid var(--accent);color:var(--fg);text-decoration:none;';
+  $('downloadArea').innerHTML = '';
+  $('downloadArea').appendChild(a);
+  log('File ready for download.', 'ok');
+}
+</script>
+</body>
+</html>

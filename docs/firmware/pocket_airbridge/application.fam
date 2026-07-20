@@ -1,0 +1,10 @@
+App(
+    appid="pocket_airbridge",
+    name="Pocket AirBridge",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="pocket_airbridge_app",
+    stack_size=2 * 1024,
+    requires=["gui", "bt", "notification"],
+    fap_category="USB",
+    fap_icon="icon.png",
+)

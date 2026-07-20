@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pocket AirBridge — Sender</title>
+<style>
+  :root { --bg: #0f0f23; --fg: #e0e0ff; --accent: #00f0ff; --error: #ff3366; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); max-width: 640px; margin: 40px auto; padding: 20px; }
+  h1 { color: var(--accent); }
+  .legacy-banner { margin-bottom: 16px; padding: 12px 14px; border: 1px solid #ffb347; border-radius: 10px; background: rgba(255, 179, 71, 0.14); color: #ffd8a8; }
+  .legacy-banner a { color: #ffdf91; font-weight: 600; }
+  button, input[type="file"] { font-size: 1rem; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--accent); background: transparent; color: var(--fg); cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; border-color: #555; }
+  button:hover:not(:disabled) { background: rgba(0,240,255,0.1); }
+  #status { margin-top: 16px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.04); white-space: pre-wrap; min-height: 120px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.85rem; }
+  #progressWrap { margin-top: 16px; height: 20px; background: rgba(255,255,255,0.06); border-radius: 10px; overflow: hidden; }
+  #progressBar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #a0f); transition: width 0.2s; }
+  .error { color: var(--error); }
+  .ok { color: #00ffaa; }
+</style>
+</head>
+<body>
+<div class="legacy-banner">This page is legacy. Use the new chat pages: <a href="chat-usb.html">chat-usb.html</a> (WebHID) and <a href="chat-ble.html">chat-ble.html</a> (Web Bluetooth).</div>
+<h1>Pocket AirBridge — Sender</h1>
+<p>Select a file and connect to the Flipper Zero bridge via WebHID.</p>
+
+<input type="file" id="fileInput" />
+<br><br>
+
+<button type="button" id="connectBtn">1. Connect to Flipper (USB)</button>
+<button type="button" id="sendBtn" disabled>2. Send File</button>
+<button type="button" id="disconnectBtn" disabled>Disconnect</button>
+
+<div id="progressWrap"><div id="progressBar"></div></div>
+<div id="status">Waiting...</div>
+
+<script>
+/* Pocket AirBridge — Sender (WebHID)
+ * Sends files to a Flipper Zero acting as a vendor-defined HID bridge.
+ */
+
+const MSG = { HELLO: 0x01, META: 0x02, DATA: 0x03, ACK: 0x04, NACK: 0x05, DONE: 0x06, ERROR: 0x07 };
+const MAX_PAYLOAD = 59; // 64-byte HID report minus 5-byte header
+const REPORT_ID = 0x01;
+
+let device = null;
+let fileBuffer = null;
+let meta = null;
+let currentChunk = 0;
+let totalChunks = 0;
+let pendingChunk = null; // seq we are waiting ACK for
+let ackResolve = null;
+let ackTimer = null;
+let state = 'IDLE';
+
+const $ = id => document.getElementById(id);
+const log = (text, cls='') => {
+  const t = new Date().toLocaleTimeString();
+  $('status').innerHTML += `<div class="${cls}">[${t}] ${text}</div>`;
+  $('status').scrollTop = $('status').scrollHeight;
+};
+const setProgress = pct => $('progressBar').style.width = `${pct}%`;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function sha256(buf) {
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function buildMessage(type, seq, payload=new Uint8Array(0)) {
+  const len = payload.length;
+  const buf = new Uint8Array(5 + len);
+  buf[0] = type;
+  buf[1] = (seq >> 8) & 0xFF;
+  buf[2] = seq & 0xFF;
+  buf[3] = (len >> 8) & 0xFF;
+  buf[4] = len & 0xFF;
+  buf.set(payload, 5);
+  return buf;
+}
+
+function parseMessage(data) {
+  if (data.length < 5) return null;
+  const type = data[0];
+  const seq = (data[1] << 8) | data[2];
+  const len = (data[3] << 8) | data[4];
+  const payload = data.slice(5, 5 + len);
+  return { type, seq, len, payload };
+}
+
+/* ---------- HID ---------- */
+
+$('connectBtn').onclick = async () => {
+  try {
+    const devices = await navigator.hid.requestDevice({
+      filters: [{ vendorId: 0x0483, productId: 0x5742 }] // Pocket AirBridge vendor HID profile
+    });
+    if (!devices.length) { log('No device selected.','error'); return; }
+    device = devices[0];
+    await device.open();
+    device.addEventListener('inputreport', onInputReport);
+    log(`Connected: ${device.productName}`,'ok');
+    $('sendBtn').disabled = false;
+    $('disconnectBtn').disabled = false;
+  } catch (e) {
+    log(`Connection error: ${e.message}`, 'error');
+  }
+};
+
+$('disconnectBtn').onclick = async () => {
+  if (device) { await device.close(); device = null; }
+  state = 'IDLE';
+  log('Disconnected.','ok');
+  $('sendBtn').disabled = true;
+  $('disconnectBtn').disabled = true;
+};
+
+async function sendReport(buf) {
+  if (!device) throw new Error('Not connected');
+  // Pad to 64 bytes for HID report
+  const padded = new Uint8Array(64);
+  padded.set(buf, 0);
+  await device.sendReport(REPORT_ID, padded);
+}
+
+function onInputReport(e) {
+  const data = new Uint8Array(e.data.buffer);
+  const msg = parseMessage(data);
+  if (!msg) return;
+  if (msg.type === MSG.ACK) {
+    const ackedSeq = (msg.payload[0] << 8) | msg.payload[1];
+    if (ackResolve) ackResolve(ackedSeq);
+  } else if (msg.type === MSG.ERROR) {
+    const text = new TextDecoder().decode(msg.payload);
+    log(`Received ERROR: ${text}`, 'error');
+    state = 'FAILED';
+  } else {
+    log(`Unexpected msg type 0x${msg.type.toString(16)}`, 'error');
+  }
+}
+
+/* ---------- Transfer ---------- */
+
+$('sendBtn').onclick = async () => {
+  const input = $('fileInput');
+  if (!input.files.length) { log('Select a file first.', 'error'); return; }
+  if (!device) { log('Connect to Flipper first.', 'error'); return; }
+
+  const file = input.files[0];
+  const arrayBuf = await file.arrayBuffer();
+  fileBuffer = new Uint8Array(arrayBuf);
+  const hash = await sha256(arrayBuf);
+  totalChunks = Math.ceil(fileBuffer.length / MAX_PAYLOAD);
+  meta = { filename: file.name, mimeType: file.type || 'application/octet-stream', size: fileBuffer.length, chunks: totalChunks, hash: `sha256:${hash}` };
+  currentChunk = 0;
+  state = 'READY';
+  log(`File: ${meta.filename} (${meta.size} bytes, ${meta.chunks} chunks)`);
+
+  try {
+    await runTransfer();
+  } catch (e) {
+    log(`Transfer failed: ${e.message}`, 'error');
+    state = 'FAILED';
+  }
+};
+
+async function waitAck(expectedSeq, timeoutMs=5000, retries=3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const p = new Promise((resolve, reject) => {
+      ackResolve = resolve;
+      ackTimer = setTimeout(() => reject(new Error('ACK timeout')), timeoutMs);
+    });
+    try {
+      const acked = await p;
+      clearTimeout(ackTimer);
+      ackResolve = null;
+      if (acked === expectedSeq) return;
+      throw new Error(`ACK seq mismatch: got ${acked}, expected ${expectedSeq}`);
+    } catch (e) {
+      clearTimeout(ackTimer);
+      ackResolve = null;
+      if (attempt === retries) throw e;
+      log(`Retry ${attempt}/${retries} for chunk ${expectedSeq}`);
+      await sleep(200);
+    }
+  }
+}
+
+async function runTransfer() {
+  // HELLO
+  state = 'SENDING_HELLO';
+  const sessionId = Math.floor(Math.random() * 0xFFFFFFFF);
+  const helloPayload = new Uint8Array(4);
+  helloPayload[0] = (sessionId >> 24) & 0xFF;
+  helloPayload[1] = (sessionId >> 16) & 0xFF;
+  helloPayload[2] = (sessionId >> 8) & 0xFF;
+  helloPayload[3] = sessionId & 0xFF;
+  log('Sending HELLO...');
+  await sendReport(buildMessage(MSG.HELLO, 0, helloPayload));
+  await waitAck(0);
+  log('HELLO ACKed', 'ok');
+
+  // META
+  state = 'SENDING_META';
+  const metaPayload = new TextEncoder().encode(JSON.stringify(meta));
+  const metaChunkSize = MAX_PAYLOAD - 2;
+  const metaChunks = Math.ceil(metaPayload.length / metaChunkSize);
+  log(`Sending META (${metaChunks} frame${metaChunks === 1 ? '' : 's'})...`);
+  for (let i = 0; i < metaChunks; i++) {
+    const start = i * metaChunkSize;
+    const chunk = metaPayload.slice(start, start + metaChunkSize);
+    const payload = new Uint8Array(2 + chunk.length);
+    payload[0] = (metaChunks >> 8) & 0xFF;
+    payload[1] = metaChunks & 0xFF;
+    payload.set(chunk, 2);
+    await sendReport(buildMessage(MSG.META, i, payload));
+    await waitAck(i);
+  }
+  log('META ACKed', 'ok');
+
+  // DATA chunks
+  state = 'SENDING_DATA';
+  for (currentChunk = 0; currentChunk < totalChunks; currentChunk++) {
+    const start = currentChunk * MAX_PAYLOAD;
+    const end = Math.min(start + MAX_PAYLOAD, fileBuffer.length);
+    const chunk = fileBuffer.slice(start, end);
+    await sendReport(buildMessage(MSG.DATA, currentChunk, chunk));
+    log(`Sent chunk ${currentChunk + 1}/${totalChunks}`);
+    await waitAck(currentChunk);
+    setProgress(((currentChunk + 1) / totalChunks) * 100);
+  }
+
+  // DONE
+  state = 'SENDING_DONE';
+  log('Sending DONE...');
+  await sendReport(buildMessage(MSG.DONE, 0));
+  await waitAck(0);
+  log('Transfer complete!', 'ok');
+  setProgress(100);
+  state = 'COMPLETE';
+}
+</script>
+</body>
+</html>

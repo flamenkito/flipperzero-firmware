@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>Pocket AirBridge — Protocol Harness</title>
+<style>
+  :root { --bg: #0f0f23; --fg: #e0e0ff; --accent: #00f0ff; --error: #ff3366; --ok: #00ffaa; --muted: #9aa0c3; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); max-width: 760px; margin: 40px auto; padding: 20px; }
+  h1 { color: var(--accent); }
+  button { font-size: 1rem; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--accent); background: transparent; color: var(--fg); cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; border-color: #555; }
+  button:hover:not(:disabled) { background: rgba(0,240,255,0.1); }
+  #status { margin-top: 16px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.04); min-height: 24px; font-family: ui-monospace, SFMono-Regular, monospace; }
+  #results { margin-top: 16px; padding: 0; list-style: none; }
+  #results li { margin: 8px 0; padding: 10px 12px; border-radius: 8px; background: rgba(255,255,255,0.04); font-family: ui-monospace, SFMono-Regular, monospace; }
+  .pass { color: var(--ok); }
+  .fail { color: var(--error); }
+  .running { color: var(--accent); }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<h1>Pocket AirBridge — Protocol Harness</h1>
+<p class="muted">Browser-only protocol checks using mock USB/BLE transports. No WebHID, Web Bluetooth, or Flipper hardware is required.</p>
+
+<button id="runBtn" type="button">Run All Tests</button>
+<div id="status">Idle.</div>
+<ul id="results" aria-live="polite"></ul>
+
+<script type="module">
+import {
+  ItemReceiver,
+  ItemSender,
+  MAX_PAYLOAD as PROTOCOL_MAX_PAYLOAD,
+  MSG as PROTOCOL_MSG,
+  buildMessage as protocolBuildMessage,
+  decodeMeta as protocolDecodeMeta,
+  encodeMeta as protocolEncodeMeta,
+  parseMessage as protocolParseMessage,
+  sha256 as protocolSha256,
+} from './airbridge-protocol.js';
+
+const FRAME_SIZE = 64;
+const HEADER_SIZE = 5;
+const MAX_PAYLOAD = Number(PROTOCOL_MAX_PAYLOAD ?? 59);
+const REPORT_ID = 0x01;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+const MSG = {
+  HELLO: PROTOCOL_MSG.HELLO,
+  META: PROTOCOL_MSG.ITEM_META,
+  DATA: PROTOCOL_MSG.ITEM_DATA,
+  ACK: PROTOCOL_MSG.ACK,
+  NACK: PROTOCOL_MSG.NACK,
+  DONE: PROTOCOL_MSG.ITEM_DONE,
+  ERROR: PROTOCOL_MSG.ERROR,
+  BUSY: PROTOCOL_MSG.BUSY,
+  CANCEL: PROTOCOL_MSG.CANCEL,
+};
+
+const tests = [
+  ['Frame roundtrip', testFrameRoundtrip],
+  ['Fragmented META', testFragmentedMeta],
+  ['Text item USB → BLE', testTextItemUsbToBle],
+  ['Text item BLE → USB', testTextItemBleToUsb],
+  ['Attachment SHA-256', testAttachmentSha256],
+  ['Busy collision', testBusyCollision],
+  ['ACK type mismatch rejected', testAckTypeMismatchRejected],
+  ['Hash mismatch sends error', testHashMismatchSendsError],
+  ['DATA before META rejected', testDataBeforeMetaRejected],
+  ['Oversized META rejected', testOversizedMetaRejected],
+  ['Busy versus rejected split', testBusyVersusRejectedSplit],
+  ['Cancel handling', testCancel],
+  ['simultaneous hello arbitration', testSimultaneousHelloArbitration],
+];
+
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function equalBytes(actual, expected, message) {
+  assert(actual.length === expected.length, `${message}: length ${actual.length} !== ${expected.length}`);
+  for (let i = 0; i < actual.length; i++) {
+    assert(actual[i] === expected[i], `${message}: byte ${i} ${actual[i]} !== ${expected[i]}`);
+  }
+}
+
+function localBuildMessage(type, seq, payload = new Uint8Array(0)) {
+  const frame = new Uint8Array(HEADER_SIZE + payload.length);
+  frame[0] = type;
+  frame[1] = (seq >> 8) & 0xff;
+  frame[2] = seq & 0xff;
+  frame[3] = (payload.length >> 8) & 0xff;
+  frame[4] = payload.length & 0xff;
+  frame.set(payload, HEADER_SIZE);
+  return frame;
+}
+
+function buildMessage(type, seq, payload = new Uint8Array(0)) {
+  const built = protocolBuildMessage ? protocolBuildMessage(type, seq, payload) : localBuildMessage(type, seq, payload);
+  return built instanceof Uint8Array ? built : new Uint8Array(built);
+}
+
+function localParseMessage(data) {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data.buffer ?? data);
+  assert(bytes.length >= HEADER_SIZE, 'frame is shorter than header');
+  const len = (bytes[3] << 8) | bytes[4];
+  assert(len <= MAX_PAYLOAD, `payload length ${len} exceeds ${MAX_PAYLOAD}`);
+  assert(HEADER_SIZE + len <= bytes.length, 'payload length exceeds frame bytes');
+  return {
+    type: bytes[0],
+    seq: (bytes[1] << 8) | bytes[2],
+    len,
+    payload: bytes.slice(HEADER_SIZE, HEADER_SIZE + len),
+  };
+}
+
+function parseMessage(data) {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data.buffer ?? data);
+  const parsed = protocolParseMessage ? protocolParseMessage(bytes) : localParseMessage(bytes);
+  if (!parsed) throw new Error('protocol parser returned no message');
+  const payload = parsed.payload instanceof Uint8Array ? parsed.payload : new Uint8Array(parsed.payload ?? []);
+  return {
+    type: parsed.type,
+    seq: parsed.seq,
+    len: parsed.len ?? payload.length,
+    payload,
+  };
+}
+
+function toReport(message) {
+  const bytes = message instanceof Uint8Array ? message : new Uint8Array(message);
+  assert(bytes.length <= FRAME_SIZE, `message ${bytes.length} exceeds ${FRAME_SIZE}-byte report`);
+  const report = new Uint8Array(FRAME_SIZE);
+  report.set(bytes, 0);
+  return report;
+}
+
+function ackPayload(type, seq) {
+  return new Uint8Array([type, (seq >> 8) & 0xff, seq & 0xff]);
+}
+
+function readAck(payload) {
+  assert(payload.length === 3, 'ACK payload must be exactly three bytes');
+  return { type: payload[0], seq: (payload[1] << 8) | payload[2] };
+}
+
+function localEncodeMeta(meta) {
+  const json = encoder.encode(JSON.stringify(meta));
+  const fragmentSize = MAX_PAYLOAD - 2;
+  const total = Math.ceil(json.length / fragmentSize);
+  const frames = [];
+  for (let seq = 0; seq < total; seq++) {
+    const slice = json.slice(seq * fragmentSize, (seq + 1) * fragmentSize);
+    const payload = new Uint8Array(2 + slice.length);
+    payload[0] = (total >> 8) & 0xff;
+    payload[1] = total & 0xff;
+    payload.set(slice, 2);
+    frames.push(buildMessage(MSG.META, seq, payload));
+  }
+  return frames;
+}
+
+function encodeMeta(meta) {
+  const payloads = protocolEncodeMeta ? protocolEncodeMeta(meta) : null;
+  if (Array.isArray(payloads)) return payloads.map((payload, seq) => buildMessage(MSG.META, seq, payload));
+  return localEncodeMeta(meta);
+}
+
+function decodeMeta(frames) {
+  const payloads = frames.map(frame => parseMessage(frame).payload);
+  if (protocolDecodeMeta) {
+    return protocolDecodeMeta(payloads);
+  }
+
+  const parsed = frames.map(parseMessage).sort((a, b) => a.seq - b.seq);
+  const total = (parsed[0].payload[0] << 8) | parsed[0].payload[1];
+  assert(parsed.length === total, `META fragment count ${parsed.length} !== ${total}`);
+  const slices = [];
+  for (let seq = 0; seq < total; seq++) {
+    const msg = parsed[seq];
+    assert(msg.seq === seq, `missing META fragment ${seq}`);
+    assert(((msg.payload[0] << 8) | msg.payload[1]) === total, 'META total changed between fragments');
+    slices.push(msg.payload.slice(2));
+  }
+  const byteLength = slices.reduce((sum, slice) => sum + slice.length, 0);
+  const json = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const slice of slices) {
+    json.set(slice, offset);
+    offset += slice.length;
+  }
+  return JSON.parse(decoder.decode(json));
+}
+
+async function sha256Hex(buffer) {
+  if (protocolSha256) return (await protocolSha256(buffer)).replace(/^sha256:/, '');
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function createMockTransport(name) {
+  return {
+    name,
+    peer: null,
+    sentReports: [],
+    onInputReport: null,
+    connect(peer) { this.peer = peer; },
+    async sendReport(reportIdOrData, maybeData) {
+      const data = maybeData ?? reportIdOrData;
+      const report = toReport(data);
+      this.sentReports.push(report);
+      await sleep(0);
+      if (this.peer?.onInputReport) {
+        this.peer.onInputReport({
+          reportId: REPORT_ID,
+          data: new DataView(report.buffer),
+          target: this.peer,
+          source: this,
+        });
+      }
+    },
+  };
+}
+
+function linkTransports(left, right) {
+  left.connect(right);
+  right.connect(left);
+}
+
+function waitForAck(transport, type, seq) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`ACK timeout for ${seq}`)), 250);
+    const previous = transport.onInputReport;
+    transport.onInputReport = event => {
+      previous?.(event);
+      const msg = parseMessage(new Uint8Array(event.data.buffer));
+      const ack = msg.type === MSG.ACK ? readAck(msg.payload) : null;
+      if (ack?.type === type && ack.seq === seq) {
+        clearTimeout(timer);
+        transport.onInputReport = previous;
+        resolve(msg);
+      }
+    };
+  });
+}
+
+async function sendWithAck(sender, type, seq, message) {
+  const ack = waitForAck(sender, type, seq);
+  await sender.sendReport(REPORT_ID, message);
+  await ack;
+}
+
+async function simulateTextTransfer(direction) {
+  const sender = createMockTransport(`${direction} sender`);
+  const receiver = createMockTransport(`${direction} receiver`);
+  linkTransports(sender, receiver);
+
+  const data = encoder.encode(`hello from ${direction}`);
+  const meta = {
+    kind: 'text',
+    itemId: direction === 'usb-to-ble' ? 1001 : 1002,
+    direction,
+    name: `${direction}.txt`,
+    mimeType: 'text/plain',
+    size: data.length,
+    chunks: 1,
+  };
+  const received = { meta: null, chunks: new Map(), done: false };
+
+  receiver.onInputReport = async event => {
+    const msg = parseMessage(new Uint8Array(event.data.buffer));
+    if (msg.type === MSG.HELLO) {
+      await receiver.sendReport(REPORT_ID, buildMessage(MSG.ACK, 0, ackPayload(MSG.HELLO, 0)));
+      return;
+    }
+    if (msg.type === MSG.META) {
+      received.metaFrames ??= [];
+      received.metaFrames[msg.seq] = toReport(buildMessage(MSG.META, msg.seq, msg.payload));
+      await receiver.sendReport(REPORT_ID, buildMessage(MSG.ACK, 0, ackPayload(MSG.META, msg.seq)));
+      const total = (msg.payload[0] << 8) | msg.payload[1];
+      if (received.metaFrames.filter(Boolean).length === total) received.meta = decodeMeta(received.metaFrames);
+      return;
+    }
+    if (msg.type === MSG.DATA) {
+      received.chunks.set(msg.seq, msg.payload);
+      await receiver.sendReport(REPORT_ID, buildMessage(MSG.ACK, 0, ackPayload(MSG.DATA, msg.seq)));
+      return;
+    }
+    if (msg.type === MSG.DONE) {
+      received.done = true;
+      await receiver.sendReport(REPORT_ID, buildMessage(MSG.ACK, 0, ackPayload(MSG.DONE, msg.seq)));
+    }
+  };
+
+  await sendWithAck(sender, MSG.HELLO, 0, buildMessage(MSG.HELLO, 0, new Uint8Array([
+    (meta.itemId >>> 24) & 0xff,
+    (meta.itemId >>> 16) & 0xff,
+    (meta.itemId >>> 8) & 0xff,
+    meta.itemId & 0xff,
+  ])));
+  for (const frame of encodeMeta(meta)) {
+    const msg = parseMessage(frame);
+    await sendWithAck(sender, MSG.META, msg.seq, frame);
+  }
+  await sendWithAck(sender, MSG.DATA, 0, buildMessage(MSG.DATA, 0, data));
+  await sendWithAck(sender, MSG.DONE, 0, buildMessage(MSG.DONE, 0));
+
+  assert(received.done, `${direction} transfer did not complete`);
+  assert(JSON.stringify(received.meta) === JSON.stringify(meta), `${direction} metadata mismatch`);
+  equalBytes(received.chunks.get(0), data, `${direction} text payload`);
+  assert(sender.sentReports.every(report => report.length === FRAME_SIZE), `${direction} sender did not use 64-byte reports`);
+  assert(receiver.sentReports.every(report => report.length === FRAME_SIZE), `${direction} receiver did not use 64-byte reports`);
+}
+
+function setStatus(text, className = '') {
+  $('status').textContent = text;
+  $('status').className = className;
+}
+
+function addResult(name) {
+  const li = document.createElement('li');
+  li.textContent = `${name}: RUNNING`;
+  li.className = 'running';
+  $('results').appendChild(li);
+  return li;
+}
+
+function finishResult(li, name, result) {
+  li.textContent = result.ok ? `${name}: PASS` : `${name}: FAIL — ${result.error}`;
+  li.className = result.ok ? 'pass' : 'fail';
+}
+
+async function testFrameRoundtrip() {
+  const payload = encoder.encode('airbridge frame roundtrip');
+  const frame = buildMessage(MSG.DATA, 42, payload);
+  const parsed = parseMessage(toReport(frame));
+  assert(parsed.type === MSG.DATA, 'type mismatch');
+  assert(parsed.seq === 42, 'sequence mismatch');
+  assert(parsed.len === payload.length, 'payload length mismatch');
+  equalBytes(parsed.payload, payload, 'roundtrip payload');
+}
+
+async function testFragmentedMeta() {
+  const meta = {
+    kind: 'text',
+    itemId: 77,
+    filename: 'long-chat-note.txt',
+    mimeType: 'text/plain',
+    size: 123,
+    chunks: 3,
+    hash: `sha256:${'a'.repeat(64)}`,
+    note: 'This JSON intentionally exceeds the 59-byte payload limit for metadata fragmentation.',
+  };
+  assert(encoder.encode(JSON.stringify(meta)).length > MAX_PAYLOAD, 'test META JSON is not larger than one payload');
+  const frames = encodeMeta(meta);
+  assert(frames.length > 1, 'META did not fragment');
+  for (const frame of frames) {
+    const parsed = parseMessage(frame);
+    assert(parsed.type === MSG.META, 'fragment type is not META');
+    assert(parsed.payload.length <= MAX_PAYLOAD, 'fragment exceeds max payload');
+  }
+  const decoded = decodeMeta(frames);
+  assert(JSON.stringify(decoded) === JSON.stringify(meta), 'decoded META differs from original');
+}
+
+async function testTextItemUsbToBle() {
+  await simulateTextTransfer('usb-to-ble');
+}
+
+async function testTextItemBleToUsb() {
+  await simulateTextTransfer('ble-to-usb');
+}
+
+async function testAttachmentSha256() {
+  const data = encoder.encode('abc');
+  const actual = await sha256Hex(data.buffer);
+  assert(actual === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', `unexpected SHA-256 ${actual}`);
+}
+
+async function testBusyCollision() {
+  const low = createMockTransport('low itemId sender');
+  const high = createMockTransport('high itemId sender');
+  const bridge = { activeItemId: null };
+  const events = [];
+
+  function handleInitiate(transport, itemId) {
+    setTimeout(async () => {
+      if (bridge.activeItemId === null || itemId < bridge.activeItemId) {
+        const displaced = bridge.activeTransport;
+        bridge.activeItemId = itemId;
+        bridge.activeTransport = transport;
+        events.push(`${transport.name}:WIN`);
+        if (displaced) {
+          const payload = encoder.encode(JSON.stringify({ winnerItemId: itemId, loserItemId: itemId === 10 ? 11 : 10 }));
+          await displaced.onInputReport?.({ data: new DataView(toReport(buildMessage(MSG.BUSY, 0, payload)).buffer), target: displaced });
+        }
+        return;
+      }
+
+      const payload = encoder.encode(JSON.stringify({ winnerItemId: bridge.activeItemId, loserItemId: itemId }));
+      events.push(`${transport.name}:BUSY`);
+      await transport.onInputReport?.({ data: new DataView(toReport(buildMessage(MSG.BUSY, 0, payload)).buffer), target: transport });
+    }, 0);
+  }
+
+  let highBusy = null;
+  high.onInputReport = event => {
+    const msg = parseMessage(new Uint8Array(event.data.buffer));
+    if (msg.type === MSG.BUSY) highBusy = JSON.parse(decoder.decode(msg.payload));
+  };
+  low.onInputReport = event => {
+    const msg = parseMessage(new Uint8Array(event.data.buffer));
+    if (msg.type === MSG.BUSY) throw new Error('lower itemId received BUSY');
+  };
+
+  handleInitiate(low, 10);
+  handleInitiate(high, 11);
+  await sleep(20);
+
+  assert(bridge.activeItemId === 10, 'lower itemId did not win collision');
+  assert(highBusy?.winnerItemId === 10 && highBusy?.loserItemId === 11, 'BUSY payload did not resolve toward lower itemId');
+  assert(events.includes('low itemId sender:WIN'), 'winner was not recorded');
+}
+
+async function testSimultaneousHelloArbitration() {
+  const completions = [];
+  const yields = [];
+  const starts = [];
+
+  function helloItemId(message) {
+    const payload = message.payload;
+    return (((payload[0] << 24) >>> 0) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
+  }
+
+  function withAbort(promise, signal) {
+    const wrapped = Promise.resolve(promise);
+    if (signal.aborted) return Promise.reject(signal.reason);
+    return new Promise((resolve, reject) => {
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      wrapped.then(
+        value => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        error => {
+          signal.removeEventListener('abort', onAbort);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  function abortError(message) {
+    const error = new Error(message);
+    error.name = 'AbortError';
+    return error;
+  }
+
+  function* abortableData(chunks, signal) {
+    for (const chunk of chunks) {
+      if (signal.aborted) throw signal.reason;
+      yield chunk;
+    }
+  }
+
+  async function createEndpoint(name, itemId) {
+    const data = encoder.encode(`${name} simultaneous message`);
+    const hash = await sha256Hex(data);
+    const item = {
+      meta: {
+        kind: 'text',
+        itemId,
+        name: `${name}.txt`,
+        mimeType: 'text/plain',
+        size: data.length,
+        chunks: 1,
+        hash: `sha256:${hash}`,
+      },
+      chunks: [data],
+    };
+    const endpoint = {
+      name,
+      item,
+      active: null,
+      yielded: null,
+      retryPromise: null,
+      failure: null,
+      peer: null,
+    };
+
+    endpoint.transport = {
+      async send(frame) {
+        const copy = new Uint8Array(frame);
+        await sleep(0);
+        await endpoint.peer.receive(copy);
+      },
+    };
+    endpoint.sender = new ItemSender(frame => {
+      const message = parseMessage(frame);
+      if (endpoint.active && message) endpoint.active.pendingAck = { type: message.type, seq: message.seq };
+      return endpoint.transport.send(frame);
+    }, { timeoutMs: 100, retries: 1 });
+    endpoint.receiver = new ItemReceiver({ sendFn: frame => endpoint.transport.send(frame) });
+    endpoint.receiver.on('item', ({ meta }) => {
+      completions.push(meta.itemId);
+      if (!endpoint.yielded) return;
+      const yielded = endpoint.yielded;
+      endpoint.yielded = null;
+      endpoint.retryPromise = (async () => {
+        await sleep(0);
+        await endpoint.start(yielded);
+      })().catch(error => { endpoint.failure = error; throw error; });
+    });
+    endpoint.receive = async frame => {
+      const message = parseMessage(frame);
+      if (message.type === MSG.ACK) {
+        endpoint.sender.receiveAck(message);
+        return;
+      }
+      if (message.type === MSG.HELLO && endpoint.active && !endpoint.active.yielded) {
+        const peerItemId = helloItemId(message);
+        if (peerItemId < endpoint.active.item.meta.itemId) {
+          const transfer = endpoint.active;
+          transfer.yielded = true;
+          endpoint.yielded = transfer.item;
+          yields.push(name);
+          transfer.controller.abort(abortError(`Yielded to peer item ${peerItemId}`));
+          if (transfer.pendingAck) {
+            endpoint.sender.receiveAck(buildMessage(MSG.ACK, 0, ackPayload(transfer.pendingAck.type, transfer.pendingAck.seq)));
+            transfer.pendingAck = null;
+          }
+          endpoint.receiver.setBusy(false);
+          await endpoint.receiver.onMessage(message);
+          return;
+        }
+        await endpoint.transport.send(buildMessage(MSG.BUSY, 0, encoder.encode(JSON.stringify({
+          winnerItemId: endpoint.active.item.meta.itemId,
+          loserItemId: peerItemId,
+          retryAfterMs: 1,
+        }))));
+        return;
+      }
+      await endpoint.receiver.onMessage(message);
+    };
+    endpoint.start = async outbound => {
+      const transfer = { item: outbound, controller: new AbortController(), pendingAck: null, yielded: false };
+      endpoint.active = transfer;
+      endpoint.receiver.setBusy(true);
+      starts.push(`${name}:${outbound.meta.itemId}`);
+      const { signal } = transfer.controller;
+      try {
+        await withAbort(endpoint.sender.sendHello(outbound.meta.itemId), signal);
+        const metaPayloads = protocolEncodeMeta
+          ? protocolEncodeMeta(outbound.meta)
+          : localEncodeMeta(outbound.meta).map(frame => parseMessage(frame).payload);
+        for (const [seq, payload] of metaPayloads.entries()) {
+          await withAbort(endpoint.sender.sendWithAck(buildMessage(MSG.META, seq, payload), seq), signal);
+        }
+        await withAbort(endpoint.sender.sendItemData(abortableData(outbound.chunks, signal)), signal);
+        await withAbort(endpoint.sender.sendItemDone(), signal);
+      } catch (error) {
+        if (!transfer.yielded) throw error;
+      } finally {
+        if (endpoint.active === transfer) endpoint.active = null;
+        endpoint.receiver.setBusy(false);
+      }
+    };
+    return endpoint;
+  }
+
+  const low = await createEndpoint('low', 100);
+  const high = await createEndpoint('high', 200);
+  low.peer = high;
+  high.peer = low;
+
+  await Promise.all([low.start(low.item), high.start(high.item)]);
+  for (let attempt = 0; attempt < 100 && completions.length < 2; attempt++) await sleep(10);
+  await high.retryPromise;
+
+  assert(completions.length === 2, `expected two completed items, got ${completions.length}`);
+  assert(completions[0] === 100, `lower item did not complete first: ${completions.join(', ')}`);
+  assert(completions[1] === 200, `yielded item did not complete after retry: ${completions.join(', ')}`);
+  assert(yields.length === 1 && yields[0] === 'high', `expected exactly high to yield, got ${yields.join(', ') || 'none'}`);
+  assert(starts.filter(start => start === 'high:200').length === 2, `high item was not retried exactly once: ${starts.join(', ')}`);
+  assert(!low.failure && !high.failure, 'an arbitrated send failed');
+}
+
+async function testAckTypeMismatchRejected() {
+  const frames = [];
+  const sender = new ItemSender(async frame => {
+    frames.push(parseMessage(frame));
+  }, { timeoutMs: 80, retries: 1 });
+
+  const pending = sender.sendHello(0x12345678);
+  await sleep(0);
+  const wrongTypeAccepted = sender.receiveAck(buildMessage(MSG.ACK, 0, ackPayload(MSG.META, 0)));
+  assert(!wrongTypeAccepted, 'ACK with the wrong acknowledged type was accepted');
+
+  const correctTypeAccepted = sender.receiveAck(buildMessage(MSG.ACK, 0, ackPayload(MSG.HELLO, 0)));
+  assert(correctTypeAccepted, 'ACK with the correct acknowledged type was rejected');
+  await pending;
+
+  const hello = frames[0];
+  equalBytes(hello.payload, new Uint8Array([0x12, 0x34, 0x56, 0x78]), 'HELLO item ID payload');
+}
+
+async function testHashMismatchSendsError() {
+  const outbound = [];
+  let sender;
+  const receiver = new ItemReceiver({
+    sendFn: async frame => {
+      const parsed = parseMessage(frame);
+      outbound.push(parsed);
+      if (parsed.type === MSG.ACK) sender.receiveAck(parsed);
+      if (parsed.type === MSG.ERROR) sender.receiveError(parsed);
+    },
+  });
+  sender = new ItemSender(frame => receiver.onMessage(frame), { timeoutMs: 100, retries: 1 });
+
+  const data = encoder.encode('integrity matters');
+  const meta = {
+    kind: 'text',
+    itemId: 300,
+    name: 'bad-hash.txt',
+    mimeType: 'text/plain',
+    size: data.length,
+    chunks: 1,
+    hash: `sha256:${'0'.repeat(64)}`,
+  };
+
+  await sender.sendHello(meta.itemId);
+  await sender.sendItemMeta(meta);
+  await sender.sendItemData([data]);
+
+  let failure = null;
+  try {
+    await sender.sendItemDone();
+  } catch (error) {
+    failure = error;
+  }
+
+  assert(failure?.message.includes('Hash mismatch'), 'sender did not receive the peer hash-mismatch reason');
+  assert(outbound.some(message => message.type === MSG.ERROR), 'hash mismatch did not send MSG.ERROR');
+  assert(!outbound.some(message => message.type === MSG.ACK && readAck(message.payload).type === MSG.DONE), 'hash mismatch ACKed ITEM_DONE');
+}
+
+async function testDataBeforeMetaRejected() {
+  const outbound = [];
+  const receiver = new ItemReceiver({ sendFn: async frame => outbound.push(parseMessage(frame)) });
+  let invalid = null;
+  receiver.on('invalid', error => { invalid = error; });
+
+  await receiver.onMessage(buildMessage(MSG.DATA, 0, encoder.encode('stale data')));
+
+  assert(invalid?.message.includes('before ITEM_META'), 'DATA before META did not emit invalid');
+  assert(!outbound.some(message => message.type === MSG.ERROR), 'DATA before META sent MSG.ERROR');
+  assert(outbound.length === 0, 'DATA before META produced a response frame');
+}
+
+async function testOversizedMetaRejected() {
+  const outbound = [];
+  const receiver = new ItemReceiver({ sendFn: async frame => outbound.push(parseMessage(frame)) });
+  const meta = {
+    kind: 'attachment',
+    itemId: 301,
+    name: 'oversized.bin',
+    mimeType: 'application/octet-stream',
+    size: 1,
+    chunks: 4097,
+  };
+
+  await receiver.onMessage(buildMessage(MSG.HELLO, 0, new Uint8Array([0, 0, 1, 45])));
+  outbound.length = 0;
+  const fragments = protocolEncodeMeta(meta);
+  for (let seq = 0; seq < fragments.length; seq++) {
+    const fragment = parseMessage(buildMessage(MSG.META, seq, fragments[seq]));
+    await receiver.onMessage(fragment);
+  }
+
+  const error = outbound.find(message => message.type === MSG.ERROR);
+  assert(error, 'oversized META did not send MSG.ERROR');
+  assert(decoder.decode(error.payload).includes('chunk count exceeds 4096'), 'oversized META error reason was not surfaced');
+}
+
+async function testBusyVersusRejectedSplit() {
+  const outbound = [];
+  const receiver = new ItemReceiver({
+    busy: true,
+    sendFn: async frame => outbound.push(parseMessage(frame)),
+  });
+  let busyEvents = 0;
+  let rejectedEvents = 0;
+  receiver.on('busy', () => { busyEvents++; });
+  receiver.on('rejected', () => { rejectedEvents++; });
+
+  await receiver.onMessage(buildMessage(MSG.HELLO, 0, new Uint8Array([0, 0, 1, 46])));
+  assert(rejectedEvents === 1, 'locally rejected HELLO did not emit rejected');
+  assert(busyEvents === 0, 'locally rejected HELLO incorrectly emitted busy');
+  assert(outbound[0]?.type === MSG.BUSY, 'locally rejected HELLO did not send BUSY');
+
+  await receiver.onMessage(buildMessage(MSG.BUSY, 0));
+  assert(busyEvents === 1, 'peer BUSY did not emit busy');
+  assert(rejectedEvents === 1, 'peer BUSY incorrectly emitted rejected');
+}
+
+async function testCancel() {
+  const sentMessages = [];
+  const receiver = new ItemReceiver({
+    sendFn: async frame => {
+      sentMessages.push(frame instanceof Uint8Array ? frame : new Uint8Array(frame));
+    },
+  });
+
+  let cancelMessage = null;
+  receiver.on('cancel', message => {
+    cancelMessage = message;
+  });
+
+  await receiver.onMessage(buildMessage(MSG.HELLO, 0, new Uint8Array([0, 0, 0, 1])));
+  const [metaFrame] = encodeMeta({ kind: 'text', itemId: 88, name: 'cancel.txt', mimeType: 'text/plain', size: 1, chunks: 1 });
+  await receiver.onMessage(metaFrame);
+  await receiver.onMessage(buildMessage(MSG.CANCEL, 0));
+
+  assert(cancelMessage?.type === MSG.CANCEL, 'cancel event was not emitted');
+  assert(receiver.meta === null, 'receiver meta was not cleared');
+  assert(receiver.chunks.size === 0, 'receiver chunks were not cleared');
+  const lastMessage = parseMessage(sentMessages.at(-1));
+  const ack = readAck(lastMessage.payload);
+  assert(lastMessage.type === MSG.ACK && ack.type === MSG.CANCEL && ack.seq === 0, 'CANCEL did not ACK type and sequence');
+}
+
+async function runAllProtocolTests() {
+  $('runBtn').disabled = true;
+  $('results').replaceChildren();
+  setStatus('Running protocol tests...', 'running');
+
+  const outcomes = [];
+  for (const [name, test] of tests) {
+    const row = addResult(name);
+    try {
+      await test();
+      outcomes.push({ name, ok: true });
+      finishResult(row, name, { ok: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      outcomes.push({ name, ok: false, error: message });
+      finishResult(row, name, { ok: false, error: message });
+    }
+    await sleep(0);
+  }
+
+  const passed = outcomes.filter(result => result.ok).length;
+  const failed = outcomes.length - passed;
+  setStatus(failed === 0 ? `PASS: ${passed}/${outcomes.length} protocol tests passed.` : `FAIL: ${passed}/${outcomes.length} passed, ${failed} failed.`, failed === 0 ? 'pass' : 'fail');
+  $('runBtn').disabled = false;
+  return outcomes;
+}
+
+window.runAllProtocolTests = runAllProtocolTests;
+$('runBtn').addEventListener('click', runAllProtocolTests);
+</script>
+</body>
+</html>

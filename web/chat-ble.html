@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>Pocket AirBridge — BLE Chat</title>
+<style>
+  :root { --bg: #0f0f23; --fg: #e0e0ff; --accent: #00f0ff; --error: #ff3366; --ok: #00ffaa; --muted: #9aa0c3; --panel: rgba(255,255,255,0.04); --line: rgba(0,240,255,0.24); }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); max-width: 860px; margin: 32px auto; padding: 20px; }
+  h1 { color: var(--accent); margin-bottom: 8px; }
+  p { color: var(--muted); }
+  button, input[type="file"]::file-selector-button { font-size: 1rem; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--accent); background: transparent; color: var(--fg); cursor: pointer; }
+  button:disabled, input:disabled { opacity: 0.45; cursor: not-allowed; border-color: #555; }
+  button:hover:not(:disabled), input[type="file"]::file-selector-button:hover { background: rgba(0,240,255,0.1); }
+  input[type="text"] { width: 100%; min-width: 0; padding: 12px 14px; border: 1px solid rgba(224,224,255,0.22); border-radius: 10px; background: rgba(255,255,255,0.06); color: var(--fg); font-size: 1rem; }
+  input[type="file"] { color: var(--muted); max-width: 100%; }
+  .card { margin: 16px 0; padding: 16px; border: 1px solid rgba(224,224,255,0.12); border-radius: 14px; background: var(--panel); }
+  .connection-row, .composer-row, .attachment-row, .status-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .connection-row { justify-content: space-between; }
+  .status-pill { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 999px; background: rgba(255,255,255,0.06); color: var(--muted); font-size: 0.92rem; }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--error); box-shadow: 0 0 12px currentColor; }
+  .status-dot.connecting { background: #ffb347; }
+  .status-dot.connected { background: var(--ok); }
+  .device-name { color: var(--fg); font-family: ui-monospace, SFMono-Regular, monospace; }
+  .mock-badge { display: none; color: var(--ok); border: 1px solid rgba(0,255,170,0.35); border-radius: 999px; padding: 5px 9px; font-size: 0.85rem; }
+  .mock .mock-badge { display: inline-block; }
+  #transcript { height: 430px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: 12px; background: rgba(0,0,0,0.18); border: 1px solid rgba(224,224,255,0.1); }
+  .empty { margin: auto; color: var(--muted); text-align: center; }
+  .message { max-width: 78%; display: flex; flex-direction: column; gap: 5px; }
+  .message.you { align-self: flex-end; align-items: flex-end; }
+  .message.peer { align-self: flex-start; align-items: flex-start; }
+  .message.system { align-self: center; align-items: center; max-width: 86%; }
+  .meta-line { color: var(--muted); font-size: 0.78rem; }
+  .bubble, .attachment-card { padding: 11px 13px; border-radius: 13px; overflow-wrap: anywhere; line-height: 1.4; }
+  .you .bubble, .you .attachment-card { background: rgba(0,240,255,0.13); border: 1px solid var(--line); }
+  .peer .bubble, .peer .attachment-card { background: rgba(255,255,255,0.07); border: 1px solid rgba(224,224,255,0.13); }
+  .system .bubble { background: rgba(255,255,255,0.06); border: 1px solid rgba(224,224,255,0.16); color: var(--muted); font-style: italic; text-align: center; }
+  .attachment-card { min-width: 240px; }
+  .attachment-title { font-weight: 700; color: var(--fg); margin-bottom: 6px; }
+  .attachment-detail { color: var(--muted); font-size: 0.88rem; }
+  .attachment-card a { color: var(--accent); display: inline-block; margin-top: 8px; }
+  .progress-container { margin-top: 6px; }
+  .progress-bar-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.1); overflow: hidden; }
+  .progress-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #a0f); transition: width 0.15s ease; }
+  .progress-bar-fill.complete { background: var(--ok); }
+  .progress-bar-fill.cancelled { background: var(--error); }
+  .progress-label { font-size: 0.72rem; color: var(--muted); margin-top: 3px; }
+  .ok { color: var(--ok); }
+  .warn { color: #ffdf91; }
+  .error { color: var(--error); }
+  #progressWrap { height: 20px; flex: 1 1 180px; min-width: 180px; background: rgba(255,255,255,0.06); border-radius: 10px; overflow: hidden; }
+  #progressBar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #a0f); transition: width 0.18s ease; }
+  #progressText, #stateText { color: var(--muted); font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.86rem; }
+  #log { max-height: 150px; overflow-y: auto; margin-top: 12px; padding: 10px; border-radius: 10px; background: rgba(0,0,0,0.18); font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.82rem; white-space: pre-wrap; }
+  .composer-row { flex-wrap: nowrap; }
+  .composer-row input { flex: 1 1 auto; }
+  @media (max-width: 640px) { body { margin: 12px auto; padding: 14px; } .message { max-width: 92%; } .composer-row { flex-wrap: wrap; } .composer-row button { width: 100%; } }
+</style>
+</head>
+<body>
+<h1>Pocket AirBridge — BLE Chat</h1>
+<p>PC-B Web Bluetooth chat endpoint for text and attachments. Add <code>?mock=1</code> to test with an in-page paired USB mock.</p>
+
+<section class="card" aria-labelledby="connectionTitle">
+  <div class="connection-row">
+    <div>
+      <h2 id="connectionTitle">Connection</h2>
+      <div class="status-row">
+        <span class="status-pill"><span id="statusDot" class="status-dot"></span><span id="connectionStatus">disconnected</span></span>
+        <span id="deviceName" class="device-name">No device</span>
+        <span class="mock-badge">Mock transport</span>
+      </div>
+    </div>
+    <div class="connection-row">
+      <button type="button" id="connectBtn">Pair with Flipper (BLE)</button>
+      <button type="button" id="disconnectBtn" disabled>Disconnect</button>
+    </div>
+  </div>
+</section>
+
+<section class="card" aria-labelledby="chatTitle">
+  <h2 id="chatTitle">Chat Transcript</h2>
+  <div id="transcript" aria-live="polite"><div class="empty">No messages yet.</div></div>
+</section>
+
+<section class="card" aria-labelledby="sendTitle">
+  <h2 id="sendTitle">Send</h2>
+  <div class="composer-row">
+    <input type="text" id="messageInput" placeholder="Type a message" autocomplete="off" disabled>
+    <button type="button" id="sendBtn" disabled>Send</button>
+  </div>
+  <div class="attachment-row" style="margin-top: 12px;">
+    <input type="file" id="fileInput" disabled>
+    <span id="fileHint" class="attachment-detail">Attachments are supported.</span>
+  </div>
+</section>
+
+<section class="card" aria-labelledby="transferTitle">
+  <h2 id="transferTitle">Transfer State</h2>
+  <div class="status-row">
+    <div id="progressWrap" aria-label="Active transfer progress"><div id="progressBar"></div></div>
+    <span id="progressText">Idle</span>
+    <span id="stateText">half-duplex: ready</span>
+    <button type="button" id="cancelBtn" hidden>Cancel</button>
+  </div>
+  <div id="log" aria-live="polite">Waiting...</div>
+</section>
+
+<script type="module">
+import { buildMessage, encodeMeta, ItemReceiver, ItemSender, MAX_PAYLOAD, MSG, parseMessage, sha256 } from './airbridge-protocol.js';
+import { WebBluetoothAdapter } from './airbridge-transports.js';
+
+const BUSY_BACKOFF_MS = 900;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const mockMode = new URLSearchParams(location.search).get('mock') === '1';
+
+let transport = null;
+let unsubscribeReceive = null;
+let unsubscribeDisconnect = null;
+let sender = null;
+let receiver = null;
+let isConnecting = false;
+let isSending = false;
+let activeItemId = null;
+let activeTransfer = null;
+let transferAbortController = null;
+let transferPendingAckSeq = null;
+let transferCancelSource = null;
+let inboundMeta = null;
+let inboundHelloItemId = null;
+let inboundChunks = 0;
+let busyBackoffUntil = 0;
+let pendingSendRow = null;
+let pendingReceiveRow = null;
+let yieldedItem = null;
+let yieldedRetryScheduled = false;
+
+const $ = id => document.getElementById(id);
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError());
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(abortError());
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+if (mockMode) document.body.classList.add('mock');
+
+function now() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function log(text, className = '') {
+  const row = document.createElement('div');
+  row.className = className;
+  row.textContent = `[${now()}] ${text}`;
+  if ($('log').textContent === 'Waiting...') $('log').textContent = '';
+  $('log').appendChild(row);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function setConnectionStatus(status, deviceName = '') {
+  $('connectionStatus').textContent = status;
+  $('deviceName').textContent = deviceName || 'No device';
+  $('statusDot').className = `status-dot ${status === 'connected' ? 'connected' : status === 'connecting' ? 'connecting' : ''}`;
+  updateControls();
+}
+
+function setProgress(percent, text) {
+  const safe = Math.max(0, Math.min(100, Number(percent) || 0));
+  $('progressBar').style.width = `${safe}%`;
+  $('progressText').textContent = text || (safe ? `${Math.round(safe)}%` : 'Idle');
+}
+
+function setSending(value, itemId = null, statusText = null) {
+  isSending = value;
+  activeItemId = value ? itemId : null;
+  receiver?.setBusy(value);
+  $('stateText').textContent = statusText || (value ? `half-duplex: sending item ${itemId}` : 'half-duplex: ready');
+  updateControls();
+}
+
+function updateControls() {
+  const connected = Boolean(transport?.isConnected());
+  const isReceiving = inboundHelloItemId != null;
+  const canCancel = isSending || isReceiving || Boolean(inboundMeta);
+  $('connectBtn').disabled = connected || isConnecting;
+  $('disconnectBtn').disabled = !connected || isConnecting;
+  $('messageInput').disabled = !connected || isSending || isReceiving;
+  $('sendBtn').disabled = !connected || isSending || isReceiving || !$('messageInput').value.trim();
+  $('fileInput').disabled = !connected || isSending || isReceiving;
+  $('cancelBtn').hidden = !connected || !canCancel;
+  $('cancelBtn').disabled = !connected || !canCancel;
+}
+
+function clearTranscriptEmptyState() {
+  const empty = $('transcript').querySelector('.empty');
+  if (empty) empty.remove();
+}
+
+function addTextMessage(side, text, timestamp = new Date()) {
+  clearTranscriptEmptyState();
+  const row = document.createElement('div');
+  row.className = `message ${side}`;
+  row.innerHTML = `<div class="meta-line">${side === 'you' ? 'You' : 'Peer'} · ${timestamp.toLocaleTimeString()}</div>`;
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = text;
+  row.appendChild(bubble);
+  $('transcript').appendChild(row);
+  $('transcript').scrollTop = $('transcript').scrollHeight;
+}
+
+function addSystemMessage(text, timestamp = new Date()) {
+  clearTranscriptEmptyState();
+  const row = document.createElement('div');
+  row.className = 'message system';
+  row.innerHTML = `<div class="meta-line">System · ${timestamp.toLocaleTimeString()}</div>`;
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = text;
+  row.appendChild(bubble);
+  $('transcript').appendChild(row);
+  $('transcript').scrollTop = $('transcript').scrollHeight;
+}
+
+function addAttachmentMessage(side, meta, data, hash, timestamp = new Date(), progress) {
+  clearTranscriptEmptyState();
+  const row = document.createElement('div');
+  row.className = `message ${side}`;
+  row.innerHTML = `<div class="meta-line">${side === 'you' ? 'You' : 'Peer'} · ${timestamp.toLocaleTimeString()}</div>`;
+  const card = document.createElement('div');
+  card.className = 'attachment-card';
+  const hashText = hash ? `verified ${shortHash(hash)}` : `hash ${shortHash(meta.hash || '')}`;
+  card.innerHTML = `<div class="attachment-title">📎 ${escapeHtml(meta.name || 'attachment')}</div><div class="attachment-detail">${formatBytes(meta.size || 0)} · ${escapeHtml(meta.mimeType || 'application/octet-stream')}</div><div class="attachment-detail ${hash ? 'ok' : 'warn'}">SHA-256 ${escapeHtml(hashText)}</div>`;
+
+  if (progress != null) {
+    const container = document.createElement('div');
+    container.className = 'progress-container';
+    const track = document.createElement('div');
+    track.className = 'progress-bar-track';
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-valuenow', Math.round(progress.percent));
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+    const fill = document.createElement('div');
+    fill.className = `progress-bar-fill${progress.complete ? ' complete' : ''}${progress.cancelled ? ' cancelled' : ''}`;
+    fill.style.width = `${progress.percent}%`;
+    fill.setAttribute('aria-hidden', 'true');
+    track.appendChild(fill);
+    const label = document.createElement('div');
+    label.className = 'progress-label';
+    label.textContent = progress.label;
+    container.append(track, label);
+    card.appendChild(container);
+  }
+
+  if (data) {
+    const blob = new Blob([data], { type: meta.mimeType || 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = meta.name || 'airbridge-attachment';
+    link.textContent = 'Download attachment';
+    card.appendChild(link);
+  }
+  row.appendChild(card);
+  $('transcript').appendChild(row);
+  $('transcript').scrollTop = $('transcript').scrollHeight;
+  return row;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+function shortHash(hash) {
+  return `${String(hash).replace(/^sha256:/, '').slice(0, 16)}…`;
+}
+
+function updateCardProgress(messageRow, percent, label, state) {
+  const track = messageRow.querySelector('.progress-bar-track');
+  const fill = messageRow.querySelector('.progress-bar-fill');
+  const labelEl = messageRow.querySelector('.progress-label');
+  if (!track || !fill || !labelEl) return;
+  const safe = Math.max(0, Math.min(100, percent));
+  track.setAttribute('aria-valuenow', Math.round(safe));
+  fill.style.width = `${safe}%`;
+  fill.className = `progress-bar-fill${state === 'complete' ? ' complete' : ''}${state === 'cancelled' ? ' cancelled' : ''}`;
+  labelEl.textContent = label;
+}
+
+function abortError(message = 'Transfer cancelled') {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason ?? abortError();
+}
+
+function raceWithAbort(promise, signal) {
+  const wrapped = Promise.resolve(promise);
+  if (!signal) return wrapped;
+  if (signal.aborted) return Promise.reject(signal.reason ?? abortError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? abortError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    wrapped.then(
+      value => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function createAckFrame(type, seq) {
+  return buildMessage(MSG.ACK, 0, new Uint8Array([type, (seq >> 8) & 0xff, seq & 0xff]));
+}
+
+function* abortableChunks(chunks, signal) {
+  for (const chunk of chunks) {
+    throwIfAborted(signal);
+    yield chunk;
+  }
+}
+
+async function sendItemMetaWithAbort(meta, signal) {
+  const fragments = encodeMeta(meta);
+  for (let seq = 0; seq < fragments.length; seq++) {
+    throwIfAborted(signal);
+    await raceWithAbort(sender.sendWithAck(buildMessage(MSG.ITEM_META, seq, fragments[seq]), seq), signal);
+  }
+}
+
+function readHelloItemId(msg) {
+  if (!msg?.payload || msg.payload.length < 4) return null;
+  const payload = msg.payload;
+  return (((payload[0] << 24) >>> 0) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
+}
+
+function busyPayload(winnerItemId, loserItemId) {
+  return encoder.encode(JSON.stringify({ w: winnerItemId, l: loserItemId, r: BUSY_BACKOFF_MS }));
+}
+
+async function sendBusy(winnerItemId, loserItemId) {
+  if (!transport?.isConnected()) return;
+  await transport.send(buildMessage(MSG.BUSY, 0, busyPayload(winnerItemId, loserItemId)));
+}
+
+function parseBusy(payload) {
+  try {
+    const detail = JSON.parse(decoder.decode(payload));
+    return {
+      winnerItemId: detail.winnerItemId ?? detail.w,
+      loserItemId: detail.loserItemId ?? detail.l,
+      retryAfterMs: detail.retryAfterMs ?? detail.r,
+    };
+  } catch (_) {
+    return {};
+  }
+}
+
+function settleAbortedSend(transfer) {
+  const pending = transfer?.pendingAck;
+  if (!pending) return;
+  transfer.pendingAck = null;
+  if (transferPendingAckSeq?.type === pending.type && transferPendingAckSeq?.seq === pending.seq) {
+    transferPendingAckSeq = null;
+  }
+  sender?.receiveAck(createAckFrame(pending.type, pending.seq));
+}
+
+function chunksFor(data) {
+  const chunks = [];
+  for (let offset = 0; offset < data.length; offset += MAX_PAYLOAD) {
+    chunks.push(data.slice(offset, offset + MAX_PAYLOAD));
+  }
+  return chunks.length ? chunks : [new Uint8Array(0)];
+}
+
+async function connect() {
+  isConnecting = true;
+  setConnectionStatus('connecting');
+  log(mockMode ? 'Connecting to in-page mock BLE transport...' : 'Opening Web Bluetooth picker...');
+  try {
+    transport = mockMode ? createMockBleTransport() : new WebBluetoothAdapter({ onDisconnect: handleDisconnected });
+    await transport.connect();
+    sender = new ItemSender(sendFrameWithBusyBackoff, { timeoutMs: mockMode ? 800 : 5000, retries: 4 });
+    receiver = new ItemReceiver({ sendFn: frame => transport.send(frame), busy: false });
+    wireProtocolEvents();
+    unsubscribeReceive = transport.onReceive(handleFrame);
+    unsubscribeDisconnect = transport.onDisconnect?.(handleDisconnected) ?? null;
+    setConnectionStatus('connected', transport.getName());
+    log(`Connected: ${transport.getName()}`, 'ok');
+  } catch (error) {
+    await safeDisconnectTransport();
+    setConnectionStatus('disconnected');
+    log(`Connection error: ${error.message}`, 'error');
+  } finally {
+    isConnecting = false;
+    updateControls();
+  }
+}
+
+async function disconnect() {
+  await safeDisconnectTransport();
+  handleDisconnected();
+}
+
+async function safeDisconnectTransport() {
+  unsubscribeReceive?.();
+  unsubscribeReceive = null;
+  unsubscribeDisconnect?.();
+  unsubscribeDisconnect = null;
+  if (transport?.isConnected()) await transport.disconnect();
+}
+
+function handleDisconnected() {
+  transferAbortController?.abort();
+  activeTransfer = null;
+  transferAbortController = null;
+  transferPendingAckSeq = null;
+  transferCancelSource = null;
+  transport = null;
+  sender = null;
+  receiver = null;
+  inboundMeta = null;
+  inboundHelloItemId = null;
+  inboundChunks = 0;
+  pendingSendRow = null;
+  pendingReceiveRow = null;
+  yieldedItem = null;
+  setSending(false);
+  setProgress(0, 'Idle');
+  setConnectionStatus('disconnected');
+  log('Disconnected.', 'warn');
+}
+
+function wireProtocolEvents() {
+  receiver.on('ack', detail => sender?.receiveAck(detail.message));
+  receiver.on('nack', () => log('Peer sent NACK.', 'error'));
+  receiver.on('busy', handleBusy);
+  receiver.on('rejected', () => log('Rejected peer HELLO while this side is busy.', 'warn'));
+  receiver.on('cancel', handlePeerCancel);
+  receiver.on('hello', detail => {
+    inboundHelloItemId = detail.itemId;
+    updateControls();
+    log(`Peer HELLO item=${detail.itemId ?? 'unknown'}`);
+  });
+  receiver.on('meta', meta => {
+    inboundMeta = meta;
+    inboundChunks = 0;
+    updateControls();
+    setProgress(0, `Receiving ${meta.kind || 'item'}...`);
+    log(`Receiving ${meta.kind || 'item'}: ${meta.name || '(unnamed)'} (${formatBytes(meta.size || 0)})`);
+    if (meta.kind !== 'text') {
+      pendingReceiveRow = addAttachmentMessage('peer', meta, null, null, new Date(), { percent: 0, label: 'Receiving…' });
+    }
+  });
+  receiver.on('data', detail => {
+    inboundChunks = detail.received;
+    if (detail.meta?.chunks) {
+      const pct = (detail.received / detail.meta.chunks) * 100;
+      setProgress(pct, `Receiving ${detail.received}/${detail.meta.chunks}`);
+      if (pendingReceiveRow) {
+        updateCardProgress(pendingReceiveRow, pct, `${detail.received}/${detail.meta.chunks} chunks`);
+      }
+    }
+  });
+  receiver.on('item', handleIncomingItem);
+  receiver.on('error', error => log(`Protocol error: ${error.message || error}`, 'error'));
+  receiver.on('invalid', error => log(`Invalid frame: ${error.message}`, 'error'));
+}
+
+async function handleFrame(frame) {
+  const parsed = parseMessage(frame);
+  if (parsed?.type === MSG.ERROR) sender?.receiveError(parsed);
+
+  if (parsed?.type === MSG.HELLO && isSending && activeTransfer && !activeTransfer.yielded && activeItemId != null) {
+    const peerItemId = readHelloItemId(parsed);
+    const localWins = peerItemId != null && activeItemId < peerItemId;
+    const equalIds = peerItemId != null && activeItemId === peerItemId;
+    if (peerItemId != null && (peerItemId < activeItemId || (equalIds && activeTransfer.acceptPeerDuringBackoff))) {
+      await yieldToPeer(parsed, peerItemId);
+      return;
+    }
+    if (localWins || equalIds) {
+      log(`Keeping local item ${activeItemId} over peer item ${peerItemId}; returning BUSY.`, 'warn');
+      await sendBusy(activeItemId, peerItemId);
+      return;
+    }
+  }
+
+  await receiver?.onMessage(parsed ?? frame);
+}
+
+function handleBusy(msg) {
+  const detail = parseBusy(msg.payload);
+  const localItemId = activeItemId;
+  const peerWins = Number.isInteger(localItemId)
+    && detail.loserItemId === localItemId
+    && Number.isInteger(detail.winnerItemId)
+    && detail.winnerItemId < localItemId;
+  const equalIds = Number.isInteger(localItemId)
+    && detail.winnerItemId === localItemId
+    && detail.loserItemId === localItemId;
+  if (!isSending || activeTransfer?.yielded || (!peerWins && !equalIds)) {
+    log('Ignoring BUSY that does not lose the active item arbitration.', 'warn');
+    return;
+  }
+  const retryAfterMs = Number.isFinite(detail.retryAfterMs) ? detail.retryAfterMs : BUSY_BACKOFF_MS;
+  const delay = Math.max(0, retryAfterMs) + Math.floor(Math.random() * 401);
+  busyBackoffUntil = Date.now() + delay;
+  if (equalIds) activeTransfer.acceptPeerDuringBackoff = true;
+  log(`Peer item ${detail.winnerItemId} has priority${equalIds ? ' (equal item IDs)' : ''}; retrying in ${delay} ms.`, 'warn');
+}
+
+async function yieldToPeer(msg, peerItemId) {
+  const transfer = activeTransfer;
+  if (!transfer || transfer.yielded) return;
+  transfer.yielded = true;
+  yieldedItem = {
+    meta: transfer.meta,
+    chunks: transfer.chunks,
+    onRendered: transfer.onRendered,
+    row: pendingSendRow,
+  };
+  transfer.controller.abort(abortError(`Yielded to peer item ${peerItemId}`));
+  settleAbortedSend(transfer);
+  receiver?.setBusy(false);
+  setProgress(0, `Yielded to peer item ${peerItemId}`);
+  if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Yielded');
+  addSystemMessage(`Yielded to peer item ${peerItemId}`);
+  log(`Yielded local item ${transfer.itemId} to peer item ${peerItemId}.`, 'warn');
+  await receiver?.onMessage(msg);
+}
+
+function scheduleYieldedRetry() {
+  if (!yieldedItem || yieldedRetryScheduled) return;
+  yieldedRetryScheduled = true;
+  setTimeout(async () => {
+    yieldedRetryScheduled = false;
+    const yielded = yieldedItem;
+    if (!yielded || isSending || inboundHelloItemId != null || !transport?.isConnected()) return;
+    yieldedItem = null;
+    pendingSendRow = yielded.row;
+    if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Retrying…');
+    setProgress(0, `Retrying ${yielded.meta.kind}...`);
+    await sendItem(yielded.meta, yielded.chunks, yielded.onRendered);
+  }, 0);
+}
+
+function handlePeerCancel() {
+  transferCancelSource = 'peer';
+  transferAbortController?.abort();
+  if (transferPendingAckSeq != null && sender) {
+    sender.receiveAck(createAckFrame(transferPendingAckSeq.type, transferPendingAckSeq.seq));
+  }
+  transferPendingAckSeq = null;
+  inboundMeta = null;
+  inboundHelloItemId = null;
+  inboundChunks = 0;
+  setProgress(0, 'Transfer cancelled');
+  setSending(false, null, 'half-duplex: cancelled');
+  addSystemMessage('Transfer cancelled by peer');
+  log('Transfer cancelled by peer', 'warn');
+  if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled by peer', 'cancelled');
+  if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled by peer', 'cancelled');
+  scheduleYieldedRetry();
+}
+
+async function sendFrameWithBusyBackoff(frame) {
+  const transfer = activeTransfer;
+  const signal = transfer?.controller.signal;
+  const parsed = parseMessage(frame);
+  if (parsed) {
+    transferPendingAckSeq = { type: parsed.type, seq: parsed.seq };
+    if (transfer) transfer.pendingAck = transferPendingAckSeq;
+  }
+  if (signal?.aborted) {
+    if (parsed && sender) sender.receiveAck(createAckFrame(parsed.type, parsed.seq));
+    return;
+  }
+  const wait = busyBackoffUntil - Date.now();
+  if (wait > 0) {
+    try {
+      await sleep(wait, signal);
+    } catch (error) {
+      if (signal?.aborted) {
+        if (parsed && sender) sender.receiveAck(createAckFrame(parsed.type, parsed.seq));
+        return;
+      }
+      throw error;
+    }
+  }
+  if (signal?.aborted) {
+    if (parsed && sender) sender.receiveAck(createAckFrame(parsed.type, parsed.seq));
+    return;
+  }
+  if (!transport?.isConnected()) throw new Error('Not connected');
+  await transport.send(frame);
+}
+
+async function handleIncomingItem({ meta, data, hash }) {
+  setProgress(100, 'Receive complete');
+  inboundMeta = null;
+  inboundHelloItemId = null;
+  updateControls();
+  if (meta.kind === 'text') {
+    addTextMessage('peer', decoder.decode(data));
+    log(`Received text message (${formatBytes(data.length)}).`, 'ok');
+  } else {
+    if (pendingReceiveRow) {
+      const finalCard = document.createElement('div');
+      finalCard.className = 'attachment-card';
+      const hashText = hash ? `verified ${shortHash(hash)}` : `hash ${shortHash(meta.hash || '')}`;
+      finalCard.innerHTML = `<div class="attachment-title">📎 ${escapeHtml(meta.name || 'attachment')}</div><div class="attachment-detail">${formatBytes(meta.size || 0)} · ${escapeHtml(meta.mimeType || 'application/octet-stream')}</div><div class="attachment-detail ok">SHA-256 ${escapeHtml(hashText)}</div>`;
+      const blob = new Blob([data], { type: meta.mimeType || 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = meta.name || 'airbridge-attachment';
+      link.textContent = 'Download attachment';
+      finalCard.appendChild(link);
+      const placeholder = pendingReceiveRow.querySelector('.attachment-card');
+      if (placeholder) placeholder.replaceWith(finalCard);
+      pendingReceiveRow = null;
+    } else {
+      addAttachmentMessage('peer', meta, data, hash);
+    }
+    log(`Received attachment ${meta.name || '(unnamed)'}; SHA-256 verified.`, 'ok');
+  }
+  inboundChunks = 0;
+  setTimeout(() => setProgress(0, 'Idle'), 700);
+  scheduleYieldedRetry();
+}
+
+async function sendText() {
+  const text = $('messageInput').value.trim();
+  if (!text) return;
+  const data = encoder.encode(text);
+  const itemId = makeItemId();
+  const hash = await sha256(data);
+  const chunks = chunksFor(data);
+  const meta = {
+    kind: 'text',
+    itemId,
+    name: `message-${itemId}.txt`,
+    mimeType: 'text/plain;charset=utf-8',
+    size: data.length,
+    chunks: chunks.length,
+    hash: `sha256:${hash}`,
+  };
+  $('messageInput').value = '';
+  updateControls();
+  await sendItem(meta, chunks, () => addTextMessage('you', text));
+}
+
+async function sendSelectedFile() {
+  const file = $('fileInput').files?.[0];
+  if (!file) return;
+
+  const data = await readFileBytes(file);
+  const hash = await sha256(data);
+  const chunks = chunksFor(data);
+  const itemId = makeItemId();
+  const meta = {
+    kind: 'attachment',
+    itemId,
+    name: file.name || `attachment-${itemId}`,
+    mimeType: file.type || 'application/octet-stream',
+    size: data.length,
+    chunks: chunks.length,
+    hash: `sha256:${hash}`,
+  };
+  $('fileInput').value = '';
+  pendingSendRow = addAttachmentMessage('you', meta, data, hash, new Date(), { percent: 0, label: 'Sending…' });
+  await sendItem(meta, chunks, () => {});
+}
+
+function readFileBytes(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result));
+    reader.onerror = () => reject(reader.error || new Error('File read failed'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function sendItem(meta, chunks, onRendered) {
+  if (!sender || !transport?.isConnected()) {
+    log('Connect before sending.', 'error');
+    return;
+  }
+  const transfer = {
+    controller: new AbortController(),
+    itemId: meta.itemId,
+    meta,
+    chunks,
+    onRendered,
+    pendingAck: null,
+    yielded: false,
+    acceptPeerDuringBackoff: false,
+  };
+  activeTransfer = transfer;
+  transferAbortController = transfer.controller;
+  transferPendingAckSeq = null;
+  transferCancelSource = null;
+  const { signal } = transfer.controller;
+  let outcome = 'sent';
+  setSending(true, meta.itemId);
+  setProgress(0, `Sending ${meta.kind}...`);
+  log(`Sending ${meta.kind} item ${meta.itemId} (${chunks.length} chunks).`);
+  const acknowledgedDataSeqs = new Set();
+  let trackDataAcks = false;
+  const unsubscribeAck = sender.onAck((seq, _message, type) => {
+    if (transfer.yielded || type !== MSG.ITEM_DATA || !trackDataAcks || acknowledgedDataSeqs.has(seq) || seq >= chunks.length) return;
+    acknowledgedDataSeqs.add(seq);
+    const pct = (acknowledgedDataSeqs.size / chunks.length) * 100;
+    setProgress(pct, `Sending ${acknowledgedDataSeqs.size}/${chunks.length}`);
+    if (pendingSendRow) {
+      updateCardProgress(pendingSendRow, pct, `${acknowledgedDataSeqs.size}/${chunks.length} chunks`);
+    }
+  });
+  try {
+    throwIfAborted(signal);
+    await raceWithAbort(sender.sendHello(meta.itemId), signal);
+    throwIfAborted(signal);
+    await sendItemMetaWithAbort(meta, signal);
+    throwIfAborted(signal);
+    trackDataAcks = true;
+    await raceWithAbort(sender.sendItemData(abortableChunks(chunks, signal)), signal);
+    trackDataAcks = false;
+    throwIfAborted(signal);
+    await raceWithAbort(sender.sendItemDone(), signal);
+    onRendered();
+    log(`Sent ${meta.kind} item ${meta.itemId}; SHA-256 ${shortHash(meta.hash)}.`, 'ok');
+    setProgress(100, 'Send complete');
+    if (pendingSendRow) {
+      updateCardProgress(pendingSendRow, 100, 'Sent', 'complete');
+    }
+  } catch (error) {
+    if (transfer.yielded) {
+      outcome = 'yielded';
+    } else if (signal.aborted || error?.name === 'AbortError') {
+      outcome = 'cancelled';
+      setProgress(0, 'Cancelled');
+      if (pendingSendRow) {
+        updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
+      }
+    } else {
+      outcome = 'failed';
+      log(`Send failed: ${error.message}`, 'error');
+      setProgress(0, 'Send failed');
+    }
+  } finally {
+    unsubscribeAck();
+    transferPendingAckSeq = null;
+    if (activeTransfer === transfer) activeTransfer = null;
+    if (transferAbortController === transfer.controller) transferAbortController = null;
+    transferCancelSource = null;
+    if (!transfer.yielded) pendingSendRow = null;
+    setSending(false, null, outcome === 'yielded' ? 'half-duplex: receiving peer item' : outcome === 'cancelled' ? 'half-duplex: cancelled' : 'half-duplex: ready');
+    if (outcome === 'sent') {
+      setTimeout(() => { if (!isSending) setProgress(0, 'Idle'); }, 900);
+    }
+  }
+}
+
+function makeItemId() {
+  return Math.floor((Date.now() + Math.random() * 0xffff) % 0xffff_ffff);
+}
+
+function createMockBleTransport() {
+  const ble = createEndpoint('Mock BLE (PC-B)');
+  const usb = createEndpoint('Mock USB peer');
+  ble.link(usb);
+  usb.link(ble);
+  installMockPeer(usb);
+  return linkMockAcrossTabs(ble, 'ble');
+}
+
+function linkMockAcrossTabs(transport, role) {
+  if (!globalThis.BroadcastChannel) return transport;
+  const channel = new BroadcastChannel('pocket-airbridge-mock-bridge');
+  let remoteConnected = false;
+  const originalConnect = transport.connect.bind(transport);
+  const originalDisconnect = transport.disconnect.bind(transport);
+  const originalSend = transport.send.bind(transport);
+  const announce = type => channel.postMessage({ type, role });
+
+  channel.onmessage = event => {
+    const message = event.data;
+    if (!message || message.role === role) return;
+    if (message.type === 'connected') {
+      const wasRemoteConnected = remoteConnected;
+      remoteConnected = true;
+      if (!wasRemoteConnected) announce('connected');
+    } else if (message.type === 'disconnected') {
+      remoteConnected = false;
+    } else if (message.type === 'frame' && remoteConnected) {
+      transport.receiveCallback?.(new Uint8Array(message.frame));
+    }
+  };
+
+  transport.connect = async () => {
+    await originalConnect();
+    announce('connected');
+  };
+  transport.disconnect = async () => {
+    announce('disconnected');
+    channel.close();
+    await originalDisconnect();
+  };
+  transport.send = async frame => {
+    if (!remoteConnected) return originalSend(frame);
+    const copy = new Uint8Array(frame);
+    await sleep(8);
+    channel.postMessage({ type: 'frame', role, frame: copy });
+  };
+  return transport;
+}
+
+function createEndpoint(name) {
+  return {
+    name,
+    peer: null,
+    connected: false,
+    receiveCallback: null,
+    disconnectCallback: null,
+    link(peer) { this.peer = peer; },
+    async connect() { this.connected = true; this.peer.connected = true; },
+    async disconnect() { this.connected = false; if (this.peer) this.peer.connected = false; this.disconnectCallback?.(); },
+    async send(frame) {
+      if (!this.connected) throw new Error(`${this.name} is not connected`);
+      const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
+      await sleep(8);
+      this.peer?.receiveCallback?.(bytes.slice());
+    },
+    onReceive(callback) { this.receiveCallback = callback; return () => { if (this.receiveCallback === callback) this.receiveCallback = null; }; },
+    onDisconnect(callback) { this.disconnectCallback = callback; return () => { if (this.disconnectCallback === callback) this.disconnectCallback = null; }; },
+    isConnected() { return this.connected; },
+    getName() { return this.name; },
+  };
+}
+
+function installMockPeer(endpoint) {
+  const mockSender = new ItemSender(frame => endpoint.send(frame), { timeoutMs: 800, retries: 3 });
+  const mockReceiver = new ItemReceiver({ sendFn: frame => endpoint.send(frame) });
+  let replyQueued = false;
+
+  endpoint.onReceive(frame => mockReceiver.onMessage(frame));
+  mockReceiver.on('ack', detail => mockSender.receiveAck(detail.message));
+  mockReceiver.on('item', async ({ meta, data }) => {
+    if (replyQueued) return;
+    replyQueued = true;
+    await sleep(180);
+    const text = meta.kind === 'text'
+      ? `Mock peer received: ${decoder.decode(data)}`
+      : `Mock peer received attachment: ${meta.name} (${formatBytes(meta.size || data.length)})`;
+    await sendMockText(mockSender, text);
+    replyQueued = false;
+  });
+}
+
+async function sendMockText(mockSender, text) {
+  const data = encoder.encode(text);
+  const hash = await sha256(data);
+  const chunks = chunksFor(data);
+  const itemId = makeItemId();
+  const meta = { kind: 'text', itemId, name: `mock-${itemId}.txt`, mimeType: 'text/plain;charset=utf-8', size: data.length, chunks: chunks.length, hash: `sha256:${hash}` };
+    await mockSender.sendHello(itemId);
+  await mockSender.sendItemMeta(meta);
+  await mockSender.sendItemData(chunks);
+  await mockSender.sendItemDone();
+}
+
+async function sendCancelFrame() {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (!transport?.isConnected()) return;
+    try {
+      await transport.send(buildMessage(MSG.CANCEL, 0));
+      return;
+    } catch (error) {
+      if (attempt === 3) {
+        log(`Failed to send CANCEL: ${error.message}`, 'error');
+        return;
+      }
+      await sleep(200);
+    }
+  }
+}
+
+$('connectBtn').addEventListener('click', connect);
+$('disconnectBtn').addEventListener('click', disconnect);
+$('sendBtn').addEventListener('click', sendText);
+$('cancelBtn').addEventListener('click', async () => {
+  if (!isSending && (inboundMeta || inboundHelloItemId != null)) {
+    await sendCancelFrame();
+    receiver?.resetItem();
+    inboundMeta = null;
+    inboundHelloItemId = null;
+    inboundChunks = 0;
+    setProgress(0, 'Cancelled');
+    setSending(false, null, 'half-duplex: cancelled');
+    addSystemMessage('Transfer cancelled by user');
+    log('Receiving transfer cancelled by user', 'warn');
+    if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled', 'cancelled');
+    pendingReceiveRow = null;
+    scheduleYieldedRetry();
+    return;
+  }
+  if (!isSending || !transferAbortController || transferAbortController.signal.aborted) return;
+  transferCancelSource = 'user';
+  transferAbortController.abort();
+  await sendCancelFrame();
+  if (transferPendingAckSeq != null && sender) {
+    sender.receiveAck(createAckFrame(transferPendingAckSeq.type, transferPendingAckSeq.seq));
+  }
+  setProgress(0, 'Cancelled');
+  setSending(false, null, 'half-duplex: cancelled');
+  log('Transfer cancelled by user', 'warn');
+  if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
+  pendingSendRow = null;
+});
+$('messageInput').addEventListener('input', updateControls);
+$('messageInput').addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    if (!$('sendBtn').disabled) sendText();
+  }
+});
+$('fileInput').addEventListener('change', sendSelectedFile);
+
+setConnectionStatus('disconnected');
+if (mockMode) log('Mock mode enabled via ?mock=1; Web Bluetooth permission prompt will be bypassed.', 'ok');
+</script>
+</body>
+</html>

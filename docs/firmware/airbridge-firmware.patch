@@ -1,0 +1,509 @@
+diff --git a/applications/services/bt/bt_service/bt.c b/applications/services/bt/bt_service/bt.c
+index 7554d87e..d81088f0 100644
+--- a/applications/services/bt/bt_service/bt.c
++++ b/applications/services/bt/bt_service/bt.c
+@@ -17,6 +17,21 @@
+ 
+ #define ICON_SPACER 2
+ 
++/* Pocket AirBridge raw serial passthrough hook */
++static BtRawSerialCallback bt_raw_serial_cb = NULL;
++static void* bt_raw_serial_ctx = NULL;
++static Bt* bt_instance = NULL;
++
++void bt_set_raw_serial_callback(BtRawSerialCallback cb, void* ctx) {
++    bt_raw_serial_cb = cb;
++    bt_raw_serial_ctx = ctx;
++}
++
++bool bt_serial_tx(const uint8_t* data, uint16_t len) {
++    if(!bt_instance || !bt_instance->current_profile) return false;
++    return ble_profile_serial_tx(bt_instance->current_profile, (uint8_t*)data, len);
++}
++
+ static void bt_draw_statusbar_callback(Canvas* canvas, void* context) {
+     furi_assert(context);
+ 
+@@ -191,6 +206,10 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
+     uint16_t ret = 0;
+ 
+     if(event.event == SerialServiceEventTypeDataReceived) {
++        if(bt_raw_serial_cb) {
++            ret = bt_raw_serial_cb(event.data.buffer, event.data.size, bt_raw_serial_ctx);
++            return ret;
++        }
+         size_t bytes_processed =
+             rpc_session_feed(bt->rpc_session, event.data.buffer, event.data.size, 1000);
+         if(bytes_processed != event.data.size) {
+@@ -519,6 +538,7 @@ static void bt_init_keys_settings(Bt* bt) {
+ int32_t bt_srv(void* p) {
+     UNUSED(p);
+     Bt* bt = bt_alloc();
++    bt_instance = bt;
+ 
+     if(furi_hal_rtc_get_boot_mode() != FuriHalRtcBootModeNormal) {
+         FURI_LOG_W(TAG, "Skipping start in special boot mode");
+diff --git a/applications/services/bt/bt_service/bt.h b/applications/services/bt/bt_service/bt.h
+index 27092254..d271d292 100644
+--- a/applications/services/bt/bt_service/bt.h
++++ b/applications/services/bt/bt_service/bt.h
+@@ -5,6 +5,8 @@
+ #include <furi_ble/profile_interface.h>
+ #include <core/common_defines.h>
+ 
++typedef uint16_t (*BtRawSerialCallback)(const uint8_t* data, uint16_t len, void* context);
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -79,6 +81,21 @@ void bt_keys_storage_set_storage_path(Bt* bt, const char* keys_storage_path);
+  */
+ void bt_keys_storage_set_default_path(Bt* bt);
+ 
++/** Set raw serial callback for AirBridge passthrough
++ *
++ * @param cb    callback invoked on every BLE serial RX packet
++ * @param ctx   context passed to callback
++ */
++void bt_set_raw_serial_callback(BtRawSerialCallback cb, void* ctx);
++
++/** Send raw bytes over BLE Serial (AirBridge TX)
++ *
++ * @param data  bytes to send
++ * @param len   number of bytes
++ * @return      true on success
++ */
++bool bt_serial_tx(const uint8_t* data, uint16_t len);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/applications/services/bt/bt_service/bt_i.h b/applications/services/bt/bt_service/bt_i.h
+index 192da001..18806c01 100644
+--- a/applications/services/bt/bt_service/bt_i.h
++++ b/applications/services/bt/bt_service/bt_i.h
+@@ -64,6 +64,8 @@ typedef struct {
+     FuriHalBleProfileBase** profile_instance;
+ } BtMessage;
+ 
++/* BtRawSerialCallback, bt_set_raw_serial_callback, and bt_serial_tx are declared in bt.h */
++
+ struct Bt {
+     uint8_t* bt_keys_addr_start;
+     uint16_t bt_keys_size;
+diff --git a/targets/f7/ble_glue/gap.c b/targets/f7/ble_glue/gap.c
+index 38fc5e42..19bf4fdf 100644
+--- a/targets/f7/ble_glue/gap.c
++++ b/targets/f7/ble_glue/gap.c
+@@ -437,9 +437,8 @@ static void gap_advertise_start(GapState new_state) {
+     // Stop advertising timer
+     furi_timer_stop(gap->advertise_timer);
+ 
+-    if((new_state == GapStateAdvLowPower) &&
+-       ((gap->state == GapStateAdvFast) || (gap->state == GapStateAdvLowPower))) {
+-        // Stop advertising
++    if(gap->state > GapStateIdle) {
++        // Stop advertising before restarting (handles AdvFast→AdvFast refresh)
+         status = aci_gap_set_non_discoverable();
+         if(status) {
+             FURI_LOG_E(TAG, "set_non_discoverable failed %d", status);
+@@ -526,7 +525,8 @@ void gap_stop_advertising(void) {
+ 
+ static void gap_advetise_timer_callback(void* context) {
+     UNUSED(context);
+-    GapCommand command = GapCommandAdvLowPower;
++    // Keep fast advertising indefinitely instead of switching to low-power
++    GapCommand command = GapCommandAdvFast;
+     furi_check(furi_message_queue_put(gap->command_queue, &command, 0) == FuriStatusOk);
+ }
+ 
+diff --git a/targets/f7/furi_hal/furi_hal_usb_airbridge.c b/targets/f7/furi_hal/furi_hal_usb_airbridge.c
+new file mode 100644
+index 00000000..bae6b737
+--- /dev/null
++++ b/targets/f7/furi_hal/furi_hal_usb_airbridge.c
+@@ -0,0 +1,322 @@
++#include <furi_hal_version.h>
++#include <furi_hal_usb_i.h>
++#include <furi_hal_usb_airbridge.h>
++#include <furi_hal_usb.h>
++#include <furi.h>
++#include "usb.h"
++#include "usb_hid.h"
++
++#define HID_PAGE_VENDOR 0xFF00
++#define HID_VENDOR_USAGE 0x01
++#define HID_VENDOR_INPUT 0x20
++#define HID_VENDOR_OUTPUT 0x21
++
++#define HID_EP_IN  0x81
++#define HID_EP_OUT 0x01
++
++struct HidIadDescriptor {
++    struct usb_iad_descriptor hid_iad;
++    struct usb_interface_descriptor hid;
++    struct usb_hid_descriptor hid_desc;
++    struct usb_endpoint_descriptor hid_ep_in;
++    struct usb_endpoint_descriptor hid_ep_out;
++};
++
++struct HidConfigDescriptor {
++    struct usb_config_descriptor config;
++    struct HidIadDescriptor iad_0;
++} FURI_PACKED;
++
++/* HID report: Vendor-defined 64-byte bidirectional */
++static const uint8_t hid_vendor_report_desc[] = {
++    HID_RI_USAGE_PAGE(16, HID_PAGE_VENDOR),
++    HID_USAGE(HID_VENDOR_USAGE),
++    HID_COLLECTION(HID_APPLICATION_COLLECTION),
++    HID_USAGE(HID_VENDOR_INPUT),
++    HID_LOGICAL_MINIMUM(0x00),
++    HID_RI_LOGICAL_MAXIMUM(16, 0xFF),
++    HID_REPORT_SIZE(8),
++    HID_REPORT_COUNT(HID_VENDOR_PACKET_LEN),
++    HID_INPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
++    HID_USAGE(HID_VENDOR_OUTPUT),
++    HID_LOGICAL_MINIMUM(0x00),
++    HID_RI_LOGICAL_MAXIMUM(16, 0xFF),
++    HID_REPORT_SIZE(8),
++    HID_REPORT_COUNT(HID_VENDOR_PACKET_LEN),
++    HID_OUTPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
++    HID_END_COLLECTION,
++};
++
++static const struct usb_string_descriptor dev_manuf_desc = USB_STRING_DESC("Flipper Devices Inc.");
++static const struct usb_string_descriptor dev_prod_desc = USB_STRING_DESC("Pocket AirBridge");
++
++/* Device descriptor */
++static const struct usb_device_descriptor hid_vendor_device_desc = {
++    .bLength = sizeof(struct usb_device_descriptor),
++    .bDescriptorType = USB_DTYPE_DEVICE,
++    .bcdUSB = VERSION_BCD(2, 0, 0),
++    .bDeviceClass = USB_CLASS_IAD,
++    .bDeviceSubClass = USB_SUBCLASS_IAD,
++    .bDeviceProtocol = USB_PROTO_IAD,
++    .bMaxPacketSize0 = USB_EP0_SIZE,
++    .idVendor = 0x0483,
++    .idProduct = 0x5742,
++    .bcdDevice = VERSION_BCD(1, 0, 0),
++    .iManufacturer = UsbDevManuf,
++    .iProduct = UsbDevProduct,
++    .iSerialNumber = 0,
++    .bNumConfigurations = 1,
++};
++
++/* Device configuration descriptor */
++static const struct HidConfigDescriptor hid_vendor_cfg_desc = {
++    .config =
++        {
++            .bLength = sizeof(struct usb_config_descriptor),
++            .bDescriptorType = USB_DTYPE_CONFIGURATION,
++            .wTotalLength = sizeof(struct HidConfigDescriptor),
++            .bNumInterfaces = 1,
++            .bConfigurationValue = 1,
++            .iConfiguration = NO_DESCRIPTOR,
++            .bmAttributes = USB_CFG_ATTR_RESERVED | USB_CFG_ATTR_SELFPOWERED,
++            .bMaxPower = USB_CFG_POWER_MA(500),
++        },
++    .iad_0 =
++        {
++            .hid_iad =
++                {
++                    .bLength = sizeof(struct usb_iad_descriptor),
++                    .bDescriptorType = USB_DTYPE_INTERFASEASSOC,
++                    .bFirstInterface = 0,
++                    .bInterfaceCount = 1,
++                    .bFunctionClass = USB_CLASS_PER_INTERFACE,
++                    .bFunctionSubClass = USB_SUBCLASS_NONE,
++                    .bFunctionProtocol = USB_PROTO_NONE,
++                    .iFunction = NO_DESCRIPTOR,
++                },
++            .hid =
++                {
++                    .bLength = sizeof(struct usb_interface_descriptor),
++                    .bDescriptorType = USB_DTYPE_INTERFACE,
++                    .bInterfaceNumber = 0,
++                    .bAlternateSetting = 0,
++                    .bNumEndpoints = 2,
++                    .bInterfaceClass = USB_CLASS_HID,
++                    .bInterfaceSubClass = USB_HID_SUBCLASS_NONBOOT,
++                    .bInterfaceProtocol = USB_HID_PROTO_NONBOOT,
++                    .iInterface = NO_DESCRIPTOR,
++                },
++            .hid_desc =
++                {
++                    .bLength = sizeof(struct usb_hid_descriptor),
++                    .bDescriptorType = USB_DTYPE_HID,
++                    .bcdHID = VERSION_BCD(1, 0, 0),
++                    .bCountryCode = USB_HID_COUNTRY_NONE,
++                    .bNumDescriptors = 1,
++                    .bDescriptorType0 = USB_DTYPE_HID_REPORT,
++                    .wDescriptorLength0 = sizeof(hid_vendor_report_desc),
++                },
++            .hid_ep_in =
++                {
++                    .bLength = sizeof(struct usb_endpoint_descriptor),
++                    .bDescriptorType = USB_DTYPE_ENDPOINT,
++                    .bEndpointAddress = HID_EP_IN,
++                    .bmAttributes = USB_EPTYPE_INTERRUPT,
++                    .wMaxPacketSize = HID_VENDOR_PACKET_LEN,
++                    .bInterval = 5,
++                },
++            .hid_ep_out =
++                {
++                    .bLength = sizeof(struct usb_endpoint_descriptor),
++                    .bDescriptorType = USB_DTYPE_ENDPOINT,
++                    .bEndpointAddress = HID_EP_OUT,
++                    .bmAttributes = USB_EPTYPE_INTERRUPT,
++                    .wMaxPacketSize = HID_VENDOR_PACKET_LEN,
++                    .bInterval = 5,
++                },
++        },
++};
++
++static void hid_vendor_init(usbd_device* dev, FuriHalUsbInterface* intf, void* ctx);
++static void hid_vendor_deinit(usbd_device* dev);
++static void hid_vendor_on_wakeup(usbd_device* dev);
++static void hid_vendor_on_suspend(usbd_device* dev);
++
++static usbd_respond hid_vendor_ep_config(usbd_device* dev, uint8_t cfg);
++static usbd_respond
++    hid_vendor_control(usbd_device* dev, usbd_ctlreq* req, usbd_rqc_callback* callback);
++static usbd_device* usb_dev;
++static FuriSemaphore* hid_vendor_semaphore = NULL;
++static bool hid_vendor_connected = false;
++
++static HidVendorCallback callback;
++static void* cb_ctx;
++
++bool furi_hal_hid_vendor_is_connected(void) {
++    return hid_vendor_connected;
++}
++
++void furi_hal_hid_vendor_set_callback(HidVendorCallback cb, void* ctx) {
++    if(callback != NULL) {
++        if(hid_vendor_connected == true) {
++            callback(HidVendorDisconnected, cb_ctx);
++        }
++    }
++
++    callback = cb;
++    cb_ctx = ctx;
++
++    if(callback != NULL) {
++        if(hid_vendor_connected == true) {
++            callback(HidVendorConnected, cb_ctx);
++        }
++    }
++}
++
++FuriHalUsbInterface usb_airbridge = {
++    .init = hid_vendor_init,
++    .deinit = hid_vendor_deinit,
++    .wakeup = hid_vendor_on_wakeup,
++    .suspend = hid_vendor_on_suspend,
++
++    .dev_descr = (struct usb_device_descriptor*)&hid_vendor_device_desc,
++
++    .str_manuf_descr = (void*)&dev_manuf_desc,
++    .str_prod_descr = (void*)&dev_prod_desc,
++    .str_serial_descr = NULL,
++
++    .cfg_descr = (void*)&hid_vendor_cfg_desc,
++};
++
++static void hid_vendor_init(usbd_device* dev, FuriHalUsbInterface* intf, void* ctx) {
++    UNUSED(intf);
++    UNUSED(ctx);
++    if(hid_vendor_semaphore == NULL) {
++        hid_vendor_semaphore = furi_semaphore_alloc(1, 1);
++    }
++    usb_dev = dev;
++
++    usbd_reg_config(dev, hid_vendor_ep_config);
++    usbd_reg_control(dev, hid_vendor_control);
++
++    usbd_connect(dev, true);
++}
++
++static void hid_vendor_deinit(usbd_device* dev) {
++    usbd_reg_config(dev, NULL);
++    usbd_reg_control(dev, NULL);
++}
++
++static void hid_vendor_on_wakeup(usbd_device* dev) {
++    UNUSED(dev);
++    hid_vendor_connected = true;
++    if(callback != NULL) {
++        callback(HidVendorConnected, cb_ctx);
++    }
++}
++
++static void hid_vendor_on_suspend(usbd_device* dev) {
++    UNUSED(dev);
++    if(hid_vendor_connected) {
++        hid_vendor_connected = false;
++        furi_semaphore_release(hid_vendor_semaphore);
++        if(callback != NULL) {
++            callback(HidVendorDisconnected, cb_ctx);
++        }
++    }
++}
++
++void furi_hal_hid_vendor_send_response(uint8_t* data, uint8_t len) {
++    if(hid_vendor_semaphore == NULL) return;
++    if(furi_semaphore_acquire(hid_vendor_semaphore, 0) != FuriStatusOk) return;
++    if(hid_vendor_connected == true) {
++        usbd_ep_write(usb_dev, HID_EP_IN, data, len);
++    }
++    furi_semaphore_release(hid_vendor_semaphore);
++}
++
++uint32_t furi_hal_hid_vendor_get_request(uint8_t* data) {
++    int32_t len = usbd_ep_read(usb_dev, HID_EP_OUT, data, HID_VENDOR_PACKET_LEN);
++    return (len < 0) ? 0 : len;
++}
++
++static void hid_vendor_rx_ep_callback(usbd_device* dev, uint8_t event, uint8_t ep) {
++    UNUSED(dev);
++    UNUSED(event);
++    UNUSED(ep);
++    if(callback != NULL) {
++        callback(HidVendorRequest, cb_ctx);
++    }
++}
++
++static void hid_vendor_tx_ep_callback(usbd_device* dev, uint8_t event, uint8_t ep) {
++    UNUSED(dev);
++    UNUSED(event);
++    UNUSED(ep);
++    furi_semaphore_release(hid_vendor_semaphore);
++}
++
++static void hid_vendor_txrx_ep_callback(usbd_device* dev, uint8_t event, uint8_t ep) {
++    if(event == usbd_evt_eptx) {
++        hid_vendor_tx_ep_callback(dev, event, ep);
++    } else {
++        hid_vendor_rx_ep_callback(dev, event, ep);
++    }
++}
++
++/* Configure endpoints */
++static usbd_respond hid_vendor_ep_config(usbd_device* dev, uint8_t cfg) {
++    switch(cfg) {
++    case 0:
++        /* deconfiguring device */
++        usbd_ep_deconfig(dev, HID_EP_OUT);
++        usbd_ep_deconfig(dev, HID_EP_IN);
++        usbd_reg_endpoint(dev, HID_EP_OUT, 0);
++        usbd_reg_endpoint(dev, HID_EP_IN, 0);
++        return usbd_ack;
++    case 1:
++        /* configuring device */
++        usbd_ep_config(dev, HID_EP_IN, USB_EPTYPE_INTERRUPT, HID_VENDOR_PACKET_LEN);
++        usbd_ep_config(dev, HID_EP_OUT, USB_EPTYPE_INTERRUPT, HID_VENDOR_PACKET_LEN);
++        usbd_reg_endpoint(dev, HID_EP_IN, hid_vendor_txrx_ep_callback);
++        usbd_reg_endpoint(dev, HID_EP_OUT, hid_vendor_txrx_ep_callback);
++        usbd_ep_write(dev, HID_VENDOR_PACKET_LEN, 0, 0);
++        return usbd_ack;
++    default:
++        return usbd_fail;
++    }
++}
++
++/* Control requests handler */
++static usbd_respond
++    hid_vendor_control(usbd_device* dev, usbd_ctlreq* req, usbd_rqc_callback* callback) {
++    UNUSED(callback);
++    /* HID control requests */
++    if(((USB_REQ_RECIPIENT | USB_REQ_TYPE) & req->bmRequestType) ==
++           (USB_REQ_INTERFACE | USB_REQ_CLASS) &&
++       req->wIndex == 0) {
++        switch(req->bRequest) {
++        case USB_HID_SETIDLE:
++            return usbd_ack;
++        default:
++            return usbd_fail;
++        }
++    }
++    if(((USB_REQ_RECIPIENT | USB_REQ_TYPE) & req->bmRequestType) ==
++           (USB_REQ_INTERFACE | USB_REQ_STANDARD) &&
++       req->wIndex == 0 && req->bRequest == USB_STD_GET_DESCRIPTOR) {
++        switch(req->wValue >> 8) {
++        case USB_DTYPE_HID:
++            dev->status.data_ptr = (uint8_t*)&(hid_vendor_cfg_desc.iad_0.hid_desc);
++            dev->status.data_count = sizeof(hid_vendor_cfg_desc.iad_0.hid_desc);
++            return usbd_ack;
++        case USB_DTYPE_HID_REPORT:
++            dev->status.data_ptr = (uint8_t*)hid_vendor_report_desc;
++            dev->status.data_count = sizeof(hid_vendor_report_desc);
++            return usbd_ack;
++        default:
++            return usbd_fail;
++        }
++    }
++    return usbd_fail;
++}
+diff --git a/targets/furi_hal_include/furi_hal_usb.h b/targets/furi_hal_include/furi_hal_usb.h
+index 213e8d56..77fd13a7 100644
+--- a/targets/furi_hal_include/furi_hal_usb.h
++++ b/targets/furi_hal_include/furi_hal_usb.h
+@@ -29,6 +29,7 @@ extern FuriHalUsbInterface usb_cdc_dual;
+ extern FuriHalUsbInterface usb_hid;
+ extern FuriHalUsbInterface usb_hid_u2f;
+ extern FuriHalUsbInterface usb_ccid;
++extern FuriHalUsbInterface usb_airbridge;
+ 
+ typedef enum {
+     FuriHalUsbStateEventReset,
+diff --git a/targets/furi_hal_include/furi_hal_usb_airbridge.h b/targets/furi_hal_include/furi_hal_usb_airbridge.h
+new file mode 100644
+index 00000000..899a7cf6
+--- /dev/null
++++ b/targets/furi_hal_include/furi_hal_usb_airbridge.h
+@@ -0,0 +1,44 @@
++#pragma once
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define HID_VENDOR_PACKET_LEN 64
++
++typedef enum {
++    HidVendorDisconnected,
++    HidVendorConnected,
++    HidVendorRequest,
++} HidVendorEvent;
++
++typedef void (*HidVendorCallback)(HidVendorEvent ev, void* context);
++
++/** Get HID Vendor connection state
++ *
++ * @return      true / false
++ */
++bool furi_hal_hid_vendor_is_connected(void);
++
++/** Set HID Vendor event callback
++ *
++ * @param      cb  callback
++ * @param      ctx  callback context
++ */
++void furi_hal_hid_vendor_set_callback(HidVendorCallback cb, void* ctx);
++
++/** Get received Vendor HID packet
++ *
++ */
++uint32_t furi_hal_hid_vendor_get_request(uint8_t* data);
++
++/** Send Vendor HID response packet
++ *
++ * @param      data  response data
++ * @param      len  packet length
++ */
++void furi_hal_hid_vendor_send_response(uint8_t* data, uint8_t len);
++
++#ifdef __cplusplus
++}
++#endif
