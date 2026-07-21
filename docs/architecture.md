@@ -74,7 +74,7 @@ The same flow runs in reverse: PC-B originates **HELLO**, **ITEM_META**, **ITEM_
 
 | Decision | Rationale |
 |----------|-----------|
-| **Vendor HID (not keyboard)** | Avoids BadUSB classification and keystroke injection risks. Explicit, consent-based communication. |
+| **Vendor HID (not keyboard)** | For the Bridge data path, vendor HID avoids exposing a keyboard interface to the host. The Deploy flow intentionally uses keyboard emulation and is BadUSB-shaped by design; see the "Honest framing" section in README.md. |
 | **BLE GATT notifications** | Standard Web Bluetooth API support in Chromium browsers. Low power, suitable for small data. |
 | **Small chunks (~60 bytes payload)** | Fits within a single 64-byte HID report, avoiding report-fragmentation complexity for the MVP. |
 | **ACK-per-chunk backpressure** | Ensures Flipper Zero never buffers more than a couple of frames. Simple, reliable for demo. |

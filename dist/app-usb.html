@@ -1,0 +1,1921 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>Pocket AirBridge — USB Chat</title>
+<style>
+  :root { --bg: #0f0f23; --fg: #e0e0ff; --accent: #00f0ff; --error: #ff3366; --ok: #00ffaa; --muted: #9aa0c3; --panel: rgba(255,255,255,0.045); --line: rgba(0,240,255,0.22); }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); max-width: 880px; margin: 32px auto; padding: 20px; }
+  h1, h2 { color: var(--accent); margin-top: 0; }
+  h1 { margin-bottom: 8px; }
+  h2 { font-size: 1rem; }
+  p { color: var(--muted); }
+  button, input[type="file"], input[type="text"] { font: inherit; border-radius: 10px; }
+  button { padding: 10px 16px; border: 1px solid var(--accent); background: transparent; color: var(--fg); cursor: pointer; }
+  button:hover:not(:disabled) { background: rgba(0,240,255,0.1); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; border-color: #555; }
+  input[type="text"] { min-width: 0; width: 100%; padding: 12px 14px; border: 1px solid rgba(224,224,255,0.22); background: rgba(255,255,255,0.06); color: var(--fg); }
+  input[type="file"] { width: 100%; padding: 10px; border: 1px dashed var(--line); color: var(--fg); background: rgba(255,255,255,0.03); }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+  .card { background: var(--panel); border: 1px solid rgba(224,224,255,0.1); border-radius: 14px; padding: 16px; box-shadow: 0 12px 36px rgba(0,0,0,0.18); }
+  .connection-row, .composer, .attachment-row { display: flex; gap: 10px; align-items: center; }
+  .connection-row { flex-wrap: wrap; }
+  .status-pill { display: inline-flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 999px; border: 1px solid rgba(224,224,255,0.12); color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 16px currentColor; }
+  .status-connecting .dot { background: var(--accent); color: var(--accent); }
+  .status-connected .dot { background: var(--ok); color: var(--ok); }
+  .status-error .dot { background: var(--error); color: var(--error); }
+  #deviceName, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #transcript { height: 460px; overflow-y: auto; padding: 10px; border-radius: 12px; background: rgba(0,0,0,0.18); border: 1px solid rgba(224,224,255,0.08); }
+  .empty { color: var(--muted); text-align: center; margin: 170px 0 0; }
+  .message { display: flex; margin: 10px 0; }
+  .message.you { justify-content: flex-end; }
+  .bubble { max-width: min(72%, 560px); padding: 10px 12px; border-radius: 14px; background: rgba(255,255,255,0.075); border: 1px solid rgba(224,224,255,0.1); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .you .bubble { background: rgba(0,240,255,0.12); border-color: rgba(0,240,255,0.28); }
+  .peer .bubble { background: rgba(255,255,255,0.07); }
+  .meta-line { display: flex; gap: 8px; justify-content: space-between; color: var(--muted); font-size: 0.78rem; margin-bottom: 6px; }
+  .sender { color: var(--fg); font-weight: 700; }
+  .system { justify-content: center; }
+  .system .bubble { background: rgba(255,255,255,0.04); border-style: dashed; color: var(--muted); }
+  .system .meta-line { justify-content: center; }
+  .attachment-card { display: grid; gap: 7px; min-width: 230px; }
+  .attachment-name { font-weight: 700; color: var(--fg); overflow-wrap: anywhere; }
+  .hash-ok { color: var(--ok); }
+  .hash-error { color: var(--error); }
+  .download-link { color: var(--accent); text-decoration: none; }
+  .download-link:hover { text-decoration: underline; }
+  .progress-container { margin-top: 6px; }
+  .progress-bar-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.1); overflow: hidden; }
+  .progress-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #a0f); transition: width 0.15s ease; }
+  .progress-bar-fill.complete { background: var(--ok); }
+  .progress-bar-fill.cancelled { background: var(--error); }
+  .progress-label { font-size: 0.72rem; color: var(--muted); margin-top: 3px; }
+  #progressWrap { height: 18px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,0.07); margin-top: 10px; }
+  #progressBar { width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent), #a0f); transition: width 0.18s ease; }
+  #progressLabel { margin-top: 8px; color: var(--muted); font-size: 0.9rem; }
+  .transfer-actions { display: flex; gap: 10px; margin-top: 12px; }
+  .transfer-actions button { flex: 1; }
+  #log { height: 180px; overflow-y: auto; margin: 0; padding: 10px; border-radius: 10px; background: rgba(0,0,0,0.2); color: var(--muted); font-size: 0.82rem; white-space: pre-wrap; }
+  .ok { color: var(--ok); }
+  .warn { color: #ffdf91; }
+  .error { color: var(--error); }
+  .mock-banner { display: none; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #ffdf91; border-radius: 10px; color: #ffdf91; background: rgba(255,223,145,0.1); }
+  body.mock .mock-banner { display: block; }
+  .hint { font-size: 0.86rem; color: var(--muted); margin: 8px 0 0; }
+  @media (max-width: 760px) { body { margin: 12px auto; padding: 12px; } .grid { grid-template-columns: 1fr; } #transcript { height: 390px; } .composer, .attachment-row { flex-direction: column; align-items: stretch; } .bubble { max-width: 88%; } }
+</style>
+</head>
+<body>
+<h1>Pocket AirBridge — USB Chat</h1>
+<p>PC-A chat endpoint over WebHID. Send text or attachments through the Flipper bridge.</p>
+<div class="mock-banner">Mock mode is active from <span class="mono">?mock=1</span>; WebHID permission is bypassed and a paired mock BLE endpoint replies in-page.</div>
+
+<section class="card" aria-labelledby="connectionTitle">
+  <h2 id="connectionTitle">Connection</h2>
+  <div class="connection-row">
+    <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span id="connectionStatus">Disconnected</span></span>
+    <button id="connectBtn" type="button">Connect to Flipper (USB)</button>
+    <button id="disconnectBtn" type="button" disabled>Disconnect</button>
+    <span id="deviceName" class="mono">No device</span>
+  </div>
+</section>
+
+<main class="grid" style="margin-top:16px;">
+  <section class="card" aria-labelledby="chatTitle">
+    <h2 id="chatTitle">Chat Transcript</h2>
+    <div id="transcript" aria-live="polite"><div class="empty">Connect, then send a message or attachment.</div></div>
+    <form id="textForm" class="composer" style="margin-top:12px;">
+      <input id="textInput" type="text" placeholder="Type a message…" autocomplete="off" disabled>
+      <button id="sendTextBtn" type="submit" disabled>Send</button>
+    </form>
+    <div class="attachment-row" style="margin-top:10px;">
+      <input id="fileInput" type="file" disabled>
+      <button id="sendFileBtn" type="button" disabled>Send Attachment</button>
+    </div>
+    <p class="hint">Attachments are chunked automatically during transfer.</p>
+  </section>
+
+  <aside class="card" aria-labelledby="transferTitle">
+    <h2 id="transferTitle">Transfer State</h2>
+    <div id="halfDuplexState" class="mono">idle</div>
+    <div id="progressWrap"><div id="progressBar"></div></div>
+    <div id="progressLabel">No active transfer.</div>
+    <div class="transfer-actions">
+      <button id="cancelBtn" type="button" hidden>Cancel Transfer</button>
+    </div>
+    <h2 style="margin-top:18px;">Status Log</h2>
+    <pre id="log">Waiting…</pre>
+  </aside>
+</main>
+
+<script>
+const { buildMessage, encodeMeta, ItemReceiver, ItemSender, MAX_PAYLOAD, MSG, parseMessage, sha256 } = (() => {
+const MSG = Object.freeze({
+  HELLO: 0x01,
+  ITEM_META: 0x02,
+  ITEM_DATA: 0x03,
+  ACK: 0x04,
+  NACK: 0x05,
+  ITEM_DONE: 0x06,
+  ERROR: 0x07,
+  BUSY: 0x08,
+  CANCEL: 0x09,
+});
+
+const MAX_PAYLOAD = 59;
+
+const HEADER_LEN = 5;
+const META_PREFIX_LEN = 2;
+const META_SLICE_LEN = MAX_PAYLOAD - META_PREFIX_LEN;
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function requireUint16(value, name) {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
+    throw new RangeError(`${name} must be an integer from 0 to 65535`);
+  }
+}
+
+function requireUint32(value, name) {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+    throw new RangeError(`${name} must be an integer from 0 to 4294967295`);
+  }
+}
+
+function normalizePayload(payload) {
+  if (payload == null) return new Uint8Array(0);
+  if (payload instanceof Uint8Array) return payload;
+  if (ArrayBuffer.isView(payload)) {
+    return new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
+  }
+  if (payload instanceof ArrayBuffer) return new Uint8Array(payload);
+  throw new TypeError('payload must be a Uint8Array, ArrayBuffer, or typed array');
+}
+
+function makeAckPayload(ackedType, ackedSeq) {
+  requireUint16(ackedSeq, 'ACK sequence');
+  if (!Number.isInteger(ackedType) || ackedType < 0 || ackedType > 0xff) {
+    throw new RangeError('ACK type must be an integer from 0 to 255');
+  }
+  return new Uint8Array([ackedType, (ackedSeq >> 8) & 0xff, ackedSeq & 0xff]);
+}
+
+function readAckSeq(msgOrSeq) {
+  if (msgOrSeq instanceof Uint8Array || msgOrSeq instanceof ArrayBuffer || ArrayBuffer.isView(msgOrSeq)) {
+    return readAckSeq(parseMessage(msgOrSeq));
+  }
+  if (!msgOrSeq || msgOrSeq.type !== MSG.ACK || msgOrSeq.payload.length !== 3) return null;
+  return {
+    type: msgOrSeq.payload[0],
+    seq: (msgOrSeq.payload[1] << 8) | msgOrSeq.payload[2],
+  };
+}
+
+function assertSendFn(sendFn) {
+  if (typeof sendFn !== 'function') throw new TypeError('sendFn must be a function');
+}
+
+function createTimeout(ms) {
+  let timerId;
+  const promise = new Promise((_, reject) => {
+    timerId = setTimeout(() => reject(new Error('ACK timeout')), ms);
+  });
+  return { promise, clear: () => clearTimeout(timerId) };
+}
+
+async function waitForAttempt(sendFn, expectedType, expectedSeq, timeoutMs, attempt) {
+  let settleAck;
+  const ackPromise = new Promise(resolve => { settleAck = resolve; });
+  const result = sendFn(attempt, settleAck);
+  if (sendFn.length >= 2 && result && typeof result.then === 'function') await result;
+  const waiter = sendFn.length < 2 && result && typeof result.then === 'function' ? result : ackPromise;
+  const timeout = createTimeout(timeoutMs);
+
+  try {
+    const response = await Promise.race([waiter, timeout.promise]);
+    const ack = readAckSeq(response);
+    if (!ack || ack.type !== expectedType || ack.seq !== expectedSeq) {
+      const actual = ack ? `type ${ack.type}, seq ${ack.seq}` : 'invalid ACK';
+      throw new Error(`ACK mismatch: got ${actual}, expected type ${expectedType}, seq ${expectedSeq}`);
+    }
+  } finally {
+    timeout.clear();
+  }
+}
+
+function concatChunks(chunks) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+function normalizeHash(hash) {
+  return typeof hash === 'string' && hash.startsWith('sha256:') ? hash.slice(7) : hash;
+}
+
+/**
+ * Build a protocol message with a 5-byte header: type(1), seq(2 BE), len(2 BE).
+ * @param {number} type Message type from MSG.
+ * @param {number} seq Sequence number from 0 to 65535.
+ * @param {Uint8Array|ArrayBuffer|ArrayBufferView} [payload] Message payload, max 59 bytes.
+ * @returns {Uint8Array} Unpadded protocol frame of length 5 + payload.length.
+ */
+function buildMessage(type, seq, payload = new Uint8Array(0)) {
+  requireUint16(seq, 'seq');
+  const body = normalizePayload(payload);
+  if (body.length > MAX_PAYLOAD) {
+    throw new RangeError(`payload must be ${MAX_PAYLOAD} bytes or less`);
+  }
+
+  const buf = new Uint8Array(HEADER_LEN + body.length);
+  buf[0] = type & 0xff;
+  buf[1] = (seq >> 8) & 0xff;
+  buf[2] = seq & 0xff;
+  buf[3] = (body.length >> 8) & 0xff;
+  buf[4] = body.length & 0xff;
+  buf.set(body, HEADER_LEN);
+  return buf;
+}
+
+/**
+ * Parse an unpadded or 64-byte padded protocol frame.
+ * @param {Uint8Array|ArrayBuffer|ArrayBufferView} data Raw frame bytes.
+ * @returns {{type:number, seq:number, len:number, payload:Uint8Array}|null} Parsed message, or null for malformed input.
+ */
+function parseMessage(data) {
+  let bytes;
+  try {
+    bytes = normalizePayload(data);
+  } catch (_) {
+    return null;
+  }
+  if (bytes.length < HEADER_LEN) return null;
+
+  const len = (bytes[3] << 8) | bytes[4];
+  if (len > MAX_PAYLOAD || bytes.length < HEADER_LEN + len) return null;
+
+  return {
+    type: bytes[0],
+    seq: (bytes[1] << 8) | bytes[2],
+    len,
+    payload: bytes.slice(HEADER_LEN, HEADER_LEN + len),
+  };
+}
+
+/**
+ * Compute a SHA-256 digest as lowercase hex using the browser Web Crypto API.
+ * @param {Uint8Array|ArrayBuffer|ArrayBufferView} buffer Data to hash.
+ * @returns {Promise<string>} SHA-256 hex string.
+ */
+async function sha256(buffer) {
+  const bytes = normalizePayload(buffer);
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Encode a metadata object into META payload fragments. Each payload begins with
+ * the 2-byte big-endian total fragment count followed by a JSON slice.
+ * @param {object} metaObj JSON-serializable metadata.
+ * @returns {Uint8Array[]} META payload fragments, each no larger than 59 bytes.
+ */
+function encodeMeta(metaObj) {
+  const json = textEncoder.encode(JSON.stringify(metaObj));
+  const total = Math.max(1, Math.ceil(json.length / META_SLICE_LEN));
+  requireUint16(total, 'META fragment count');
+
+  const fragments = [];
+  for (let i = 0; i < total; i++) {
+    const chunk = json.slice(i * META_SLICE_LEN, (i + 1) * META_SLICE_LEN);
+    const payload = new Uint8Array(META_PREFIX_LEN + chunk.length);
+    payload[0] = (total >> 8) & 0xff;
+    payload[1] = total & 0xff;
+    payload.set(chunk, META_PREFIX_LEN);
+    fragments.push(payload);
+  }
+  return fragments;
+}
+
+/**
+ * Decode META payload fragments into the original metadata object.
+ * @param {Uint8Array[]} fragments META payload fragments in sequence order.
+ * @returns {object} Parsed metadata object.
+ */
+function decodeMeta(fragments) {
+  if (!Array.isArray(fragments) || fragments.length === 0) {
+    throw new Error('META fragments are required');
+  }
+
+  const payloads = fragments.map(normalizePayload);
+  const total = (payloads[0][0] << 8) | payloads[0][1];
+  if (total <= 0 || payloads.length !== total) {
+    throw new Error(`META fragment count mismatch: got ${payloads.length}, expected ${total}`);
+  }
+
+  for (const payload of payloads) {
+    const fragmentTotal = (payload[0] << 8) | payload[1];
+    if (payload.length < META_PREFIX_LEN || fragmentTotal !== total) {
+      throw new Error('Invalid META fragment');
+    }
+  }
+
+  const jsonBytes = concatChunks(payloads.map(payload => payload.slice(META_PREFIX_LEN)));
+  return JSON.parse(textDecoder.decode(jsonBytes));
+}
+
+/**
+ * Send or resend one frame until an ACK for expectedSeq arrives.
+ * sendFn is called as sendFn(attempt, resolveAck). It may either return a
+ * Promise resolving to an ACK message/sequence, or call resolveAck later.
+ * @param {Function} sendFn Transport-neutral send callback.
+ * @param {number} expectedType Message type expected inside the ACK payload.
+ * @param {number} expectedSeq Sequence number expected inside the ACK payload.
+ * @param {number} [timeoutMs=5000] Per-attempt timeout in milliseconds.
+ * @param {number} [retries=3] Total send attempts before rejection.
+ * @returns {Promise<void>} Resolves after the expected ACK arrives.
+ */
+async function waitAck(sendFn, expectedType, expectedSeq, timeoutMs = 5000, retries = 3) {
+  assertSendFn(sendFn);
+  if (!Number.isInteger(expectedType) || expectedType < 0 || expectedType > 0xff) {
+    throw new RangeError('expected ACK type must be an integer from 0 to 255');
+  }
+  requireUint16(expectedSeq, 'expectedSeq');
+  if (!Number.isInteger(retries) || retries < 1) throw new RangeError('retries must be at least 1');
+
+  let lastError;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await waitForAttempt(sendFn, expectedType, expectedSeq, timeoutMs, attempt);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) await sleep(200);
+    }
+  }
+  throw lastError;
+}
+
+class ItemSender {
+  /**
+   * @param {Function} sendFn Async callback that writes a Uint8Array frame.
+   * @param {{timeoutMs?:number, retries?:number}} [options] ACK/retry options.
+   */
+  constructor(sendFn, options = {}) {
+    assertSendFn(sendFn);
+    this.sendFn = sendFn;
+    this.timeoutMs = options.timeoutMs ?? 5000;
+    this.retries = options.retries ?? 3;
+    this.ackCallbacks = new Set();
+    this.pendingAcks = new Map();
+    this.pendingErrors = new Set();
+  }
+
+  /**
+   * Register a callback fired for every accepted ACK.
+   * @param {Function} callback Called with the acknowledged sequence, ACK message, and acknowledged type.
+   * @returns {Function} Unsubscribe callback.
+   */
+  onAck(callback) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    this.ackCallbacks.add(callback);
+    return () => this.ackCallbacks.delete(callback);
+  }
+
+  /**
+   * Feed an inbound ACK message to the sender's retry machinery.
+   * @param {{type:number,payload:Uint8Array}|Uint8Array|ArrayBuffer|ArrayBufferView} msgOrSeq ACK message or frame.
+   * @returns {boolean} True when the ACK was accepted.
+   */
+  receiveAck(msgOrSeq) {
+    const ack = readAckSeq(msgOrSeq);
+    if (!ack) return false;
+
+    const key = this.ackKey(ack.type, ack.seq);
+    const waiters = this.pendingAcks.get(key);
+    if (!waiters) return false;
+    this.pendingAcks.delete(key);
+    for (const callback of this.ackCallbacks) callback(ack.seq, msgOrSeq, ack.type);
+    for (const waiter of waiters) waiter.resolve(msgOrSeq);
+    return true;
+  }
+
+  /**
+   * Reject every in-flight send after a peer reports a protocol error.
+   * @param {{type?:number,payload?:Uint8Array}|Uint8Array|ArrayBuffer|ArrayBufferView|string|Error} msgOrError ERROR message, frame, or decoded reason.
+   * @returns {boolean} True when an in-flight send was rejected.
+   */
+  receiveError(msgOrError) {
+    let message;
+    if (typeof msgOrError === 'string') {
+      message = msgOrError;
+    } else if (msgOrError instanceof Error) {
+      message = msgOrError.message;
+    } else {
+      const parsed = msgOrError && typeof msgOrError.type === 'number' ? msgOrError : parseMessage(msgOrError);
+      if (!parsed || parsed.type !== MSG.ERROR) return false;
+      message = textDecoder.decode(parsed.payload);
+    }
+
+    if (this.pendingErrors.size === 0) return false;
+    const error = new Error(message || 'Peer reported a protocol error');
+    error.name = 'PeerProtocolError';
+    for (const waiter of [...this.pendingErrors]) waiter.reject(error);
+    return true;
+  }
+
+  /**
+   * Send HELLO with the outbound item ID and wait for its ACK.
+   * @param {number} itemId Unsigned 32-bit item identifier.
+   * @returns {Promise<void>}
+   */
+  async sendHello(itemId) {
+    requireUint32(itemId, 'itemId');
+    const payload = new Uint8Array(4);
+    payload[0] = (itemId >>> 24) & 0xff;
+    payload[1] = (itemId >>> 16) & 0xff;
+    payload[2] = (itemId >>> 8) & 0xff;
+    payload[3] = itemId & 0xff;
+    await this.sendWithAck(buildMessage(MSG.HELLO, 0, payload), 0);
+  }
+
+  /**
+   * Send fragmented item metadata and wait for ACK after each fragment.
+   * @param {object} meta Metadata object to JSON-encode.
+   * @returns {Promise<void>}
+   */
+  async sendItemMeta(meta) {
+    const fragments = encodeMeta(meta);
+    for (let seq = 0; seq < fragments.length; seq++) {
+      await this.sendWithAck(buildMessage(MSG.ITEM_META, seq, fragments[seq]), seq);
+    }
+  }
+
+  /**
+   * Send item data chunks and wait for ACK after each chunk.
+   * @param {Iterable<Uint8Array|ArrayBuffer|ArrayBufferView>} chunks Payload chunks, each <= 59 bytes.
+   * @returns {Promise<void>}
+   */
+  async sendItemData(chunks) {
+    let seq = 0;
+    for (const chunk of chunks) {
+      await this.sendWithAck(buildMessage(MSG.ITEM_DATA, seq, normalizePayload(chunk)), seq);
+      seq++;
+    }
+  }
+
+  /**
+   * Send ITEM_DONE and wait for ACK sequence 0.
+   * @returns {Promise<void>}
+   */
+  async sendItemDone() {
+    await this.sendWithAck(buildMessage(MSG.ITEM_DONE, 0), 0);
+  }
+
+  async sendWithAck(frame, expectedSeq) {
+    const message = parseMessage(frame);
+    if (!message) throw new Error('Cannot send malformed protocol frame');
+    const expectedType = message.type;
+    const sequence = expectedSeq ?? message.seq;
+    requireUint16(sequence, 'expectedSeq');
+
+    let lastError;
+    for (let attempt = 1; attempt <= this.retries; attempt++) {
+      try {
+        await this.waitForAck(frame, expectedType, sequence);
+        return;
+      } catch (error) {
+        if (error?.name === 'PeerProtocolError') throw error;
+        lastError = error;
+        if (attempt < this.retries) await sleep(200);
+      }
+    }
+    throw lastError;
+  }
+
+  async waitForAck(frame, expectedType, expectedSeq) {
+    let timeoutId;
+    let waiter;
+    const ackPromise = new Promise((resolve, reject) => {
+      waiter = { resolve, reject };
+    });
+    this.addPendingAck(expectedType, expectedSeq, waiter);
+    this.pendingErrors.add(waiter);
+
+    try {
+      await this.sendFn(frame);
+      const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('ACK timeout')), this.timeoutMs);
+      });
+      await Promise.race([ackPromise, timeout]);
+    } finally {
+      clearTimeout(timeoutId);
+      this.removePendingAck(expectedType, expectedSeq, waiter);
+      this.pendingErrors.delete(waiter);
+    }
+  }
+
+  ackKey(type, seq) {
+    return `${type}:${seq}`;
+  }
+
+  addPendingAck(type, seq, waiter) {
+    const key = this.ackKey(type, seq);
+    const waiters = this.pendingAcks.get(key) ?? new Set();
+    waiters.add(waiter);
+    this.pendingAcks.set(key, waiters);
+  }
+
+  removePendingAck(type, seq, waiter) {
+    const key = this.ackKey(type, seq);
+    const waiters = this.pendingAcks.get(key);
+    if (!waiters) return;
+    waiters.delete(waiter);
+    if (waiters.size === 0) this.pendingAcks.delete(key);
+  }
+}
+
+class ItemReceiver {
+  /**
+   * @param {{sendFn?:Function, busy?:boolean}} [options] Optional ACK sender and initial busy state.
+   */
+  constructor(options = {}) {
+    if (options.sendFn) assertSendFn(options.sendFn);
+    this.sendFn = options.sendFn ?? null;
+    this.busy = Boolean(options.busy);
+    this.listeners = new Map();
+    this.resetItem();
+  }
+
+  /**
+   * Register an event listener. Events include hello, metaFragment, meta, data,
+   * done, item, ack, nack, busy, rejected, error, and invalid.
+   * @param {string} event Event name.
+   * @param {Function} callback Listener callback.
+   * @returns {Function} Unsubscribe callback.
+   */
+  on(event, callback) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    const callbacks = this.listeners.get(event) ?? new Set();
+    callbacks.add(callback);
+    this.listeners.set(event, callbacks);
+    return () => callbacks.delete(callback);
+  }
+
+  /**
+   * Handle one parsed message or raw frame, update receiver state, and emit events.
+   * @param {{type:number,seq:number,len:number,payload:Uint8Array}|Uint8Array|ArrayBuffer|ArrayBufferView} msg Message object or raw frame.
+   * @returns {Promise<void>}
+   */
+  async onMessage(msg) {
+    const parsed = msg && typeof msg.type === 'number' ? msg : parseMessage(msg);
+    if (!parsed) {
+      this.emit('invalid', new Error('Malformed message'));
+      return;
+    }
+
+    switch (parsed.type) {
+      case MSG.HELLO:
+        await this.handleHello(parsed);
+        break;
+      case MSG.ITEM_META:
+        await this.handleMeta(parsed);
+        break;
+      case MSG.ITEM_DATA:
+        await this.handleData(parsed);
+        break;
+      case MSG.ITEM_DONE:
+        await this.handleDone(parsed);
+        break;
+      case MSG.ACK:
+        this.emit('ack', { ...readAckSeq(parsed), message: parsed });
+        break;
+      case MSG.NACK:
+        this.emit('nack', parsed);
+        break;
+      case MSG.BUSY:
+        this.emit('busy', parsed);
+        break;
+      case MSG.CANCEL:
+        this.resetItem();
+        this.emit('cancel', parsed);
+        await this.sendAck(MSG.CANCEL, 0);
+        break;
+      case MSG.ERROR:
+        this.emit('error', textDecoder.decode(parsed.payload));
+        break;
+      default:
+        this.emit('invalid', new Error(`Unknown message type 0x${parsed.type.toString(16)}`));
+    }
+  }
+
+  /**
+   * Set whether inbound item-start messages should receive BUSY instead of ACK.
+   * @param {boolean} value Busy state.
+   * @returns {void}
+   */
+  setBusy(value) {
+    this.busy = Boolean(value);
+  }
+
+  resetItem() {
+    this.meta = null;
+    this.metaFragments = new Map();
+    this.expectedMetaFragments = 0;
+    this.chunks = new Map();
+  }
+
+  async handleHello(msg) {
+    if (this.busy) {
+      await this.sendMessage(MSG.BUSY, 0);
+      this.emit('rejected', msg);
+      return;
+    }
+    this.resetItem();
+    const payload = msg.payload;
+    const itemId = payload.length >= 4
+      ? (((payload[0] << 24) >>> 0) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0
+      : null;
+    this.emit('hello', { itemId, message: msg });
+    await this.sendAck(MSG.HELLO, 0);
+  }
+
+  async handleMeta(msg) {
+    try {
+      if (msg.payload.length < META_PREFIX_LEN) throw new Error('META fragment too short');
+      const total = (msg.payload[0] << 8) | msg.payload[1];
+      if (total <= 0) throw new Error('META fragment count is invalid');
+      if (!this.expectedMetaFragments || msg.seq === 0) {
+        this.expectedMetaFragments = total;
+        this.metaFragments = new Map();
+      }
+      if (total !== this.expectedMetaFragments) throw new Error('META fragment count changed');
+
+      if (msg.seq >= total) throw new Error('META fragment sequence is invalid');
+      this.metaFragments.set(msg.seq, msg.payload);
+      this.emit('metaFragment', { seq: msg.seq, total, payload: msg.payload });
+
+      if (this.metaFragments.size < this.expectedMetaFragments) {
+        await this.sendAck(MSG.ITEM_META, msg.seq);
+        return;
+      }
+
+      const ordered = [];
+      for (let i = 0; i < this.expectedMetaFragments; i++) {
+        if (!this.metaFragments.has(i)) {
+          await this.sendAck(MSG.ITEM_META, msg.seq);
+          return;
+        }
+        ordered.push(this.metaFragments.get(i));
+      }
+
+      this.meta = decodeMeta(ordered);
+      if (this.meta.chunks > 4096) throw new Error('META chunk count exceeds 4096');
+      if (this.meta.size > 4 * 1024 * 1024) throw new Error('META size exceeds 4 MiB');
+      this.chunks = new Map();
+      await this.sendAck(MSG.ITEM_META, msg.seq);
+      this.emit('meta', this.meta);
+    } catch (error) {
+      this.emit('error', error);
+      this.resetItem();
+      await this.sendError(error.message || 'Invalid metadata');
+    }
+  }
+
+  async handleData(msg) {
+    if (!this.meta) {
+      this.emit('invalid', new Error('ITEM_DATA received before ITEM_META'));
+      return;
+    }
+    if (!this.chunks.has(msg.seq)) this.chunks.set(msg.seq, msg.payload);
+    this.emit('data', { seq: msg.seq, payload: msg.payload, received: this.chunks.size, meta: this.meta });
+    await this.sendAck(MSG.ITEM_DATA, msg.seq);
+  }
+
+  async handleDone(msg) {
+    try {
+      if (!this.meta) throw new Error('No metadata received');
+      const expectedChunks = this.meta.chunks ?? this.chunks.size;
+      const ordered = [];
+      for (let i = 0; i < expectedChunks; i++) {
+        if (!this.chunks.has(i)) throw new Error(`Missing chunk ${i}`);
+        ordered.push(this.chunks.get(i));
+      }
+
+      const data = concatChunks(ordered);
+      const hash = await sha256(data);
+      const expectedHash = normalizeHash(this.meta.hash);
+      if (expectedHash && hash !== expectedHash) {
+        throw new Error(`Hash mismatch: expected ${expectedHash}, got ${hash}`);
+      }
+
+      await this.sendAck(MSG.ITEM_DONE, msg.seq);
+      this.emit('done', msg);
+      this.emit('item', { meta: this.meta, data, hash });
+    } catch (error) {
+      this.emit('error', error);
+      await this.sendError(error.message || 'Item validation failed');
+    }
+  }
+
+  async sendAck(ackedType, seq) {
+    await this.sendMessage(MSG.ACK, 0, makeAckPayload(ackedType, seq));
+  }
+
+  async sendError(reason) {
+    const message = String(reason || 'Protocol error');
+    let truncated = '';
+    let payload = new Uint8Array(0);
+    for (const character of message) {
+      const candidate = textEncoder.encode(`${truncated}${character}`);
+      if (candidate.length > MAX_PAYLOAD) break;
+      truncated += character;
+      payload = candidate;
+    }
+    if (payload.length === 0) payload = textEncoder.encode('Protocol error');
+    await this.sendMessage(MSG.ERROR, 0, payload);
+  }
+
+  async sendMessage(type, seq, payload) {
+    if (!this.sendFn) return;
+    await this.sendFn(buildMessage(type, seq, payload));
+  }
+
+  emit(event, detail) {
+    const callbacks = this.listeners.get(event);
+    if (!callbacks) return;
+    for (const callback of callbacks) callback(detail);
+  }
+}
+
+return { buildMessage, encodeMeta, ItemReceiver, ItemSender, MAX_PAYLOAD, MSG, parseMessage, sha256 };
+})();
+const { WebHIDAdapter } = (() => {
+const HID_FILTERS = [
+  { vendorId: 0x046D, productId: 0xC31C },
+  { vendorId: 0x413C, productId: 0x2113 },
+  { vendorId: 0x045E, productId: 0x07F8 },
+  { vendorId: 0x045E, productId: 0x07A5 },
+  { vendorId: 0x03F0, productId: 0x5341 },
+];
+
+const PINNED_PIDS = new Set(
+  HID_FILTERS.map(f => `${f.vendorId.toString(16).padStart(4,'0')}:${f.productId.toString(16).padStart(4,'0')}`),
+);
+const HID_REPORT_ID = 0x00;
+const HID_REPORT_LEN = 64;
+const HEADER_LEN = 5;
+
+const SERIAL_UUIDS = [
+  // Real Flipper UUIDs decoded from `serial_service_uuid.inc`.
+  {
+    name: 'flipper-actual',
+    service: '60fe0000-7acc-2a48-984a-7f2ed5b3e58f',
+    tx: '61fe0000-228e-4145-9d4c-21edae82ed19',
+    rx: '62fe0000-228e-4145-9d4c-21edae82ed19',
+  },
+  {
+    name: 'browser-canonical',
+    service: '8fe5b3d5-2e7f-4a98-2a48-7acc60fe0000',
+    tx: '19ed82ae-ed21-4c9d-4145-228e61fe0000',
+    rx: '19ed82ae-ed21-4c9d-4145-228e62fe0000',
+  },
+  {
+    name: 'firmware-byte-order',
+    service: '0000fe60-cc7a-482a-984a-7f2ed5b3e58f',
+    tx: '0000fe61-8e22-4541-9d4c-21edae82ed19',
+    rx: '0000fe62-8e22-4541-9d4c-21edae82ed19',
+  },
+];
+
+function normalizeFrame(frame) {
+  if (frame instanceof Uint8Array) return frame;
+  if (ArrayBuffer.isView(frame)) {
+    return new Uint8Array(frame.buffer, frame.byteOffset, frame.byteLength);
+  }
+  if (frame instanceof ArrayBuffer) return new Uint8Array(frame);
+  throw new TypeError('frame must be a Uint8Array, ArrayBuffer, or typed array');
+}
+
+function stripFramePadding(data) {
+  const frame = normalizeFrame(data);
+  if (frame.length < HEADER_LEN) return frame;
+
+  const payloadLen = (frame[3] << 8) | frame[4];
+  const frameLen = HEADER_LEN + payloadLen;
+  if (frameLen > frame.length) return frame;
+  return frame.slice(0, frameLen);
+}
+
+/**
+ * Thin WebHID transport adapter for Pocket AirBridge USB frames.
+ * It only opens/closes the HID device, writes 64-byte reports, and forwards
+ * received frames after trimming HID padding based on the protocol length byte.
+ */
+class WebHIDAdapter {
+  /**
+   * @param {{onDisconnect?:Function}} [options] Optional lifecycle callbacks.
+   */
+  constructor(options = {}) {
+    this.device = null;
+    this.receiveCallback = null;
+    this.disconnectCallback = options.onDisconnect ?? null;
+    this.handleInputReport = this.handleInputReport.bind(this);
+    this.handleDisconnect = this.handleDisconnect.bind(this);
+  }
+
+  /**
+   * Connect to a Pocket AirBridge HID device, preferring pre-authorized devices.
+   * @returns {Promise<void>}
+   */
+  async connect() {
+    if (!navigator.hid) throw new Error('WebHID is not available in this browser');
+
+    const cachedDevices = await navigator.hid.getDevices();
+    // Prefer an exact vendorId+productId match from the pinned set; fall back to
+    // vendorId-only (legacy entries) only when no pinned device is available.
+    let device = cachedDevices.find(
+      ({ vendorId, productId }) =>
+        PINNED_PIDS.has(`${vendorId.toString(16).padStart(4,'0')}:${productId.toString(16).padStart(4,'0')}`),
+    );
+    if (!device) {
+      device = cachedDevices.find(({ vendorId, productId }) =>
+        HID_FILTERS.some(filter => filter.vendorId === vendorId && filter.productId == null),
+      );
+    }
+
+    if (!device) {
+      const devices = await navigator.hid.requestDevice({ filters: HID_FILTERS });
+      if (!devices.length) throw new Error('No HID device selected');
+      [device] = devices;
+    }
+
+    this.device = device;
+    await this.device.open();
+    this.device.addEventListener('inputreport', this.handleInputReport);
+    navigator.hid.addEventListener('disconnect', this.handleDisconnect);
+  }
+
+  /**
+   * Close the HID device and clear browser event listeners.
+   * @returns {Promise<void>}
+   */
+  async disconnect() {
+    const device = this.device;
+    this.device = null;
+
+    if (navigator.hid) navigator.hid.removeEventListener('disconnect', this.handleDisconnect);
+    if (!device) return;
+
+    device.removeEventListener('inputreport', this.handleInputReport);
+    if (device.opened) await device.close();
+  }
+
+  /**
+   * Send one protocol frame as a padded 64-byte HID report.
+   * @param {Uint8Array|ArrayBuffer|ArrayBufferView} frame Unpadded frame bytes.
+   * @returns {Promise<void>}
+   */
+  async send(frame) {
+    if (!this.device || !this.device.opened) throw new Error('WebHID transport is not connected');
+
+    const bytes = normalizeFrame(frame);
+    if (bytes.length > HID_REPORT_LEN) throw new RangeError(`HID frame must be ${HID_REPORT_LEN} bytes or less`);
+
+    const report = new Uint8Array(HID_REPORT_LEN);
+    report.set(bytes);
+    await this.device.sendReport(HID_REPORT_ID, report);
+  }
+
+  /**
+   * Register the callback fired for each incoming unpadded frame.
+   * @param {Function} callback Receives a Uint8Array frame.
+   * @returns {Function} Unsubscribe callback.
+   */
+  onReceive(callback) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    this.receiveCallback = callback;
+    return () => {
+      if (this.receiveCallback === callback) this.receiveCallback = null;
+    };
+  }
+
+  /**
+   * Register the callback fired when the browser reports transport disconnect.
+   * @param {Function} callback Disconnect callback.
+   * @returns {Function} Unsubscribe callback.
+   */
+  onDisconnect(callback) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    this.disconnectCallback = callback;
+    return () => {
+      if (this.disconnectCallback === callback) this.disconnectCallback = null;
+    };
+  }
+
+  /**
+   * @returns {boolean} True when the HID device is currently open.
+   */
+  isConnected() {
+    return Boolean(this.device?.opened);
+  }
+
+  /**
+   * @returns {string} Human-readable transport/device name.
+   */
+  getName() {
+    return this.device?.productName || 'WebHID';
+  }
+
+  handleInputReport(event) {
+    if (event.reportId !== HID_REPORT_ID || !this.receiveCallback) return;
+    const data = event.data;
+    this.receiveCallback(stripFramePadding(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)));
+  }
+
+  handleDisconnect(event) {
+    if (event.device !== this.device) return;
+    const device = this.device;
+    this.device = null;
+    device.removeEventListener('inputreport', this.handleInputReport);
+    navigator.hid.removeEventListener('disconnect', this.handleDisconnect);
+    if (this.disconnectCallback) this.disconnectCallback();
+  }
+}
+
+/**
+ * Thin Web Bluetooth transport adapter for Pocket AirBridge BLE Serial frames.
+ * It only opens/closes GATT, writes frames to RX with response, and forwards TX
+ * characteristic indications as Uint8Array frames.
+ */
+class WebBluetoothAdapter {
+  /**
+   * @param {{onDisconnect?:Function}} [options] Optional lifecycle callbacks.
+   */
+  constructor(options = {}) {
+    this.device = null;
+    this.server = null;
+    this.txChar = null;
+    this.rxChar = null;
+    this.matchedUuids = null;
+    this.receiveCallback = null;
+    this.disconnectCallback = options.onDisconnect ?? null;
+    this.handleCharacteristicValueChanged = this.handleCharacteristicValueChanged.bind(this);
+    this.handleDisconnected = this.handleDisconnected.bind(this);
+  }
+
+  /**
+   * Open the Web Bluetooth picker, connect GATT, and subscribe to TX indications.
+   * @returns {Promise<void>}
+   */
+  async connect() {
+    if (!navigator.bluetooth) throw new Error('Web Bluetooth is not available in this browser');
+
+    this.device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'Flipper' }],
+      optionalServices: [0x3080, ...SERIAL_UUIDS.map(u => u.service)],
+    });
+    this.device.addEventListener('gattserverdisconnected', this.handleDisconnected);
+    this.server = await this.device.gatt.connect();
+
+    const discoveredServices = await this.server.getPrimaryServices();
+
+    let service;
+    let uuids;
+    try {
+      ({ service, uuids } = await this.findSerialService());
+    } catch (error) {
+      const discoveredUuids = discoveredServices.map(discovered => discovered.uuid).join(', ') || '(none)';
+      console.debug('Web Bluetooth discovered services:', discoveredUuids);
+      throw new Error(`${error.message}. Discovered services: ${discoveredUuids}`);
+    }
+    this.matchedUuids = uuids;
+    this.txChar = await service.getCharacteristic(uuids.tx);
+    this.rxChar = await service.getCharacteristic(uuids.rx);
+    await this.txChar.startNotifications();
+    this.txChar.addEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
+  }
+
+  /**
+   * Disconnect GATT and clear characteristic listeners.
+   * @returns {Promise<void>}
+   */
+  async disconnect() {
+    const device = this.device;
+    this.clearGattState();
+    if (!device) return;
+
+    device.removeEventListener('gattserverdisconnected', this.handleDisconnected);
+    if (device.gatt?.connected) device.gatt.disconnect();
+  }
+
+  /**
+   * Send one protocol frame to the RX characteristic using write-with-response.
+   * @param {Uint8Array|ArrayBuffer|ArrayBufferView} frame Unpadded frame bytes.
+   * @returns {Promise<void>}
+   */
+  async send(frame) {
+    if (!this.rxChar) throw new Error('Web Bluetooth transport is not connected');
+    await this.rxChar.writeValueWithResponse(normalizeFrame(frame));
+  }
+
+  /**
+   * Register the callback fired for each incoming TX indication frame.
+   * @param {Function} callback Receives a Uint8Array frame.
+   * @returns {Function} Unsubscribe callback.
+   */
+  onReceive(callback) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    this.receiveCallback = callback;
+    return () => {
+      if (this.receiveCallback === callback) this.receiveCallback = null;
+    };
+  }
+
+  /**
+   * Register the callback fired when GATT disconnects.
+   * @param {Function} callback Disconnect callback.
+   * @returns {Function} Unsubscribe callback.
+   */
+  onDisconnect(callback) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    this.disconnectCallback = callback;
+    return () => {
+      if (this.disconnectCallback === callback) this.disconnectCallback = null;
+    };
+  }
+
+  /**
+   * @returns {boolean} True when the BLE GATT connection is active.
+   */
+  isConnected() {
+    return Boolean(this.device?.gatt?.connected && this.rxChar && this.txChar);
+  }
+
+  /**
+   * @returns {string} Human-readable transport/device name.
+   */
+  getName() {
+    return this.device?.name || 'Web Bluetooth';
+  }
+
+  async findSerialService() {
+    for (const uuids of SERIAL_UUIDS) {
+      try {
+        const service = await this.server.getPrimaryService(uuids.service);
+        return { service, uuids };
+      } catch (_) {}
+    }
+    throw new Error('Flipper Serial BLE service not found');
+  }
+
+  handleCharacteristicValueChanged(event) {
+    if (!this.receiveCallback) return;
+    const value = event.target.value;
+    this.receiveCallback(new Uint8Array(value.buffer, value.byteOffset ?? 0, value.byteLength));
+  }
+
+  handleDisconnected() {
+    this.clearGattState();
+    if (this.disconnectCallback) this.disconnectCallback();
+  }
+
+  clearGattState() {
+    if (this.txChar) {
+      this.txChar.removeEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
+    }
+    this.server = null;
+    this.txChar = null;
+    this.rxChar = null;
+    this.matchedUuids = null;
+  }
+}
+
+return { WebHIDAdapter };
+})();
+
+const BUSY_BACKOFF_MS = 900;
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+const isMockMode = new URLSearchParams(location.search).get('mock') === '1';
+
+let transport = null;
+let unsubscribeReceive = null;
+let unsubscribeDisconnect = null;
+let sender = null;
+let receiver = null;
+let isSending = false;
+let outboundItemId = null;
+let activeTransfer = null;
+let inboundMeta = null;
+let inboundHelloItemId = null;
+let lastBusyAt = 0;
+let busyRetryDelayMs = BUSY_BACKOFF_MS;
+let nextItemId = Math.floor(Math.random() * 0x7fff) + 1;
+let pendingSendRow = null;
+let pendingReceiveRow = null;
+let yieldedItem = null;
+let yieldedRetryScheduled = false;
+
+const $ = id => document.getElementById(id);
+if (isMockMode) document.body.classList.add('mock');
+
+function nowLabel() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function log(message, className = '') {
+  const line = `[${nowLabel()}] ${message}`;
+  if ($('log').textContent === 'Waiting…') $('log').textContent = '';
+  const span = document.createElement('span');
+  span.className = className;
+  span.textContent = `${line}\n`;
+  $('log').appendChild(span);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function setConnectionStatus(status, className = '') {
+  $('connectionStatus').textContent = status;
+  $('statusPill').className = `status-pill ${className}`.trim();
+}
+
+function setProgress(percent, label) {
+  $('progressBar').style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  $('progressLabel').textContent = label;
+}
+
+function makeAbortError(message = 'Transfer cancelled') {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function getTransferSignal() {
+  return activeTransfer?.controller.signal ?? null;
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError' || error?.message === 'Transfer cancelled';
+}
+
+function raceWithAbort(promise, signal = getTransferSignal()) {
+  const wrapped = Promise.resolve(promise);
+  if (!signal) return wrapped;
+  if (signal.aborted) return Promise.reject(signal.reason ?? makeAbortError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? makeAbortError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    wrapped.then(
+      value => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function throwIfCancelled(signal = getTransferSignal()) {
+  if (signal?.aborted) throw signal.reason ?? makeAbortError();
+}
+
+function setSending(value, label = '') {
+  isSending = value;
+  receiver?.setBusy(value);
+  $('halfDuplexState').textContent = value ? `sending${outboundItemId ? ` item ${outboundItemId}` : ''}` : 'idle';
+  $('cancelBtn').hidden = !value;
+  $('cancelBtn').disabled = !value;
+  updateControls();
+  if (label) setProgress(value ? 5 : 0, label);
+}
+
+function updateControls() {
+  const connected = Boolean(transport?.isConnected());
+  const isReceiving = inboundHelloItemId != null;
+  const canCancel = isSending || isReceiving || Boolean(inboundMeta);
+  $('connectBtn').disabled = connected || $('connectionStatus').textContent === 'Connecting';
+  $('disconnectBtn').disabled = !connected;
+  $('textInput').disabled = !connected || isSending || isReceiving;
+  $('sendTextBtn').disabled = !connected || isSending || isReceiving || !$('textInput').value.trim();
+  $('fileInput').disabled = !connected || isSending || isReceiving;
+  $('sendFileBtn').disabled = !connected || isSending || isReceiving || !$('fileInput').files.length;
+  $('cancelBtn').hidden = !canCancel;
+  $('cancelBtn').disabled = !canCancel;
+}
+
+function clearEmptyTranscript() {
+  const empty = $('transcript').querySelector('.empty');
+  if (empty) empty.remove();
+}
+
+function addMessage({ side, kind, text, meta, data, hash, pending = false, progress }) {
+  clearEmptyTranscript();
+  const row = document.createElement('article');
+  row.className = `message ${side}`;
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  const metaLine = document.createElement('div');
+  metaLine.className = 'meta-line';
+  const senderLabel = document.createElement('span');
+  senderLabel.className = 'sender';
+  senderLabel.textContent = side === 'you' ? 'You' : side === 'peer' ? 'Peer' : 'System';
+  const time = document.createElement('span');
+  time.textContent = nowLabel();
+  metaLine.append(senderLabel, time);
+  bubble.appendChild(metaLine);
+
+  if (kind === 'text') {
+    const body = document.createElement('div');
+    body.textContent = text;
+    bubble.appendChild(body);
+  } else {
+    bubble.appendChild(renderAttachmentCard(meta, data, hash, pending, progress));
+  }
+
+  row.appendChild(bubble);
+  $('transcript').appendChild(row);
+  $('transcript').scrollTop = $('transcript').scrollHeight;
+  return row;
+}
+
+function addSystemMessage(text) {
+  addMessage({ side: 'system', kind: 'text', text });
+}
+
+function renderAttachmentCard(meta, data, hash, pending, progress) {
+  const card = document.createElement('div');
+  card.className = 'attachment-card';
+  const name = document.createElement('div');
+  name.className = 'attachment-name';
+  name.textContent = meta.name || meta.filename || 'attachment';
+  const size = document.createElement('div');
+  size.textContent = `${formatBytes(meta.size ?? data?.length ?? 0)} · ${meta.mimeType || 'application/octet-stream'}`;
+  const hashLine = document.createElement('div');
+  hashLine.className = pending ? 'warn' : 'hash-ok';
+  hashLine.textContent = pending ? `SHA-256 pending: ${shortHash(meta.hash)}` : `SHA-256 verified: ${shortHash(hash || meta.hash)}`;
+  card.append(name, size, hashLine);
+
+  if (progress != null) {
+    const container = document.createElement('div');
+    container.className = 'progress-container';
+    const track = document.createElement('div');
+    track.className = 'progress-bar-track';
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-valuenow', Math.round(progress.percent));
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+    const fill = document.createElement('div');
+    fill.className = `progress-bar-fill${progress.complete ? ' complete' : ''}${progress.cancelled ? ' cancelled' : ''}`;
+    fill.style.width = `${progress.percent}%`;
+    fill.setAttribute('aria-hidden', 'true');
+    track.appendChild(fill);
+    const label = document.createElement('div');
+    label.className = 'progress-label';
+    label.textContent = progress.label;
+    container.append(track, label);
+    card.appendChild(container);
+  }
+
+  if (data) {
+    const blob = new Blob([data], { type: meta.mimeType || 'application/octet-stream' });
+    const link = document.createElement('a');
+    link.className = 'download-link';
+    link.href = URL.createObjectURL(blob);
+    link.download = meta.name || meta.filename || 'airbridge-attachment';
+    link.textContent = 'Download attachment';
+    card.appendChild(link);
+  }
+  return card;
+}
+
+function shortHash(hash) {
+  const normalized = String(hash || '').replace(/^sha256:/, '');
+  return normalized ? `${normalized.slice(0, 12)}…` : 'unknown';
+}
+
+function formatBytes(size) {
+  if (size < 1024) return `${size} B`;
+  return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} KB`;
+}
+
+function updateCardProgress(messageRow, percent, label, state) {
+  const track = messageRow.querySelector('.progress-bar-track');
+  const fill = messageRow.querySelector('.progress-bar-fill');
+  const labelEl = messageRow.querySelector('.progress-label');
+  if (!track || !fill || !labelEl) return;
+  const safe = Math.max(0, Math.min(100, percent));
+  track.setAttribute('aria-valuenow', Math.round(safe));
+  fill.style.width = `${safe}%`;
+  fill.className = `progress-bar-fill${state === 'complete' ? ' complete' : ''}${state === 'cancelled' ? ' cancelled' : ''}`;
+  labelEl.textContent = label;
+}
+
+function nextId() {
+  nextItemId = (nextItemId + 1) & 0xffff;
+  if (nextItemId === 0) nextItemId = 1;
+  return nextItemId;
+}
+
+function makeChunks(bytes) {
+  const chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += MAX_PAYLOAD) {
+    chunks.push(bytes.slice(offset, offset + MAX_PAYLOAD));
+  }
+  return chunks.length ? chunks : [new Uint8Array(0)];
+}
+
+function makeMeta({ itemId, kind, name, mimeType, size, chunks, hash }) {
+  return { itemId, kind, name, mimeType, size, chunks, hash: `sha256:${hash}` };
+}
+
+function busyPayload(winnerItemId, loserItemId) {
+  return textEncoder.encode(JSON.stringify({ w: winnerItemId, l: loserItemId, r: BUSY_BACKOFF_MS }));
+}
+
+async function sendBusy(winnerItemId = null, loserItemId = null) {
+  if (!transport?.isConnected()) return;
+  await transport.send(buildMessage(MSG.BUSY, 0, busyPayload(winnerItemId, loserItemId)));
+}
+
+function parseBusy(payload) {
+  try {
+    const parsed = JSON.parse(textDecoder.decode(payload));
+    return {
+      winnerItemId: parsed.winnerItemId ?? parsed.w,
+      loserItemId: parsed.loserItemId ?? parsed.l,
+      retryAfterMs: parsed.retryAfterMs ?? parsed.r,
+    };
+  } catch (_) {
+    return {};
+  }
+}
+
+function readHelloItemId(msg) {
+  if (!msg?.payload || msg.payload.length < 4) return null;
+  const payload = msg.payload;
+  return (((payload[0] << 24) >>> 0) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
+}
+
+function createAckFrame(type, seq) {
+  return buildMessage(MSG.ACK, 0, new Uint8Array([type, (seq >> 8) & 0xff, seq & 0xff]));
+}
+
+function settleAbortedSend(transfer) {
+  const pending = transfer?.pendingAck;
+  if (!pending) return;
+  transfer.pendingAck = null;
+  sender?.receiveAck(createAckFrame(pending.type, pending.seq));
+}
+
+async function sendItemMetaWithAbort(meta, signal) {
+  const fragments = encodeMeta(meta);
+  for (let seq = 0; seq < fragments.length; seq++) {
+    throwIfCancelled(signal);
+    await raceWithAbort(sender.sendWithAck(buildMessage(MSG.ITEM_META, seq, fragments[seq]), seq), signal);
+  }
+}
+
+function* abortableChunks(chunks, signal) {
+  for (const chunk of chunks) {
+    throwIfCancelled(signal);
+    yield chunk;
+  }
+}
+
+function setupProtocol() {
+  sender = new ItemSender(frame => {
+    const message = parseMessage(frame);
+    if (activeTransfer && message) activeTransfer.pendingAck = { type: message.type, seq: message.seq };
+    return transport.send(frame);
+  }, { timeoutMs: 1200, retries: 2 });
+  receiver = new ItemReceiver({ sendFn: frame => transport.send(frame), busy: false });
+  sender.onAck(seq => log(`ACK ${seq} received.`, 'ok'));
+  receiver.on('hello', detail => {
+    inboundHelloItemId = detail.itemId;
+    updateControls();
+    log(`Incoming HELLO${detail.itemId == null ? '' : ` item ${detail.itemId}`}.`);
+  });
+  receiver.on('meta', meta => {
+    inboundMeta = meta;
+    updateControls();
+    log(`Receiving ${meta.kind || 'item'} ${meta.name || ''} (${formatBytes(meta.size || 0)}).`);
+    if (meta.kind !== 'text') {
+      pendingReceiveRow = addMessage({ side: 'peer', kind: 'attachment', meta, data: null, hash: null, pending: true, progress: { percent: 0, label: 'Receiving…' } });
+    }
+  });
+  receiver.on('data', ({ received, meta }) => {
+    if (!isSending && meta?.chunks) {
+      const pct = (received / meta.chunks) * 100;
+      setProgress(pct, `Receiving ${received}/${meta.chunks} chunks…`);
+      if (pendingReceiveRow) {
+        updateCardProgress(pendingReceiveRow, pct, `${received}/${meta.chunks} chunks`);
+      }
+    }
+  });
+  receiver.on('item', ({ meta, data, hash }) => handleReceivedItem(meta, data, hash));
+  receiver.on('cancel', () => {
+    inboundHelloItemId = null;
+    updateControls();
+    scheduleYieldedRetry();
+  });
+  receiver.on('busy', detail => handleBusy(detail));
+  receiver.on('rejected', () => log('Rejected peer HELLO while USB chat is busy.', 'warn'));
+  receiver.on('error', error => log(`Protocol error: ${error.message || error}`, 'error'));
+  receiver.on('invalid', error => log(`Invalid frame: ${error.message}`, 'error'));
+}
+
+async function handleInboundFrame(frame) {
+  const msg = parseMessage(frame);
+  if (!msg) {
+    log('Malformed frame received.', 'error');
+    return;
+  }
+
+  if (msg.type === MSG.ACK) {
+    sender?.receiveAck(msg);
+    return;
+  }
+
+  if (msg.type === MSG.ERROR) {
+    sender?.receiveError(msg);
+    await receiver?.onMessage(msg);
+    return;
+  }
+
+  if (msg.type === MSG.CANCEL) {
+    await receiver?.onMessage(msg);
+    await cancelActiveTransfer('peer');
+    return;
+  }
+
+  if (msg.type === MSG.HELLO && isSending && activeTransfer && !activeTransfer.yielded && outboundItemId != null) {
+    const peerItemId = readHelloItemId(msg);
+    if (peerItemId != null && peerItemId < outboundItemId) {
+      await yieldToPeer(msg, peerItemId);
+      return;
+    }
+    if (peerItemId != null) {
+      log(`Keeping local item ${outboundItemId} over peer item ${peerItemId}; returning BUSY.`, 'warn');
+      await sendBusy(outboundItemId, peerItemId);
+      return;
+    }
+  }
+
+  if (isSending && activeTransfer && !activeTransfer.yielded && (msg.type === MSG.ITEM_META || msg.type === MSG.ITEM_DATA || msg.type === MSG.ITEM_DONE)) {
+    log('Peer sent item data while USB chat is sending; returning BUSY.', 'warn');
+    await sendBusy(outboundItemId, null);
+    return;
+  }
+
+  await receiver?.onMessage(msg);
+}
+
+async function yieldToPeer(msg, peerItemId) {
+  const transfer = activeTransfer;
+  if (!transfer || transfer.yielded) return;
+  transfer.yielded = true;
+  yieldedItem = {
+    meta: transfer.meta,
+    chunks: transfer.chunks,
+    label: transfer.label,
+    row: pendingSendRow,
+  };
+  transfer.controller.abort(makeAbortError(`Yielded to peer item ${peerItemId}`));
+  settleAbortedSend(transfer);
+  receiver?.setBusy(false);
+  setProgress(0, `Yielded to peer item ${peerItemId}.`);
+  if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Yielded');
+  addSystemMessage(`Yielded to peer item ${peerItemId}`);
+  log(`Yielded local item ${transfer.itemId} to peer item ${peerItemId}.`, 'warn');
+  await receiver?.onMessage(msg);
+}
+
+function handleReceivedItem(meta, data, hash) {
+  inboundHelloItemId = null;
+  inboundMeta = null;
+  updateControls();
+  const kind = meta.kind || 'attachment';
+  if (kind === 'text') {
+    addMessage({ side: 'peer', kind: 'text', text: textDecoder.decode(data), meta, hash });
+  } else {
+    if (pendingReceiveRow) {
+      const finalCard = renderAttachmentCard(meta, data, hash, false, { percent: 100, label: 'Verified', complete: true });
+      const placeholder = pendingReceiveRow.querySelector('.attachment-card');
+      if (placeholder) placeholder.replaceWith(finalCard);
+      pendingReceiveRow = null;
+    } else {
+      addMessage({ side: 'peer', kind: 'attachment', meta, data, hash });
+    }
+  }
+  setProgress(100, `Received ${kind}: ${meta.name || 'item'}.`);
+  log(`Received ${kind} ${meta.name || ''}; hash ${shortHash(hash)} verified.`, 'ok');
+  setTimeout(() => { if (!isSending) setProgress(0, 'No active transfer.'); }, 900);
+  scheduleYieldedRetry();
+}
+
+function handleBusy(detail) {
+  const msg = detail?.payload ? detail : detail?.message;
+  const info = msg?.payload ? parseBusy(msg.payload) : {};
+  const localItemId = outboundItemId;
+  const peerWins = Number.isInteger(localItemId)
+    && info.loserItemId === localItemId
+    && Number.isInteger(info.winnerItemId)
+    && info.winnerItemId < localItemId;
+  const equalIds = Number.isInteger(localItemId)
+    && info.winnerItemId === localItemId
+    && info.loserItemId === localItemId;
+  if (!isSending || activeTransfer?.yielded || (!peerWins && !equalIds)) {
+    log('Ignoring BUSY that does not lose the active item arbitration.', 'warn');
+    return;
+  }
+  lastBusyAt = Date.now();
+  const retryAfterMs = Number.isFinite(info.retryAfterMs) ? info.retryAfterMs : BUSY_BACKOFF_MS;
+  busyRetryDelayMs = Math.max(0, retryAfterMs) + Math.floor(Math.random() * 401);
+  if (equalIds) activeTransfer.acceptPeerDuringBackoff = true;
+  log(`Peer item ${info.winnerItemId} has priority${equalIds ? ' (equal item IDs)' : ''}; retrying in ${busyRetryDelayMs} ms.`, 'warn');
+}
+
+function scheduleYieldedRetry() {
+  if (!yieldedItem || yieldedRetryScheduled) return;
+  yieldedRetryScheduled = true;
+  setTimeout(async () => {
+    yieldedRetryScheduled = false;
+    const yielded = yieldedItem;
+    if (!yielded || isSending || inboundHelloItemId != null || !transport?.isConnected()) return;
+    yieldedItem = null;
+    pendingSendRow = yielded.row;
+    if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Retrying…');
+    setProgress(0, `Retrying ${yielded.label}…`);
+    await sendItem(yielded.meta, yielded.chunks, yielded.label);
+  }, 0);
+}
+
+async function connect() {
+  try {
+    setConnectionStatus('Connecting', 'status-connecting');
+    updateControls();
+    transport = isMockMode ? createMockPair().usb : new WebHIDAdapter({ onDisconnect: handleDisconnected });
+    await transport.connect();
+    setupProtocol();
+    unsubscribeReceive = transport.onReceive(handleInboundFrame);
+    if (transport.onDisconnect) unsubscribeDisconnect = transport.onDisconnect(handleDisconnected);
+    setConnectionStatus('Connected', 'status-connected');
+    $('deviceName').textContent = transport.getName();
+    log(`Connected to ${transport.getName()}.`, 'ok');
+  } catch (error) {
+    setConnectionStatus('Disconnected', 'status-error');
+    $('deviceName').textContent = 'No device';
+    log(`Connection failed: ${error.message}`, 'error');
+    transport = null;
+  } finally {
+    updateControls();
+  }
+}
+
+async function disconnect() {
+  unsubscribeReceive?.();
+  unsubscribeDisconnect?.();
+  unsubscribeReceive = null;
+  unsubscribeDisconnect = null;
+  const current = transport;
+  transport = null;
+  sender = null;
+  receiver = null;
+  setSending(false);
+  if (current?.isConnected()) await current.disconnect();
+  handleDisconnected();
+}
+
+function handleDisconnected() {
+  if (activeTransfer && !activeTransfer.controller.signal.aborted) activeTransfer.controller.abort(makeAbortError('Disconnected'));
+  activeTransfer = null;
+  inboundMeta = null;
+  inboundHelloItemId = null;
+  yieldedItem = null;
+  pendingSendRow = null;
+  pendingReceiveRow = null;
+  setConnectionStatus('Disconnected', 'status-disconnected');
+  $('deviceName').textContent = 'No device';
+  setProgress(0, 'No active transfer.');
+  log('Disconnected.', 'warn');
+  updateControls();
+}
+
+async function sendText() {
+  const text = $('textInput').value.trim();
+  if (!text) return;
+  const data = textEncoder.encode(text);
+  const hash = await sha256(data);
+  const itemId = nextId();
+  const chunks = makeChunks(data);
+  const meta = makeMeta({ itemId, kind: 'text', name: `message-${itemId}.txt`, mimeType: 'text/plain;charset=utf-8', size: data.length, chunks: chunks.length, hash });
+  $('textInput').value = '';
+  updateControls();
+  addMessage({ side: 'you', kind: 'text', text, meta, hash, pending: true });
+  await sendItem(meta, chunks, 'text message');
+}
+
+async function sendSelectedFile() {
+  const file = $('fileInput').files[0];
+  if (!file) return;
+  const data = new Uint8Array(await readFileAsArrayBuffer(file));
+  const hash = await sha256(data);
+  const itemId = nextId();
+  const chunks = makeChunks(data);
+  const meta = makeMeta({ itemId, kind: 'attachment', name: file.name, mimeType: file.type || 'application/octet-stream', size: data.length, chunks: chunks.length, hash });
+  pendingSendRow = addMessage({ side: 'you', kind: 'attachment', meta, data, hash, pending: true, progress: { percent: 0, label: 'Sending…' } });
+  await sendItem(meta, chunks, `attachment ${file.name}`);
+  $('fileInput').value = '';
+  updateControls();
+}
+
+function readFileAsArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function sendItem(meta, chunks, label) {
+  if (!transport?.isConnected()) {
+    log('Connect before sending.', 'error');
+    return;
+  }
+
+  const transfer = {
+    controller: new AbortController(),
+    itemId: meta.itemId,
+    meta,
+    chunks,
+    label,
+    pendingAck: null,
+    yielded: false,
+    acceptPeerDuringBackoff: false,
+  };
+  activeTransfer = transfer;
+  outboundItemId = meta.itemId;
+  setSending(true, `Sending ${label}…`);
+
+  let trackDataAcks = false;
+  const acknowledgedDataSeqs = new Set();
+  const unsubscribeAck = sender.onAck((seq, _message, type) => {
+    if (transfer.yielded || type !== MSG.ITEM_DATA || !trackDataAcks || acknowledgedDataSeqs.has(seq) || seq >= chunks.length) return;
+    acknowledgedDataSeqs.add(seq);
+    const pct = (acknowledgedDataSeqs.size / chunks.length) * 100;
+    setProgress(pct, `Sending ${acknowledgedDataSeqs.size}/${chunks.length} chunks`);
+    if (pendingSendRow) {
+      updateCardProgress(pendingSendRow, pct, `${acknowledgedDataSeqs.size}/${chunks.length} chunks`);
+    }
+  });
+
+  try {
+    await sendWithBusyRetry(async () => {
+      const signal = transfer.controller.signal;
+      throwIfCancelled(signal);
+      setProgress(8, `Sending HELLO for ${label}…`);
+      await raceWithAbort(sender.sendHello(meta.itemId), signal);
+      throwIfCancelled(signal);
+      setProgress(18, `Sending metadata for ${label}…`);
+      await sendItemMetaWithAbort(meta, signal);
+      throwIfCancelled(signal);
+      trackDataAcks = true;
+      await raceWithAbort(sender.sendItemData(abortableChunks(chunks, signal)), signal);
+      trackDataAcks = false;
+      throwIfCancelled(signal);
+      setProgress(90, `Finishing ${label}…`);
+      await raceWithAbort(sender.sendItemDone(), signal);
+    });
+    setProgress(100, `Sent ${label}.`);
+    if (pendingSendRow) {
+      updateCardProgress(pendingSendRow, 100, 'Sent', 'complete');
+    }
+    log(`Sent ${label}; hash ${shortHash(meta.hash)}.`, 'ok');
+  } catch (error) {
+    if (!isAbortError(error)) {
+      setProgress(0, `Failed to send ${label}.`);
+      log(`Send failed: ${error.message}`, 'error');
+    }
+    if (isAbortError(error) && !transfer.yielded && pendingSendRow) {
+      updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
+    }
+  } finally {
+    unsubscribeAck();
+    if (activeTransfer === transfer) activeTransfer = null;
+    outboundItemId = null;
+    setSending(false);
+    if (!transfer.yielded) pendingSendRow = null;
+    if (!transfer.controller.signal.aborted) {
+      setTimeout(() => { if (!isSending) setProgress(0, 'No active transfer.'); }, 900);
+    }
+  }
+}
+
+async function sendWithBusyRetry(operation) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    throwIfCancelled();
+    lastBusyAt = 0;
+    busyRetryDelayMs = BUSY_BACKOFF_MS;
+    try {
+      await raceWithAbort(operation());
+      return;
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      if (!lastBusyAt || attempt === 3) throw error;
+      const delay = busyRetryDelayMs;
+      log(`BUSY interrupted send attempt ${attempt}; retrying in ${delay} ms.`, 'warn');
+      await raceWithAbort(sleep(delay));
+    }
+  }
+}
+
+async function sendCancelFrame() {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (!transport?.isConnected()) return;
+    try {
+      await transport.send(buildMessage(MSG.CANCEL, 0));
+      return;
+    } catch (error) {
+      if (attempt === 3) {
+        log(`Failed to send CANCEL: ${error.message}`, 'error');
+        return;
+      }
+      await sleep(200);
+    }
+  }
+}
+
+async function cancelActiveTransfer(origin) {
+  const transfer = activeTransfer;
+  if (transfer && !transfer.controller.signal.aborted) transfer.controller.abort(makeAbortError());
+  if (origin === 'user') {
+    if (!transfer && !inboundMeta && inboundHelloItemId == null) return;
+    log('Transfer cancelled by user', 'warn');
+    setProgress(0, 'Cancelled');
+    if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
+    if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled', 'cancelled');
+    await sendCancelFrame();
+    if (!transfer && (inboundMeta || inboundHelloItemId != null)) {
+      receiver?.resetItem();
+      inboundMeta = null;
+      inboundHelloItemId = null;
+      addSystemMessage('Transfer cancelled by user');
+      scheduleYieldedRetry();
+    }
+  } else if (origin === 'peer') {
+    inboundMeta = null;
+    updateControls();
+    log('Transfer cancelled by peer', 'warn');
+    addSystemMessage('Transfer cancelled');
+    setProgress(0, 'Transfer cancelled');
+    if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled by peer', 'cancelled');
+    if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled by peer', 'cancelled');
+  }
+  setSending(false);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function createMockPair() {
+  const usb = new LinkedMockTransport('Mock USB');
+  const ble = new LinkedMockTransport('Mock BLE peer');
+  usb.link(ble);
+  ble.link(usb);
+  setupMockPeer(ble);
+  return { usb: linkMockAcrossTabs(usb, 'usb'), ble };
+}
+
+function linkMockAcrossTabs(transport, role) {
+  if (!globalThis.BroadcastChannel) return transport;
+  const channel = new BroadcastChannel('pocket-airbridge-mock-bridge');
+  let remoteConnected = false;
+  const originalConnect = transport.connect.bind(transport);
+  const originalDisconnect = transport.disconnect.bind(transport);
+  const originalSend = transport.send.bind(transport);
+  const announce = type => channel.postMessage({ type, role });
+
+  channel.onmessage = event => {
+    const message = event.data;
+    if (!message || message.role === role) return;
+    if (message.type === 'connected') {
+      const wasRemoteConnected = remoteConnected;
+      remoteConnected = true;
+      if (!wasRemoteConnected) announce('connected');
+    } else if (message.type === 'disconnected') {
+      remoteConnected = false;
+    } else if (message.type === 'frame' && remoteConnected) {
+      transport.receiveCallback?.(new Uint8Array(message.frame));
+    }
+  };
+
+  transport.connect = async () => {
+    await originalConnect();
+    announce('connected');
+  };
+  transport.disconnect = async () => {
+    announce('disconnected');
+    channel.close();
+    await originalDisconnect();
+  };
+  transport.send = async frame => {
+    if (!remoteConnected) return originalSend(frame);
+    const copy = new Uint8Array(frame);
+    await sleep(8);
+    channel.postMessage({ type: 'frame', role, frame: copy });
+  };
+  return transport;
+}
+
+class LinkedMockTransport {
+  constructor(name) {
+    this.name = name;
+    this.peer = null;
+    this.connected = false;
+    this.receiveCallback = null;
+    this.disconnectCallback = null;
+  }
+
+  link(peer) { this.peer = peer; }
+  async connect() { this.connected = true; if (this.peer) this.peer.connected = true; }
+  async disconnect() { this.connected = false; if (this.peer) this.peer.connected = false; this.disconnectCallback?.(); }
+  async send(frame) {
+    if (!this.connected || !this.peer?.connected) throw new Error(`${this.name} is not connected`);
+    const copy = new Uint8Array(frame);
+    await sleep(8);
+    this.peer.receiveCallback?.(copy);
+  }
+  onReceive(callback) { this.receiveCallback = callback; return () => { if (this.receiveCallback === callback) this.receiveCallback = null; }; }
+  onDisconnect(callback) { this.disconnectCallback = callback; return () => { if (this.disconnectCallback === callback) this.disconnectCallback = null; }; }
+  isConnected() { return this.connected; }
+  getName() { return this.name; }
+}
+
+function setupMockPeer(peerTransport) {
+  const peerSender = new ItemSender(frame => peerTransport.send(frame), { timeoutMs: 1200, retries: 2 });
+  const peerReceiver = new ItemReceiver({ sendFn: frame => peerTransport.send(frame) });
+  let replyTimer = null;
+
+  peerTransport.onReceive(async frame => {
+    const msg = parseMessage(frame);
+    if (!msg) return;
+    if (msg.type === MSG.ACK) {
+      peerSender.receiveAck(msg);
+      return;
+    }
+    await peerReceiver.onMessage(msg);
+  });
+
+  peerReceiver.on('item', ({ meta, data }) => {
+    clearTimeout(replyTimer);
+    const description = meta.kind === 'text' ? `"${textDecoder.decode(data)}"` : `${meta.name} (${formatBytes(meta.size || data.length)})`;
+    replyTimer = setTimeout(() => sendMockReply(peerSender, description), 350);
+  });
+  peerReceiver.on('cancel', () => clearTimeout(replyTimer));
+}
+
+async function sendMockReply(peerSender, description) {
+  const text = `Mock peer received ${description}`;
+  const data = textEncoder.encode(text);
+  const hash = await sha256(data);
+  const chunks = makeChunks(data);
+  const itemId = nextId();
+  const meta = makeMeta({ itemId, kind: 'text', name: `mock-reply-${itemId}.txt`, mimeType: 'text/plain;charset=utf-8', size: data.length, chunks: chunks.length, hash });
+  try {
+  await peerSender.sendHello(itemId);
+    await peerSender.sendItemMeta(meta);
+    await peerSender.sendItemData(chunks);
+    await peerSender.sendItemDone();
+  } catch (error) {
+    log(`Mock peer reply failed: ${error.message}`, 'error');
+  }
+}
+
+$('connectBtn').addEventListener('click', connect);
+$('disconnectBtn').addEventListener('click', disconnect);
+$('textForm').addEventListener('submit', event => { event.preventDefault(); sendText(); });
+$('textInput').addEventListener('input', updateControls);
+$('fileInput').addEventListener('change', () => {
+  updateControls();
+});
+$('sendFileBtn').addEventListener('click', sendSelectedFile);
+$('cancelBtn').addEventListener('click', () => { cancelActiveTransfer('user'); });
+updateControls();
+log(isMockMode ? 'Mock mode ready. Click Connect to start linked USB/BLE transports.' : 'WebHID mode ready. Use Chrome/Edge on localhost or HTTPS.');
+</script>
+</body>
+</html>

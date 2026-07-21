@@ -1,4 +1,14 @@
-const HID_FILTERS = [{ vendorId: 0x0483, productId: 0x5742 }];
+const HID_FILTERS = [
+  { vendorId: 0x046D, productId: 0xC31C },
+  { vendorId: 0x413C, productId: 0x2113 },
+  { vendorId: 0x045E, productId: 0x07F8 },
+  { vendorId: 0x045E, productId: 0x07A5 },
+  { vendorId: 0x03F0, productId: 0x5341 },
+];
+
+const PINNED_PIDS = new Set(
+  HID_FILTERS.map(f => `${f.vendorId.toString(16).padStart(4,'0')}:${f.productId.toString(16).padStart(4,'0')}`),
+);
 const HID_REPORT_ID = 0x00;
 const HID_REPORT_LEN = 64;
 const HEADER_LEN = 5;
@@ -69,9 +79,17 @@ export class WebHIDAdapter {
     if (!navigator.hid) throw new Error('WebHID is not available in this browser');
 
     const cachedDevices = await navigator.hid.getDevices();
-    let device = cachedDevices.find(({ vendorId, productId }) =>
-      HID_FILTERS.some(filter => filter.vendorId === vendorId && filter.productId === productId),
+    // Prefer an exact vendorId+productId match from the pinned set; fall back to
+    // vendorId-only (legacy entries) only when no pinned device is available.
+    let device = cachedDevices.find(
+      ({ vendorId, productId }) =>
+        PINNED_PIDS.has(`${vendorId.toString(16).padStart(4,'0')}:${productId.toString(16).padStart(4,'0')}`),
     );
+    if (!device) {
+      device = cachedDevices.find(({ vendorId, productId }) =>
+        HID_FILTERS.some(filter => filter.vendorId === vendorId && filter.productId == null),
+      );
+    }
 
     if (!device) {
       const devices = await navigator.hid.requestDevice({ filters: HID_FILTERS });

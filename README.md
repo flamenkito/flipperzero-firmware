@@ -2,7 +2,7 @@
 
 A browser-only, offline chat and attachment exchange system using a **Flipper Zero** as a physical bridge between two computers.
 
-**Hackathon goal**: Exchange text messages and send small files or images between PC-A and PC-B with no network, no cloud, and no keyboard emulation.
+**Hackathon goal**: Exchange text messages and send small files or images between PC-A and PC-B with no network, no cloud, and nothing to install on either PC.
 
 ## Quickstart
 
@@ -32,6 +32,47 @@ Read the full architecture in [`docs/architecture.md`](docs/architecture.md).
 Binary wire protocol over 64-byte frames. Message types: `HELLO`, `ITEM_META`, `ITEM_DATA`, `ACK`, `NACK` (reserved, unused), `ITEM_DONE`, `ERROR`, `BUSY`, `CANCEL`. ACKs carry `[acked_type, acked_seq]`; the receiver verifies SHA-256 before ACKing `ITEM_DONE`.
 
 Read the full specification in [`docs/protocol.md`](docs/protocol.md).
+
+## Locked-down PC bootstrap (Deploy app)
+
+Some corporate PCs are locked down by device-control policy: no mass storage, no network transfer, no local files. HID is the only USB class that survives. The Deploy flow turns that policy to our advantage. The Flipper impersonates an HP "Wireless Keyboard and Mouse" dongle (VID `0x03F0`, PID `0x5341`), a composite device with a real keyboard collection and a vendor-defined collection on usage page `0xFF00`. It types a small bootstrap into the browser as if it were a keyboard, the bootstrap opens WebHID on the vendor collection, and the Flipper streams the complete chat app to the PC over the existing vendor HID channel. PC-B (the BLE side) is unchanged.
+
+### Honest framing
+
+This is BadUSB-shaped by design. Keyboard emulation is the whole point: it is the only delivery channel a HID-only policy cannot block. The guardrails are deliberate:
+
+- Keystrokes are emitted only from an explicit `Deploy app` menu action on the Flipper, and only after you place the cursor and press OK to confirm.
+- The Flipper screen shows `TYPING…` for the entire emission; pressing BACK aborts instantly.
+- No keyboard report is ever sent in Bridge mode or on any data path. Typing exists only inside the Deploy flow.
+- The typed payload is a fixed, reviewable, ASCII-only artifact: [`web/bootstrap.js`](web/bootstrap.js) in this repo (1,200 characters).
+- The whole thing requires physical possession of the Flipper plus explicit on-device actions.
+
+### Steps
+
+1. **Build the app bundle:**
+   ```bash
+   python3 tools/build_bundle.py
+   ```
+   This inlines the shared JS modules into a single self-contained `dist/app-usb.html`.
+2. **Deploy the bootstrap and the bundle to the Flipper SD card** (exact commands in [docs/firmware-guide.md](docs/firmware-guide.md)).
+3. **Launch Pocket AirBridge** on the Flipper and select **Deploy app**. The screen asks you to place the cursor, then press OK.
+4. **On the target PC**, open a browser tab at `https://example.com`, open DevTools (F12), and click into the console. Any `https://` page works; `about:blank` is possible but verify first — on some Chrome builds `window.isSecureContext === false` there, which blocks WebHID. Run `console.log(window.isSecureContext)` to confirm before proceeding.
+5. **Press OK on the Flipper.** The bootstrap types itself into the console while the screen shows `TYPING…` (BACK aborts). Once executed, it paints a minimal landing page with a Connect button.
+6. **Click Connect.** Your real click supplies the user activation WebHID needs; pick the device in the browser prompt. The Flipper streams the full app from its SD card and the bootstrap replaces the page with it.
+
+`data:` URLs are dead for this purpose (`window.isSecureContext === false`, so WebHID is unavailable there). `about:blank` is NOT reliably a secure context — on some Chrome builds `window.isSecureContext === false` and `navigator.hid` is undefined, while the same Chrome build passes on `https://example.com`. The robust validated channel is ANY `https://` page plus the DevTools console. Both facts were confirmed on real Chrome on 2026-07-20 (about:blank insecure on the user's build; https://example.com worked end-to-end on hardware).
+
+The typed snippet carries a WebHID filter list that enumerates every profile VID/PID (Logitech, Dell, MSFT, HP). On the target machine only the Flipper matches; other devices with those IDs are not present.
+
+### Keyboard layout requirement
+
+The typed payload is ASCII-only but includes symbols like `{}[]();:=>"'`. The Flipper types it using US keyboard scancodes, so **the target PC must use a US keyboard layout**. On any other layout the symbols mistype.
+
+### Verified on hardware
+
+- HP composite enumeration verified on macOS, 2026-07-20: VID `0x03F0` PID `0x5341`, exact HP product/manufacturer strings, keyboard collection claimed by the OS while WebHID opens the vendor `0xFF00` collection, bidirectional chat through the HP composite.
+- The Windows `usbccgp` tree-compare against the real dongle capture is **deferred**. Run the same `Get-PnpDevice` capture on the target machine when one is available.
+- One USB profile is active at a time, selected by `/ext/apps_data/pocket_airbridge/config` (default `hp_kbd_vendor`). The configured profile is applied automatically a short moment after app start and is held until the app exits (always-on). There is no runtime switching: composite-to-composite reconfiguration is fatal on this USB stack (the device dies silently and needs a physical reset).
 
 ## Verified on hardware (2026-07-20)
 

@@ -60,6 +60,17 @@ cd ~/projects/flipperzero-firmware
 
 If this is the first build after adding the USB profile, the firmware will detect new API symbols. The build script will update `api_symbols.csv` with `?` markers. Change them to `+` and re-run the build command (this was already done during setup).
 
+## Flashing Firmware
+
+On a normally-booted, USB-connected Flipper:
+
+```bash
+cd ~/projects/flipperzero-firmware
+./fbt flash_usb
+```
+
+This bundles a self-update package, uploads it over the serial CLI to `/ext/update/f7-update-local/`, and the Flipper reboots into its own updater to flash itself. The serial port disappears for roughly 30 to 60 seconds during the self-update, then reappears on its own. No DFU button combo, no ST-Link, no qFlipper needed. Manual DFU is a recovery path for bricked devices only, not a prerequisite for normal flashing.
+
 ## Deploy
 
 ### Option A: Build, Upload, and Launch with Official Scripts (Verified)
@@ -104,6 +115,8 @@ ioreg -p IOUSB -l | grep -A25 -i "Pocket AirBridge\|5742"
 
 Expected values include `USB Product Name = "Pocket AirBridge"`, `idVendor = 1155` (`0x0483`), and `idProduct = 22338` (`0x5742`).
 
+(These values describe the original development identity; the shipped FAP impersonates full device personalities and never exposes VID `0x0483` on the bus while running.)
+
 ### Option B: `./fbt launch`
 
 ```bash
@@ -123,12 +136,76 @@ Then copy the `.fap` manually:
 cp dist/f7/C/apps/USB/pocket_airbridge.fap /Volumes/Flipper/apps/USB/
 ```
 
+## Deploy App Files to the SD Card
+
+The Deploy flow reads its files from `/ext/apps_data/pocket_airbridge/` on the SD card:
+
+| SD path | Source | Role |
+|---|---|---|
+| `/ext/apps_data/pocket_airbridge/bootstrap.js` | `web/bootstrap.js` | The typed snippet. ASCII-only, 1,200 characters. The snippet carries a WebHID filter list that enumerates every profile VID/PID (Logitech, Dell, MSFT, HP), so it matches whichever impersonation is active; on the target machine only the Flipper is present. |
+| `/ext/apps_data/pocket_airbridge/app-usb.html` | `dist/app-usb.html` | The single-file app bundle that gets streamed to the PC. |
+
+Build the bundle, then send both files. The AirBridge app must NOT be running while you do this (the serial port only exists when the app is exited):
+
+```bash
+cd ~/projects/flipper-hid
+python3 tools/build_bundle.py
+
+cd ~/projects/flipperzero-firmware
+python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
+  ~/projects/flipper-hid/web/bootstrap.js \
+  /ext/apps_data/pocket_airbridge/bootstrap.js
+
+python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
+  ~/projects/flipper-hid/dist/app-usb.html \
+  /ext/apps_data/pocket_airbridge/app-usb.html
+
+python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 size \
+  /ext/apps_data/pocket_airbridge/app-usb.html
+```
+
+The `size` command should report `70415` bytes for the current bundle.
+
+**Timing matters:** while a composite profile is active (Bridge or Deploy mode) the Flipper has NO serial port at all, and `storage.py` fails with `Failed to resolve port`. Deploy these files BEFORE entering Bridge/Deploy, or exit the app to restore the CLI, then send them.
+
+## USB Personalities and the Deploy Flow
+
+While the app runs, the Flipper never exposes its real USB identity (STM32 VID `0x0483`) on the bus. Every personality is a full impersonation of a legitimate device: VID/PID, strings, and descriptor shape. The primary profile is `hp_kbd_vendor`, an HP "Wireless Keyboard and Mouse" dongle (VID `0x03F0`, PID `0x5341`): a composite with a keyboard collection (used only by the Deploy flow) and a vendor-defined collection on usage page `0xFF00` (the AirBridge data channel).
+
+The active profile is selected once, by `/ext/apps_data/pocket_airbridge/config`:
+
+```ini
+# /ext/apps_data/pocket_airbridge/config — active profile label
+profile=hp_kbd_vendor
+```
+
+`hp_kbd_vendor` is the default; the app uses it when the config file is absent. Writing the file explicitly is optional:
+
+```bash
+printf 'profile=hp_kbd_vendor\n' > /tmp/airbridge-config
+python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
+  /tmp/airbridge-config /ext/apps_data/pocket_airbridge/config
+```
+
+**There is no runtime profile switching.** The profile line in the FAP menu is display-only. This was removed by design on 2026-07-20 after hardware testing showed that CDC→composite apply works, but composite→composite reconfiguration (switching from one impersonation profile to another) is fatal on this USB stack: the device dies silently and needs a physical reset. Analysis pinned a definite endpoint-number collision (vendor IN `0x82` / OUT `0x02` shared endpoint index 2) plus risky manual endpoint teardown in deinit. The configured profile is applied automatically a short moment after app start and is held until app exit (always-on); the previous USB mode is restored only on app exit.
+
+### The Deploy Flow
+
+1. Select **Deploy app** in the FAP menu.
+2. The screen prompts: `Place cursor in browser console, then press OK`. On the target PC, open a tab at `https://example.com` (not `about:blank` — some Chrome builds report `window.isSecureContext === false` there, which blocks WebHID; verify with `console.log(window.isSecureContext)`).
+3. On OK, the FAP types `bootstrap.js` from the SD card over the keyboard interface. The screen shows `TYPING…` for the entire emission; BACK aborts instantly.
+4. The screen shows `Waiting for request…`. On the PC, the executed bootstrap paints a landing page; clicking **Connect** opens WebHID and sends the `0x42` bundle request on the vendor interface.
+5. The FAP streams the length+checksum header, then the bundle in 64-byte reports (see [protocol.md](protocol.md), "Bootstrap Stream Protocol").
+6. The screen shows `Done` and prompts to enter Bridge mode.
+
+Deploy requires a kbd+vendor profile. If the active personality were vendor-only, Deploy would refuse with `Set USB mode to Kbd+Vendor first`.
+
 ## Revert Firmware Changes
 
 ```bash
 cd ~/projects/flipperzero-firmware
-git checkout targets/f7/furi_hal/furi_hal_usb_airbridge.c
-git checkout targets/furi_hal_include/furi_hal_usb_airbridge.h
+rm targets/f7/furi_hal/furi_hal_usb_airbridge.c
+rm targets/furi_hal_include/furi_hal_usb_airbridge.h
 git checkout targets/furi_hal_include/furi_hal_usb.h
 git checkout applications/services/bt/bt_service/bt.c
 git checkout applications/services/bt/bt_service/bt.h
@@ -150,6 +227,8 @@ Our new `usb_airbridge` profile is a **vendor-defined HID device**:
 - VID/PID: `0x0483 / 0x5742`
 
 The sender page connects to it via WebHID using the VID/PID filter.
+
+**Note:** the values above describe the original development identity. The shipped FAP impersonates full device personalities and never exposes VID `0x0483` on the bus while running; see "USB Personalities and the Deploy Flow" above. The `0x0483/0x5742` identity is retired and not used by the live firmware.
 
 ### BLE Side
 
@@ -244,7 +323,7 @@ Legacy file-transfer-only pages are still available:
 |---|---|
 | `API version is still WIP` | Edit `targets/f7/api_symbols.csv` — change `?` to `+` for new entries, then rebuild |
 | `app may not be runnable. Symbols not resolved` | Make sure new functions are declared in `bt.h` and added to `api_symbols.csv` |
-| WebHID can't open device | Check that the chat-usb page uses `vendorId: 0x0483, productId: 0x5742` and is on `localhost` or `https` |
+| WebHID can't open device | Check that the chat-usb page targets the active impersonation profile and is on `localhost` or `https` |
 | Web Bluetooth can't find Flipper | Make sure the Flipper is advertising (app running) and Bluetooth is enabled on PC-B. Use Chrome/Edge |
 | Web Bluetooth selects Flipper but says Serial service UUID is missing | Refresh `chat-ble.html`; the browser must use the canonical UUIDs (`8fe5...`, `19ed...`), not the firmware byte-order strings |
 | Transfer is slow | Expected — 64-byte chunks at ~50-100 Hz is normal for BLE HID demo throughput |
@@ -252,6 +331,7 @@ Legacy file-transfer-only pages are still available:
 | Flipper reboots | Increase `stack_size` in `application.fam` (try `3 * 1024`) |
 | `storage.py` hangs | Stop stale serial clients, then physically unplug/replug Flipper USB and retry after it returns to the desktop |
 | `runfap.py` ends with `Device not configured` | Expected for Pocket AirBridge after launch because the app switches USB from CDC serial to custom HID |
+| Flipper unresponsive after app launch or a USB mode switch | Probe with `python3 tools/flipper_alive.py --wait 30` (from this repo). A healthy CLI answers `\r` with a `>:` prompt within 5 s. Port present but silent means the firmware is hung (USB CDC still enumerated, firmware dead). Recovery is a physical reset; do not attempt a DTR-toggle reset from software |
 | `storage.py` can't find `/dev/cu.usbmodemflip_*` | The AirBridge app is still running — exit it (BACK) or restart the Flipper so the serial port reappears |
 | `TXERR` counter is non-zero | One `TXERR` can occur during a mid-flight cancel race (a frame reaches the main loop after the peer went away); benign if the transfer error is visible on both pages. Persistent `TXERR` growth means the BLE link is down — reconnect PC-B |
 | App is missing an icon | Add `applications_user/pocket_airbridge/icon.png` and `fap_icon="icon.png"` in `application.fam`, then rebuild/redeploy |

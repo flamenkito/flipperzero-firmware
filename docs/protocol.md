@@ -184,6 +184,18 @@ PC-A (USB)      Bridge          PC-B (BLE)
 - Upon receiving CANCEL, both sides transition to `[CANCELLED]`, discard partial data, and display a cancellation notice.
 - The bridge forwards ERROR and CANCEL messages transparently in both directions.
 
+## Bootstrap Stream Protocol (Deploy Flow)
+
+This is a separate, deliberately simpler protocol from the chat protocol above. It exists for the Deploy flow: a one-shot, download-only transfer of the app bundle from the Flipper to a just-typed bootstrap page on the target PC. USB interrupt IN transfers are hardware-reliable, so there is no per-chunk ACK; adding one would inflate the typed snippet for no gain.
+
+1. **Request (bootstrap → FAP):** a single 64-byte report with byte 0 = `0x42` (`'B'`, bundle request).
+2. **Header (FAP → bootstrap):** the first 64-byte response report carries a 4-byte little-endian `total_len` (bundle size in bytes) followed by a 4-byte little-endian `checksum` (the additive uint32 sum of all file bytes). The rest of the report is zero.
+3. **Data (FAP → bootstrap):** the bundle bytes follow in sequential 64-byte reports, in order, with the tail zero-padded.
+4. **Verify and load:** the bootstrap accumulates exactly `total_len` bytes, recomputes the additive checksum, and compares it against the header value. On match it replaces the page: `document.open(); document.write(text); document.close();`.
+5. **Failure:** on checksum mismatch the landing page shows `Transfer corrupt — retry` and the Connect button re-arms, so the user can click Connect again to restart the download.
+
+The additive checksum exists to catch profile-switch race bytes at the start of the stream. It is not a security measure; the trust boundary is physical delivery from the user's own Flipper.
+
 ## Known Limitations (MVP)
 
 - No encryption or authentication beyond the BLE pairing PIN and browser permission pickers (see Consent Model).
