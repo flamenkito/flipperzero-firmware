@@ -8,6 +8,9 @@
 #include <gui/elements.h>
 #include <assets_icons.h>
 #include <profiles/serial_profile.h>
+#include <services/airbridge_serial_service.h>
+
+extern const FuriHalBleProfileTemplate* const ble_profile_airbridge __attribute__((weak));
 
 #define TAG "BtSrv"
 
@@ -16,6 +19,30 @@
 #define BT_RPC_EVENT_ALL          (BT_RPC_EVENT_BUFF_SENT | BT_RPC_EVENT_DISCONNECTED)
 
 #define ICON_SPACER 2
+
+/* Pocket AirBridge raw serial passthrough hook */
+static BtRawSerialCallback bt_raw_serial_cb = NULL;
+static void* bt_raw_serial_ctx = NULL;
+static Bt* bt_instance = NULL;
+
+static bool bt_profile_is_airbridge(FuriHalBleProfileBase* profile) {
+    return profile && &ble_profile_airbridge &&
+           furi_hal_bt_check_profile_type(profile, ble_profile_airbridge);
+}
+
+void bt_set_raw_serial_callback(BtRawSerialCallback cb, void* ctx) {
+    bt_raw_serial_cb = cb;
+    bt_raw_serial_ctx = ctx;
+}
+
+bool bt_serial_tx(const uint8_t* data, uint16_t len) {
+    if(!bt_instance || !bt_instance->current_profile) return false;
+    if(bt_profile_is_airbridge(bt_instance->current_profile)) {
+        BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
+        return serial_svc && ble_svc_airbridge_serial_update_tx(serial_svc, (uint8_t*)data, len);
+    }
+    return ble_profile_serial_tx(bt_instance->current_profile, (uint8_t*)data, len);
+}
 
 static void bt_draw_statusbar_callback(Canvas* canvas, void* context) {
     furi_assert(context);
@@ -191,6 +218,13 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
     uint16_t ret = 0;
 
     if(event.event == SerialServiceEventTypeDataReceived) {
+        if(bt_raw_serial_cb) {
+            ret = bt_raw_serial_cb(event.data.buffer, event.data.size, bt_raw_serial_ctx);
+            return ret;
+        }
+        if(bt_profile_is_airbridge(bt->current_profile)) {
+            return ret;
+        }
         size_t bytes_processed =
             rpc_session_feed(bt->rpc_session, event.data.buffer, event.data.size, 1000);
         if(bytes_processed != event.data.size) {
@@ -260,6 +294,7 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
     bool do_update_status = false;
     bool current_profile_is_serial =
         furi_hal_bt_check_profile_type(bt->current_profile, ble_profile_serial);
+    bool current_profile_is_airbridge = bt_profile_is_airbridge(bt->current_profile);
 
     if(event.type == GapEventTypeConnected) {
         // Update status bar
@@ -267,6 +302,13 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
         do_update_status = true;
         // Clear BT_RPC_EVENT_DISCONNECTED because it might be set from previous session
         furi_event_flag_clear(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
+
+        if(current_profile_is_airbridge) {
+            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
+            furi_check(serial_svc);
+            ble_svc_airbridge_serial_set_callbacks(
+                serial_svc, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
+        }
 
         if(current_profile_is_serial) {
             // Open RPC session
@@ -295,6 +337,11 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
             furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
         ret = true;
     } else if(event.type == GapEventTypeDisconnected) {
+        if(current_profile_is_airbridge) {
+            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
+            furi_check(serial_svc);
+            ble_svc_airbridge_serial_set_callbacks(serial_svc, 0, NULL, NULL);
+        }
         if(current_profile_is_serial && bt->rpc_session) {
             FURI_LOG_I(TAG, "Close RPC connection");
             ble_profile_serial_set_rpc_active(
@@ -519,6 +566,7 @@ static void bt_init_keys_settings(Bt* bt) {
 int32_t bt_srv(void* p) {
     UNUSED(p);
     Bt* bt = bt_alloc();
+    bt_instance = bt;
 
     if(furi_hal_rtc_get_boot_mode() != FuriHalRtcBootModeNormal) {
         FURI_LOG_W(TAG, "Skipping start in special boot mode");

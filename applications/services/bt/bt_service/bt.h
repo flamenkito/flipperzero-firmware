@@ -5,6 +5,8 @@
 #include <furi_ble/profile_interface.h>
 #include <core/common_defines.h>
 
+typedef uint16_t (*BtRawSerialCallback)(const uint8_t* data, uint16_t len, void* context);
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -78,6 +80,21 @@ void bt_keys_storage_set_storage_path(Bt* bt, const char* keys_storage_path);
  * @param bt                    Bt instance
  */
 void bt_keys_storage_set_default_path(Bt* bt);
+
+/** Set raw serial callback for AirBridge passthrough
+ *
+ * @param cb    callback invoked on every BLE serial RX packet
+ * @param ctx   context passed to callback
+ */
+void bt_set_raw_serial_callback(BtRawSerialCallback cb, void* ctx);
+
+/** Send raw bytes over BLE Serial (AirBridge TX)
+ *
+ * @param data  bytes to send
+ * @param len   number of bytes
+ * @return      true on success
+ */
+bool bt_serial_tx(const uint8_t* data, uint16_t len);
 
 #ifdef __cplusplus
 }

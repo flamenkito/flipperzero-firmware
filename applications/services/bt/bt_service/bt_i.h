@@ -64,6 +64,8 @@ typedef struct {
     FuriHalBleProfileBase** profile_instance;
 } BtMessage;
 
+/* BtRawSerialCallback, bt_set_raw_serial_callback, and bt_serial_tx are declared in bt.h */
+
 struct Bt {
     uint8_t* bt_keys_addr_start;
     uint16_t bt_keys_size;

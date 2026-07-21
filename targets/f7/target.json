@@ -47,6 +47,7 @@
         "update_util",
         "heatshrink",
         "flipperformat",
+        "ble_profile",
         "flipper7",
         "bit_lib",
         "toolbox",

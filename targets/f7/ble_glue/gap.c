@@ -437,9 +437,8 @@ static void gap_advertise_start(GapState new_state) {
     // Stop advertising timer
     furi_timer_stop(gap->advertise_timer);
 
-    if((new_state == GapStateAdvLowPower) &&
-       ((gap->state == GapStateAdvFast) || (gap->state == GapStateAdvLowPower))) {
-        // Stop advertising
+    if(gap->state > GapStateIdle) {
+        // Stop advertising before restarting (handles AdvFast→AdvFast refresh)
         status = aci_gap_set_non_discoverable();
         if(status) {
             FURI_LOG_E(TAG, "set_non_discoverable failed %d", status);
@@ -526,7 +525,8 @@ void gap_stop_advertising(void) {
 
 static void gap_advetise_timer_callback(void* context) {
     UNUSED(context);
-    GapCommand command = GapCommandAdvLowPower;
+    // Keep fast advertising indefinitely instead of switching to low-power
+    GapCommand command = GapCommandAdvFast;
     furi_check(furi_message_queue_put(gap->command_queue, &command, 0) == FuriStatusOk);
 }
 
