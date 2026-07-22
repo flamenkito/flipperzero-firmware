@@ -3,9 +3,25 @@
 ## Transport Layer
 
 - **USB HID**: Vendor-defined Usage Page `0xFF00`, Usage `0x01`. Report size: 64 bytes.
-- **BLE GATT**: Flipper Serial-over-BLE service reused as a byte pipe. The browser uses the canonical service UUID `8fe5b3d5-2e7f-4a98-2a48-7acc60fe0000` with TX `19ed82ae-ed21-4c9d-4145-228e61fe0000` and RX `19ed82ae-ed21-4c9d-4145-228e62fe0000`. MTU assumed ≥64 bytes.
+- **BLE GATT**: AirBridge serial service used as a byte pipe. The browser uses the on-air UUIDs generated in `web/airbridge-identity.js`: service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27`, and RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`. MTU assumed ≥64 bytes.
 
 Because a single HID report is 64 bytes, the protocol message fits within one report. The maximum payload per message is **59 bytes** (64 minus 5-byte header). For the MVP, chunk payload is capped at **59 bytes**. Larger files are simply split into more chunks.
+
+### BLE identity and service composition
+
+The FAP reads `ble_name`, `ble_mac`, `ble_appearance`, `ble_mfg_company`,
+`ble_mfg_hex`, `ble_dis_mfr`, `ble_dis_model`, `ble_dis_serial`, and
+`ble_dis_pnp` from `/ext/apps_data/pocket_airbridge/config`. These values set
+the advertising identity and DIS values for the AirBridge BLE profile. The
+profile includes Battery, DIS, HIDS, and AirBridge serial; Web Bluetooth uses
+only the serial service. HIDS exists for explicit BLE Deploy typing and carries
+no Bridge-mode keyboard traffic.
+
+Pairing remains numeric-comparison/authenticated for each connection, while
+`bonding_mode = false` prevents a persistent keyboard bond from causing macOS
+to hoard the HID connection. The serial service's additional UUIDs are flow
+control notify `d2d968bf-cbd8-568f-d24c-5bbddb824f25` and status notify/read/write
+`bebb7113-63db-bbae-bb45-37dbbf73b6b3`.
 
 ## Wire Format
 
@@ -123,7 +139,7 @@ Both sides can initiate transfers, so the **browser endpoints** enforce strict h
 
 There is no application-level authentication or encryption (see Known Limitations). The explicit user consent for a transfer comes from the platform:
 
-1. **BLE pairing PIN on the Flipper screen** — the Flipper's BLE serial service requires authenticated pairing; the user confirms a PIN shown on the Flipper display before the BLE link can carry any data.
+1. **BLE numeric comparison on the Flipper screen** — the AirBridge serial service requires authenticated pairing; the user confirms the comparison for each connection before the BLE link can carry data. Bonding is intentionally disabled, so that consent does not persist as a keyboard bond.
 2. **Browser permission pickers** — WebHID (PC-A) and Web Bluetooth (PC-B) both require a user gesture and an explicit device-selection dialog before any byte can flow.
 
 A transfer therefore requires physical consent on the Flipper plus explicit per-browser consent on both PCs.
@@ -186,19 +202,28 @@ PC-A (USB)      Bridge          PC-B (BLE)
 
 ## Bootstrap Stream Protocol (Deploy Flow)
 
-This is a separate, deliberately simpler protocol from the chat protocol above. It exists for the Deploy flow: a one-shot, download-only transfer of the app bundle from the Flipper to a just-typed bootstrap page on the target PC. USB interrupt IN transfers are hardware-reliable, so there is no per-chunk ACK; adding one would inflate the typed snippet for no gain.
+This is a separate, deliberately simpler protocol from the chat protocol above. It exists for the Deploy flow: a one-shot, download-only transfer of the app bundle from the Flipper to a just-typed bootstrap page on the target PC. The selected deploy transport routes each bootstrap to its matching bundle:
 
-1. **Request (bootstrap → FAP):** a single 64-byte report with byte 0 = `0x42` (`'B'`, bundle request).
-2. **Header (FAP → bootstrap):** the first 64-byte response report carries a 4-byte little-endian `total_len` (bundle size in bytes) followed by a 4-byte little-endian `checksum` (the additive uint32 sum of all file bytes). The rest of the report is zero.
-3. **Data (FAP → bootstrap):** the bundle bytes follow in sequential 64-byte reports, in order, with the tail zero-padded.
-4. **Verify and load:** the bootstrap accumulates exactly `total_len` bytes, recomputes the additive checksum, and compares it against the header value. On match it replaces the page: `document.open(); document.write(text); document.close();`.
+| Deploy control | Typed bootstrap | Bundle | Delivery channel |
+|---|---|---|---|
+| **UP** | `bootstrap.js` | `app-usb.html` | USB vendor HID |
+| **DOWN** | `bootstrap-ble.js` | `app-ble.html` | AirBridge serial TX notify |
+
+The FAP loads the matching pair from `/ext/apps_data/pocket_airbridge/`. No
+per-chunk ACK is used for the bootstrap stream; USB interrupt IN reports are
+hardware-reliable and BLE retries transient notification congestion.
+
+1. **Request (bootstrap → FAP):** byte 0 = `0x42` (`'B'`, bundle request), sent as a 64-byte USB report or a BLE RX write.
+2. **Header (FAP → bootstrap):** the first response carries a 4-byte little-endian `total_len` (bundle size in bytes) followed by a 4-byte little-endian `checksum` (the additive uint32 sum of all file bytes). USB pads the report to 64 bytes; BLE sends the eight header bytes directly on TX notify.
+3. **Data (FAP → bootstrap):** the bundle bytes follow in order, in up-to-64-byte units. USB uses zero-padded 64-byte reports; BLE sends raw notification payloads.
+4. **Verify and load:** the bootstrap accumulates exactly `total_len` bytes, recomputes the additive checksum, and boots the transferred HTML only when the values match.
 5. **Failure:** on checksum mismatch the landing page shows `Transfer corrupt — retry` and the Connect button re-arms, so the user can click Connect again to restart the download.
 
 The additive checksum exists to catch profile-switch race bytes at the start of the stream. It is not a security measure; the trust boundary is physical delivery from the user's own Flipper.
 
 ## Known Limitations (MVP)
 
-- No encryption or authentication beyond the BLE pairing PIN and browser permission pickers (see Consent Model).
+- No end-to-end application encryption or authentication beyond per-connection BLE numeric comparison and browser permission pickers (see Consent Model).
 - Single item in flight at a time (half-duplex, enforced by the browser endpoints).
 - Single receiver per session.
 - No resume or partial transfer recovery.

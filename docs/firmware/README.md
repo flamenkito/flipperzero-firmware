@@ -1,11 +1,11 @@
 # Pocket AirBridge — Firmware Files
 
-**Staleness note (2026-07-21 — regenerated):** The patch bundle in this directory
-captures the CURRENT state of the firmware tree at `~/projects/flipperzero-firmware`.
-It supersedes the original single-profile patch and reflects the composite
-impersonation framework (5 profiles including HP `0x03F0:0x5341`, always-on,
-no runtime switching). The patches apply cleanly on a pristine dev checkout
-(verified 2026-07-21).
+**Regenerated 2026-07-22:** This bundle captures firmware commit `31f929b2`
+(`feat: HP-impersonating airbridge BLE profile`) plus the uncommitted F3
+working-tree fix, relative to pristine upstream `dev` base `c9ab2b68`. F3
+ignores `BleResetRequest` while the AirBridge profile is active and corrects
+the fallback manufacturer data to HP company identifier bytes `{0x65, 0x00}`.
+Commit F3 before a future clean, commit-only regeneration.
 
 This directory contains everything needed to reproduce the Flipper Zero side of
 Pocket AirBridge on a fresh checkout of the official firmware
@@ -15,15 +15,15 @@ Pocket AirBridge on a fresh checkout of the official firmware
 
 | Path | What it is |
 |---|---|
-| `airbridge-firmware.patch` | All firmware changes: `usb_airbridge` composite HID profile (2 new files), BLE raw-serial hook (`bt_set_raw_serial_callback`, `bt_serial_tx`) in `bt_service`, and the `gap.c` advertising-persistence fix. |
-| `api-symbols-additions.patch` | `targets/f7/api_symbols.csv` additions and removals (version-specific — see below if it doesn't apply cleanly). |
+| `airbridge-firmware.patch` | All firmware changes except `api_symbols.csv`: the USB composite profile, AirBridge BLE profile/services, raw serial routing, GATT capacity/error handling, and advertising fixes. |
+| `api-symbols-additions.patch` | The matching `targets/f7/api_symbols.csv` changes, including `ble_profile_airbridge` and its keyboard, mouse, and consumer-report exports. |
 | `pocket_airbridge/` | The FAP itself (`application.fam`, `pocket_airbridge.c`, `icon.png`). Copy to `applications_user/pocket_airbridge/` in the firmware tree. |
 
 ## Apply
 
 ```bash
 cd flipperzero-firmware
-git checkout -b pocket-airbridge            # optional but recommended
+git checkout -b pocket-airbridge c9ab2b68    # optional but recommended
 git apply /path/to/airbridge-firmware.patch
 git apply /path/to/api-symbols-additions.patch
 cp -r /path/to/pocket_airbridge applications_user/
@@ -48,10 +48,9 @@ impersonation framework** with 5 profiles:
 | HP Kbd+Vendor | `0x03F0` | `0x5341` | Yes | HP Wireless Keyboard |
 
 Each profile is a **composite HID device**: a standard keyboard collection
-(used only in Deploy mode) plus a vendor-defined collection on usage page
-`0xFF00` (used for the data channel in both Bridge and Deploy modes). The
-keyboard collection is never present in Bridge mode — it activates only during
-the Deploy flow.
+(used only by the explicit USB Deploy flow) plus a vendor-defined collection on
+usage page `0xFF00` (the data channel in Bridge and Deploy modes). No keyboard
+reports are emitted in Bridge mode.
 
 The **always-on identity** model means the selected profile is applied once at
 app start and held until the app exits. There is **no runtime switching**:
@@ -59,22 +58,60 @@ composite-to-composite reconfiguration is fatal on this USB stack (the device
 disappears silently and requires a physical reset. The profile is selected from
 `/ext/apps_data/pocket_airbridge/config` (default: `hp_kbd_vendor`).
 
-The Deploy flow uses the keyboard collection to type `web/bootstrap.js` into the
-target PC's browser DevTools console. The payload is ASCII-only, typed with US
-scancodes, and requires a US keyboard layout on the target. The full emission
-shows `TYPING...` on the Flipper screen; pressing BACK aborts instantly.
+The USB Deploy flow uses the keyboard collection to type `web/bootstrap.js`
+into the target PC's browser DevTools console. The payload is ASCII-only, typed
+with US scancodes, and requires a US keyboard layout on the target. The full
+emission shows `TYPING...` on the Flipper screen; pressing BACK aborts
+instantly.
 
-### BLE raw-serial hook
+### AirBridge BLE impersonation profile
 
-`bt_set_raw_serial_callback` / `bt_serial_tx`: intercepts Serial-service RX
-before the RPC session and exposes raw TX. Upstream routes all serial data to
-RPC only.
+The new `ble_profile_airbridge` composes Battery, Device Information Service
+(DIS), Human Interface Device Service (HIDS), and the AirBridge serial service.
+HIDS exposes keyboard, mouse, and consumer report maps so the explicit **DOWN
+= BLE Deploy** flow can type its bootstrap; Bridge mode sends no HID keyboard
+reports.
+
+The FAP loads the BLE identity from
+`/ext/apps_data/pocket_airbridge/config`. The supported keys are:
+
+```ini
+ble_name = HP 725 K+M
+ble_mac = 3C:52:82:00:00:01
+ble_appearance = 0x03C1
+ble_mfg_company = 0x0065
+ble_mfg_hex =
+ble_dis_mfr = HP
+ble_dis_model = HP 725 K+M
+ble_dis_serial = HP5341KBD01
+ble_dis_pnp = 0x0126
+```
+
+`ble_name`, `ble_mac`, GAP appearance, manufacturer data, and DIS values are
+applied to the AirBridge profile. The configured MAC must use an allowlisted HP
+OUI; invalid identity input falls back atomically to compiled HP defaults and
+the FAP displays `WARN: BLE ID DEFAULT`. The profile advertises HIDS (`0x1812`)
+and has `bonding_mode = false`: numeric-comparison pairing and authenticated
+GATT access are still used per connection, but macOS cannot retain a persistent
+bonded keyboard link after the session.
+
+The browser-facing serial UUIDs are generated into
+`web/airbridge-identity.js` in on-air byte order. The service is
+`7b871228-baf0-c5b4-5f46-9c2613d627a3`; TX is the notify characteristic
+`87825ec0-7398-8cb7-3242-b083eaa34f27`; RX is the write characteristic
+`152f7eeb-e3b7-5898-ba41-7ff66121c98d`.
+
+### BLE raw-serial routing
+
+`bt_set_raw_serial_callback` / `bt_serial_tx` route the AirBridge serial
+service's raw RX and TX through the FAP. Upstream routes its stock serial
+service to RPC only. AirBridge TX uses GATT notifications, not indications.
 
 ### `gap.c` fix
 
-Keeps fast advertising instead of dropping to low-power after the advertise
-timer, and fixes AdvFast→AdvFast restart. Needed so the browser can reliably
-discover and stay connected to the Flipper during the demo.
+Retains fast advertising and fixes AdvFast-to-AdvFast restart. The FAP also
+restarts advertising after central disconnects, preventing a Bridge-mode
+discovery wedge.
 
 ## If `api-symbols-additions.patch` doesn't apply cleanly
 
@@ -91,6 +128,7 @@ The `api_symbols.csv` file is version-specific. If the patch fails to apply:
 
 The FAP is a stateless byte relay: USB/GAP callbacks enqueue `BridgeEvent`s, the
 main loop forwards USB→BLE via `bt_serial_tx` and BLE→USB via zero-padded
-64-byte `furi_hal_hid_vendor_send_response`, with on-screen counters and a 500 ms
-LED heartbeat. In Deploy mode it additionally drives keyboard reports via
-`furi_hal_hid_airbridge_kb_press` / `kb_release` / `kb_release_all`.
+64-byte `furi_hal_hid_vendor_send_response`, with on-screen counters and a
+500 ms LED heartbeat. From Bridge, **UP** starts USB Deploy
+(`bootstrap.js` → `app-usb.html`) and **DOWN** starts BLE Deploy
+(`bootstrap-ble.js` → `app-ble.html`).

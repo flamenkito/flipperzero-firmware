@@ -1,8 +1,18 @@
 diff --git a/applications/services/bt/bt_service/bt.c b/applications/services/bt/bt_service/bt.c
-index 7554d87e..d81088f0 100644
+index 7554d87e..83e8b7cd 100644
 --- a/applications/services/bt/bt_service/bt.c
 +++ b/applications/services/bt/bt_service/bt.c
-@@ -17,6 +17,21 @@
+@@ -8,6 +8,9 @@
+ #include <gui/elements.h>
+ #include <assets_icons.h>
+ #include <profiles/serial_profile.h>
++#include <services/airbridge_serial_service.h>
++
++extern const FuriHalBleProfileTemplate* const ble_profile_airbridge __attribute__((weak));
+ 
+ #define TAG "BtSrv"
+ 
+@@ -17,6 +20,30 @@
  
  #define ICON_SPACER 2
  
@@ -11,6 +21,11 @@ index 7554d87e..d81088f0 100644
 +static void* bt_raw_serial_ctx = NULL;
 +static Bt* bt_instance = NULL;
 +
++static bool bt_profile_is_airbridge(FuriHalBleProfileBase* profile) {
++    return profile && &ble_profile_airbridge &&
++           furi_hal_bt_check_profile_type(profile, ble_profile_airbridge);
++}
++
 +void bt_set_raw_serial_callback(BtRawSerialCallback cb, void* ctx) {
 +    bt_raw_serial_cb = cb;
 +    bt_raw_serial_ctx = ctx;
@@ -18,13 +33,17 @@ index 7554d87e..d81088f0 100644
 +
 +bool bt_serial_tx(const uint8_t* data, uint16_t len) {
 +    if(!bt_instance || !bt_instance->current_profile) return false;
++    if(bt_profile_is_airbridge(bt_instance->current_profile)) {
++        BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
++        return serial_svc && ble_svc_airbridge_serial_update_tx(serial_svc, (uint8_t*)data, len);
++    }
 +    return ble_profile_serial_tx(bt_instance->current_profile, (uint8_t*)data, len);
 +}
 +
  static void bt_draw_statusbar_callback(Canvas* canvas, void* context) {
      furi_assert(context);
  
-@@ -191,6 +206,10 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
+@@ -191,6 +218,13 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
      uint16_t ret = 0;
  
      if(event.event == SerialServiceEventTypeDataReceived) {
@@ -32,10 +51,87 @@ index 7554d87e..d81088f0 100644
 +            ret = bt_raw_serial_cb(event.data.buffer, event.data.size, bt_raw_serial_ctx);
 +            return ret;
 +        }
++        if(bt_profile_is_airbridge(bt->current_profile)) {
++            return ret;
++        }
          size_t bytes_processed =
              rpc_session_feed(bt->rpc_session, event.data.buffer, event.data.size, 1000);
          if(bytes_processed != event.data.size) {
-@@ -519,6 +538,7 @@ static void bt_init_keys_settings(Bt* bt) {
+@@ -199,16 +233,26 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
+         }
+         ret = rpc_session_get_available_size(bt->rpc_session);
+     } else if(event.event == SerialServiceEventTypeDataSent) {
+-        furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
++        bool current_profile_is_airbridge = bt_profile_is_airbridge(bt->current_profile);
++        if(current_profile_is_airbridge && bt_raw_serial_cb) {
++            ret = bt_raw_serial_cb(NULL, 0, bt_raw_serial_ctx);
++        } else {
++            furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
++        }
+     } else if(event.event == SerialServiceEventTypesBleResetRequest) {
+-        FURI_LOG_I(TAG, "BLE restart request received");
+-        BtMessage message = {
+-            .type = BtMessageTypeSetProfile,
+-            .data.profile.params = NULL,
+-            .data.profile.template = ble_profile_serial,
+-        };
+-        furi_check(
+-            furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
++        if(bt_profile_is_airbridge(bt->current_profile)) {
++            FURI_LOG_W(TAG, "Ignoring reset request for AirBridge profile");
++        } else {
++            FURI_LOG_I(TAG, "BLE restart request received");
++            BtMessage message = {
++                .type = BtMessageTypeSetProfile,
++                .data.profile.params = NULL,
++                .data.profile.template = ble_profile_serial,
++            };
++            furi_check(
++                furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) ==
++                FuriStatusOk);
++        }
+     }
+     return ret;
+ }
+@@ -260,6 +304,7 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+     bool do_update_status = false;
+     bool current_profile_is_serial =
+         furi_hal_bt_check_profile_type(bt->current_profile, ble_profile_serial);
++    bool current_profile_is_airbridge = bt_profile_is_airbridge(bt->current_profile);
+ 
+     if(event.type == GapEventTypeConnected) {
+         // Update status bar
+@@ -268,6 +313,16 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+         // Clear BT_RPC_EVENT_DISCONNECTED because it might be set from previous session
+         furi_event_flag_clear(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
+ 
++        if(current_profile_is_airbridge) {
++            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
++            if(serial_svc) {
++                ble_svc_airbridge_serial_set_callbacks(
++                    serial_svc, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
++            } else {
++                FURI_LOG_E(TAG, "AirBridge serial service unavailable on connect");
++            }
++        }
++
+         if(current_profile_is_serial) {
+             // Open RPC session
+             bt->rpc_session = rpc_session_open(bt->rpc, RpcOwnerBle);
+@@ -295,6 +350,12 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+             furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
+         ret = true;
+     } else if(event.type == GapEventTypeDisconnected) {
++        if(current_profile_is_airbridge) {
++            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
++            if(serial_svc) {
++                ble_svc_airbridge_serial_set_callbacks(serial_svc, 0, NULL, NULL);
++            }
++        }
+         if(current_profile_is_serial && bt->rpc_session) {
+             FURI_LOG_I(TAG, "Close RPC connection");
+             ble_profile_serial_set_rpc_active(
+@@ -519,6 +580,7 @@ static void bt_init_keys_settings(Bt* bt) {
  int32_t bt_srv(void* p) {
      UNUSED(p);
      Bt* bt = bt_alloc();
@@ -44,19 +140,25 @@ index 7554d87e..d81088f0 100644
      if(furi_hal_rtc_get_boot_mode() != FuriHalRtcBootModeNormal) {
          FURI_LOG_W(TAG, "Skipping start in special boot mode");
 diff --git a/applications/services/bt/bt_service/bt.h b/applications/services/bt/bt_service/bt.h
-index 27092254..d271d292 100644
+index 27092254..ac94b7b7 100644
 --- a/applications/services/bt/bt_service/bt.h
 +++ b/applications/services/bt/bt_service/bt.h
-@@ -5,6 +5,8 @@
+@@ -5,6 +5,14 @@
  #include <furi_ble/profile_interface.h>
  #include <core/common_defines.h>
  
++/** Raw serial callback.
++ * @note For data deliveries len > 0 and data points to the received bytes.
++ * @note A TX-confirmation sentinel is delivered as data == NULL and len == 0.
++ *       It is NOT a data packet; consumers must ignore it for relay/input parsing
++ *       and use it only to pace outgoing BLE serial transmissions.
++ */
 +typedef uint16_t (*BtRawSerialCallback)(const uint8_t* data, uint16_t len, void* context);
 +
  #ifdef __cplusplus
  extern "C" {
  #endif
-@@ -79,6 +81,21 @@ void bt_keys_storage_set_storage_path(Bt* bt, const char* keys_storage_path);
+@@ -79,6 +87,21 @@ void bt_keys_storage_set_storage_path(Bt* bt, const char* keys_storage_path);
   */
  void bt_keys_storage_set_default_path(Bt* bt);
  
@@ -91,6 +193,634 @@ index 192da001..18806c01 100644
  struct Bt {
      uint8_t* bt_keys_addr_start;
      uint16_t bt_keys_size;
+diff --git a/lib/ble_profile/SConscript b/lib/ble_profile/SConscript
+index 3b20d38f..0b4fca68 100644
+--- a/lib/ble_profile/SConscript
++++ b/lib/ble_profile/SConscript
+@@ -5,6 +5,8 @@ env.Append(
+         "#/lib/ble_profile",
+     ],
+     SDK_HEADERS=[
++        File("extra_profiles/airbridge_identity_params.h"),
++        File("extra_profiles/airbridge_profile.h"),
+         File("extra_profiles/hid_profile.h"),
+         File("extra_services/hid_service.h"),
+     ],
+diff --git a/lib/ble_profile/extra_profiles/airbridge_identity_params.h b/lib/ble_profile/extra_profiles/airbridge_identity_params.h
+new file mode 100644
+index 00000000..9a94e0df
+--- /dev/null
++++ b/lib/ble_profile/extra_profiles/airbridge_identity_params.h
+@@ -0,0 +1,45 @@
++#pragma once
++
++#include <stdint.h>
++
++/** Maximum device-name characters, excluding the terminating NUL.
++ *
++ * Complete BLE names of 20 characters or fewer are recommended so the name
++ * can share a 31-byte scan response with manufacturer data.
++ */
++#define AIRBRIDGE_BLE_DEVICE_NAME_MAX_LEN (20U)
++
++/** Size of a complete, explicit BLE public address. */
++#define AIRBRIDGE_BLE_MAC_ADDRESS_LEN (6U)
++
++/** Maximum manufacturer payload accepted by the GAP scan-response path.
++ *
++ * This includes the two-byte Bluetooth company identifier. The complete-name
++ * and manufacturer AD structures must together fit in 31 bytes, so callers
++ * must also enforce: name length + manufacturer data length <= 27.
++ */
++#define AIRBRIDGE_BLE_MANUFACTURER_DATA_MAX_LEN (21U)
++
++/** Maximum DIS string characters, excluding the terminating NUL. */
++#define AIRBRIDGE_BLE_DIS_MANUFACTURER_MAX_LEN (31U)
++#define AIRBRIDGE_BLE_DIS_MODEL_MAX_LEN        (31U)
++#define AIRBRIDGE_BLE_DIS_SERIAL_MAX_LEN       (31U)
++
++/** Runtime BLE identity supplied by the Pocket AirBridge FAP.
++ *
++ * All strings are NUL-terminated. mac_address is the complete public address;
++ * the FAP is responsible for validating its HP OUI before starting the profile.
++ */
++typedef struct {
++    char device_name[AIRBRIDGE_BLE_DEVICE_NAME_MAX_LEN + 1U];
++    uint8_t mac_address[AIRBRIDGE_BLE_MAC_ADDRESS_LEN];
++    uint16_t appearance;
++
++    uint8_t manufacturer_data[AIRBRIDGE_BLE_MANUFACTURER_DATA_MAX_LEN];
++    uint8_t manufacturer_data_len;
++
++    char dis_manufacturer[AIRBRIDGE_BLE_DIS_MANUFACTURER_MAX_LEN + 1U];
++    char dis_model[AIRBRIDGE_BLE_DIS_MODEL_MAX_LEN + 1U];
++    char dis_serial[AIRBRIDGE_BLE_DIS_SERIAL_MAX_LEN + 1U];
++    uint16_t dis_pnp_version;
++} AirbridgeBleIdentityParams;
+diff --git a/lib/ble_profile/extra_profiles/airbridge_profile.c b/lib/ble_profile/extra_profiles/airbridge_profile.c
+new file mode 100644
+index 00000000..c2a5e5f6
+--- /dev/null
++++ b/lib/ble_profile/extra_profiles/airbridge_profile.c
+@@ -0,0 +1,311 @@
++#include "airbridge_profile.h"
++
++#include <services/airbridge_dev_info_service.h>
++#include <services/airbridge_serial_service.h>
++#include <services/battery_service.h>
++#include <extra_services/hid_service.h>
++
++#include <furi.h>
++#include <furi_hal_usb_hid.h>
++#include <usb_hid.h>
++#include <ble/ble.h>
++
++#define TAG "BleAirbridgeProfile"
++
++#define HID_INFO_BASE_USB_SPECIFICATION                    (0x0101)
++#define HID_INFO_COUNTRY_CODE                              (0x00)
++#define BLE_PROFILE_HID_INFO_FLAG_REMOTE_WAKE_MSK          (0x01)
++#define BLE_PROFILE_HID_INFO_FLAG_NORMALLY_CONNECTABLE_MSK (0x02)
++
++#define BLE_PROFILE_HID_KB_MAX_KEYS   (6)
++#define BLE_PROFILE_CONSUMER_MAX_KEYS (1)
++
++enum AirbridgeHidReportId {
++    AirbridgeHidReportIdKeyboard = 1,
++    AirbridgeHidReportIdMouse = 2,
++    AirbridgeHidReportIdConsumer = 3,
++};
++
++// Keyboard + mouse + consumer HID report map, matching the stock HID profile.
++static const uint8_t ble_profile_airbridge_report_map_data[] = {
++    // Keyboard Report
++    HID_USAGE_PAGE(HID_PAGE_DESKTOP),
++    HID_USAGE(HID_DESKTOP_KEYBOARD),
++    HID_COLLECTION(HID_APPLICATION_COLLECTION),
++    HID_REPORT_ID(AirbridgeHidReportIdKeyboard),
++    HID_USAGE_PAGE(HID_DESKTOP_KEYPAD),
++    HID_USAGE_MINIMUM(HID_KEYBOARD_L_CTRL),
++    HID_USAGE_MAXIMUM(HID_KEYBOARD_R_GUI),
++    HID_LOGICAL_MINIMUM(0),
++    HID_LOGICAL_MAXIMUM(1),
++    HID_REPORT_SIZE(1),
++    HID_REPORT_COUNT(8),
++    HID_INPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
++    HID_REPORT_COUNT(1),
++    HID_REPORT_SIZE(8),
++    HID_INPUT(HID_IOF_CONSTANT | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
++    HID_USAGE_PAGE(HID_PAGE_LED),
++    HID_REPORT_COUNT(8),
++    HID_REPORT_SIZE(1),
++    HID_USAGE_MINIMUM(1),
++    HID_USAGE_MAXIMUM(8),
++    HID_OUTPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
++    HID_REPORT_COUNT(BLE_PROFILE_HID_KB_MAX_KEYS),
++    HID_REPORT_SIZE(8),
++    HID_LOGICAL_MINIMUM(0),
++    HID_LOGICAL_MAXIMUM(101),
++    HID_USAGE_PAGE(HID_DESKTOP_KEYPAD),
++    HID_USAGE_MINIMUM(0),
++    HID_USAGE_MAXIMUM(101),
++    HID_INPUT(HID_IOF_DATA | HID_IOF_ARRAY | HID_IOF_ABSOLUTE),
++    HID_END_COLLECTION,
++    // Mouse Report
++    HID_USAGE_PAGE(HID_PAGE_DESKTOP),
++    HID_USAGE(HID_DESKTOP_MOUSE),
++    HID_COLLECTION(HID_APPLICATION_COLLECTION),
++    HID_USAGE(HID_DESKTOP_POINTER),
++    HID_COLLECTION(HID_PHYSICAL_COLLECTION),
++    HID_REPORT_ID(AirbridgeHidReportIdMouse),
++    HID_USAGE_PAGE(HID_PAGE_BUTTON),
++    HID_USAGE_MINIMUM(1),
++    HID_USAGE_MAXIMUM(3),
++    HID_LOGICAL_MINIMUM(0),
++    HID_LOGICAL_MAXIMUM(1),
++    HID_REPORT_COUNT(3),
++    HID_REPORT_SIZE(1),
++    HID_INPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
++    HID_REPORT_SIZE(1),
++    HID_REPORT_COUNT(5),
++    HID_INPUT(HID_IOF_CONSTANT | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
++    HID_USAGE_PAGE(HID_PAGE_DESKTOP),
++    HID_USAGE(HID_DESKTOP_X),
++    HID_USAGE(HID_DESKTOP_Y),
++    HID_USAGE(HID_DESKTOP_WHEEL),
++    HID_LOGICAL_MINIMUM(-127),
++    HID_LOGICAL_MAXIMUM(127),
++    HID_REPORT_SIZE(8),
++    HID_REPORT_COUNT(3),
++    HID_INPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_RELATIVE),
++    HID_END_COLLECTION,
++    HID_END_COLLECTION,
++    // Consumer Report
++    HID_USAGE_PAGE(HID_PAGE_CONSUMER),
++    HID_USAGE(HID_CONSUMER_CONTROL),
++    HID_COLLECTION(HID_APPLICATION_COLLECTION),
++    HID_REPORT_ID(AirbridgeHidReportIdConsumer),
++    HID_LOGICAL_MINIMUM(0),
++    HID_RI_LOGICAL_MAXIMUM(16, 0x3FF),
++    HID_USAGE_MINIMUM(0),
++    HID_RI_USAGE_MAXIMUM(16, 0x3FF),
++    HID_REPORT_COUNT(BLE_PROFILE_CONSUMER_MAX_KEYS),
++    HID_REPORT_SIZE(16),
++    HID_INPUT(HID_IOF_DATA | HID_IOF_ARRAY | HID_IOF_ABSOLUTE),
++    HID_END_COLLECTION,
++};
++
++typedef struct {
++    FuriHalBleProfileBase base;
++
++    BleServiceBattery* battery_svc;
++    BleServiceAirbridgeDevInfo* dev_info_svc;
++    BleServiceHid* hid_svc;
++    BleServiceAirbridgeSerial* serial_svc;
++} BleProfileAirbridge;
++_Static_assert(offsetof(BleProfileAirbridge, base) == 0, "Wrong layout");
++
++/*
++ * LAST-RESORT FALLBACK ONLY: W5 must normally supply the config-file identity.
++ * The HP-OUI address tail, manufacturer payload, and DIS values are conspicuous
++ * compiled-in placeholders so a missing params block never exposes Flipper data.
++ */
++static const AirbridgeBleIdentityParams airbridge_default_identity = {
++    .device_name = "HP 725 K+M",
++    .mac_address = {0x3C, 0x52, 0x82, 0x00, 0x00, 0x01},
++    .appearance = GAP_APPEARANCE_KEYBOARD,
++    .manufacturer_data = {0x65, 0x00},
++    .manufacturer_data_len = 2,
++    .dis_manufacturer = "HP",
++    .dis_model = "HP 725 K+M",
++    .dis_serial = "HP000001",
++    .dis_pnp_version = 0x0100,
++};
++
++static const AirbridgeBleIdentityParams*
++    ble_profile_airbridge_get_identity(FuriHalBleProfileParams profile_params) {
++    const AirbridgeBleIdentityParams* identity = (const AirbridgeBleIdentityParams*)profile_params;
++    return identity ? identity : &airbridge_default_identity;
++}
++
++static void ble_profile_airbridge_free(BleProfileAirbridge* profile) {
++    if(profile->serial_svc) {
++        ble_svc_airbridge_serial_stop(profile->serial_svc);
++    }
++    if(profile->hid_svc) {
++        ble_svc_hid_stop(profile->hid_svc);
++    }
++    if(profile->dev_info_svc) {
++        ble_svc_airbridge_dev_info_stop(profile->dev_info_svc);
++    }
++    if(profile->battery_svc) {
++        ble_svc_battery_stop(profile->battery_svc);
++    }
++    free(profile);
++}
++
++static FuriHalBleProfileBase* ble_profile_airbridge_start(FuriHalBleProfileParams profile_params) {
++    const AirbridgeBleIdentityParams* identity =
++        ble_profile_airbridge_get_identity(profile_params);
++    const AirbridgeDisStrings dis_strings = {
++        .manufacturer_name = identity->dis_manufacturer,
++        .model_number = identity->dis_model,
++        .serial_number = identity->dis_serial,
++        .pnp_version = identity->dis_pnp_version,
++    };
++
++    BleProfileAirbridge* profile = malloc(sizeof(BleProfileAirbridge));
++    if(!profile) {
++        FURI_LOG_E(TAG, "Failed to allocate profile");
++        return NULL;
++    }
++    memset(profile, 0, sizeof(*profile));
++    profile->base.config = ble_profile_airbridge;
++
++    // GATT budget: battery(8) + AirBridge DIS(9) + HID(23) + serial(12) = 52 <= 68.
++    profile->battery_svc = ble_svc_battery_start(true);
++    if(!profile->battery_svc) {
++        FURI_LOG_E(TAG, "Failed to start battery service");
++        goto error;
++    }
++    profile->dev_info_svc = ble_svc_airbridge_dev_info_start(&dis_strings);
++    if(!profile->dev_info_svc) {
++        FURI_LOG_E(TAG, "Failed to start device information service");
++        goto error;
++    }
++    profile->hid_svc = ble_svc_hid_start();
++    if(!profile->hid_svc) {
++        FURI_LOG_E(TAG, "Failed to start HID service");
++        goto error;
++    }
++
++    if(ble_svc_hid_update_report_map(
++           profile->hid_svc,
++           ble_profile_airbridge_report_map_data,
++           sizeof(ble_profile_airbridge_report_map_data))) {
++        FURI_LOG_E(TAG, "Failed to initialize HID report map");
++        goto error;
++    }
++    uint8_t hid_info_val[4] = {
++        HID_INFO_BASE_USB_SPECIFICATION & 0x00FF,
++        (HID_INFO_BASE_USB_SPECIFICATION & 0xFF00) >> 8,
++        HID_INFO_COUNTRY_CODE,
++        BLE_PROFILE_HID_INFO_FLAG_REMOTE_WAKE_MSK |
++            BLE_PROFILE_HID_INFO_FLAG_NORMALLY_CONNECTABLE_MSK,
++    };
++    if(ble_svc_hid_update_info(profile->hid_svc, hid_info_val)) {
++        FURI_LOG_E(TAG, "Failed to initialize HID information");
++        goto error;
++    }
++
++    profile->serial_svc = ble_svc_airbridge_serial_start();
++    if(!profile->serial_svc) {
++        FURI_LOG_E(TAG, "Failed to start AirBridge serial service");
++        goto error;
++    }
++
++    return &profile->base;
++
++error:
++    ble_profile_airbridge_free(profile);
++    return NULL;
++}
++
++static void ble_profile_airbridge_stop(FuriHalBleProfileBase* profile) {
++    furi_check(profile);
++    furi_check(profile->config == ble_profile_airbridge);
++
++    ble_profile_airbridge_free((BleProfileAirbridge*)profile);
++}
++
++static bool ble_profile_airbridge_report(
++    FuriHalBleProfileBase* profile,
++    uint8_t report_id,
++    uint8_t* data,
++    uint16_t len) {
++    furi_check(profile && (profile->config == ble_profile_airbridge));
++    furi_check(report_id >= AirbridgeHidReportIdKeyboard);
++    furi_check(report_id <= AirbridgeHidReportIdConsumer);
++
++    BleProfileAirbridge* airbridge_profile = (BleProfileAirbridge*)profile;
++    // The HID map uses IDs 1..3; the frozen service API selects its report array by index 0..2.
++    return ble_svc_hid_update_input_report(airbridge_profile->hid_svc, report_id - 1U, data, len);
++}
++
++bool ble_profile_airbridge_kb_report(FuriHalBleProfileBase* profile, uint8_t* data, uint16_t len) {
++    return ble_profile_airbridge_report(profile, AirbridgeHidReportIdKeyboard, data, len);
++}
++
++bool ble_profile_airbridge_mouse_report(
++    FuriHalBleProfileBase* profile,
++    uint8_t* data,
++    uint16_t len) {
++    return ble_profile_airbridge_report(profile, AirbridgeHidReportIdMouse, data, len);
++}
++
++bool ble_profile_airbridge_consumer_report(
++    FuriHalBleProfileBase* profile,
++    uint8_t* data,
++    uint16_t len) {
++    return ble_profile_airbridge_report(profile, AirbridgeHidReportIdConsumer, data, len);
++}
++
++// AN5289: 4.7, in order to use flash controller interval must be at least 25ms + advertisement, which is 30 ms
++// Since we don't use flash controller anymore interval can be lowered to 7.5ms
++#define CONNECTION_INTERVAL_MIN (0x0006)
++// Up to 45 ms
++#define CONNECTION_INTERVAL_MAX (0x24)
++
++static const GapConfig template_config = {
++    .adv_service =
++        {
++            .UUID_Type = UUID_TYPE_16,
++            .Service_UUID_16 = HUMAN_INTERFACE_DEVICE_SERVICE_UUID,
++        },
++    .appearance_char = GAP_APPEARANCE_KEYBOARD,
++    .bonding_mode = false,
++    .pairing_method = GapPairingPinCodeVerifyYesNo,
++    .conn_param =
++        {
++            .conn_int_min = CONNECTION_INTERVAL_MIN,
++            .conn_int_max = CONNECTION_INTERVAL_MAX,
++            .slave_latency = 0,
++            .supervisor_timeout = 0,
++        },
++};
++
++static void
++    ble_profile_airbridge_get_config(GapConfig* config, FuriHalBleProfileParams profile_params) {
++    const AirbridgeBleIdentityParams* identity =
++        ble_profile_airbridge_get_identity(profile_params);
++
++    furi_check(config);
++    furi_check(identity->manufacturer_data_len <= sizeof(identity->manufacturer_data));
++    memcpy(config, &template_config, sizeof(GapConfig));
++
++    memcpy(config->mac_address, identity->mac_address, sizeof(config->mac_address));
++    config->appearance_char = identity->appearance;
++
++    memset(config->adv_name, 0, sizeof(config->adv_name));
++    config->adv_name[0] = AD_TYPE_COMPLETE_LOCAL_NAME;
++    strlcpy(&config->adv_name[1], identity->device_name, sizeof(config->adv_name) - 1U);
++
++    config->mfg_data_len = identity->manufacturer_data_len;
++    memcpy(config->mfg_data, identity->manufacturer_data, config->mfg_data_len);
++}
++
++static const FuriHalBleProfileTemplate profile_callbacks = {
++    .start = ble_profile_airbridge_start,
++    .stop = ble_profile_airbridge_stop,
++    .get_gap_config = ble_profile_airbridge_get_config,
++};
++
++const FuriHalBleProfileTemplate* const ble_profile_airbridge = &profile_callbacks;
+diff --git a/lib/ble_profile/extra_profiles/airbridge_profile.h b/lib/ble_profile/extra_profiles/airbridge_profile.h
+new file mode 100644
+index 00000000..31cbb49c
+--- /dev/null
++++ b/lib/ble_profile/extra_profiles/airbridge_profile.h
+@@ -0,0 +1,31 @@
++#pragma once
++
++#include "airbridge_identity_params.h"
++
++#include <furi_ble/profile_interface.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/** Pocket AirBridge composite BLE profile descriptor. */
++extern const FuriHalBleProfileTemplate* const ble_profile_airbridge;
++
++/** Send a keyboard input report (HID report ID 1). */
++bool ble_profile_airbridge_kb_report(FuriHalBleProfileBase* profile, uint8_t* data, uint16_t len);
++
++/** Send a mouse input report (HID report ID 2). */
++bool ble_profile_airbridge_mouse_report(
++    FuriHalBleProfileBase* profile,
++    uint8_t* data,
++    uint16_t len);
++
++/** Send a consumer-control input report (HID report ID 3). */
++bool ble_profile_airbridge_consumer_report(
++    FuriHalBleProfileBase* profile,
++    uint8_t* data,
++    uint16_t len);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/lib/ble_profile/extra_services/hid_service.c b/lib/ble_profile/extra_services/hid_service.c
+index 9f9a0f75..4a2fc3d3 100644
+--- a/lib/ble_profile/extra_services/hid_service.c
++++ b/lib/ble_profile/extra_services/hid_service.c
+@@ -170,12 +170,30 @@ static BleEventAckStatus ble_svc_hid_event_handler(void* event, void* context) {
+     return ret;
+ }
+ 
++static void ble_svc_hid_start_cleanup(
++    BleServiceHid* hid_svc,
++    uint8_t chars_initialized,
++    size_t input_reports_initialized) {
++    for(size_t i = 0; i < HidSvcGattCharacteristicCount; i++) {
++        if(chars_initialized & (1U << i)) {
++            ble_gatt_characteristic_delete(hid_svc->svc_handle, &hid_svc->chars[i]);
++        }
++    }
++    for(size_t i = 0; i < input_reports_initialized; i++) {
++        ble_gatt_characteristic_delete(hid_svc->svc_handle, &hid_svc->input_report_chars[i]);
++    }
++    ble_event_dispatcher_unregister_svc_handler(hid_svc->event_handler);
++    ble_gatt_service_delete(hid_svc->svc_handle);
++    free(hid_svc);
++}
++
+ BleServiceHid* ble_svc_hid_start(void) {
+     BleServiceHid* hid_svc = malloc(sizeof(BleServiceHid));
++    if(!hid_svc) {
++        FURI_LOG_E(TAG, "Failed to allocate service");
++        return NULL;
++    }
+ 
+-    // Register event handler
+-    hid_svc->event_handler =
+-        ble_event_dispatcher_register_svc_handler(ble_svc_hid_event_handler, hid_svc);
+     /**
+      *  Add Human Interface Device Service
+      */
+@@ -192,17 +210,31 @@ BleServiceHid* ble_svc_hid_start(void) {
+         return NULL;
+     }
+ 
++    // Register event handler
++    hid_svc->event_handler =
++        ble_event_dispatcher_register_svc_handler(ble_svc_hid_event_handler, hid_svc);
++    uint8_t chars_initialized = 0;
++    size_t input_reports_initialized = 0;
++
+     // Maintain previously defined characteristic order
+     ble_gatt_characteristic_init(
+         hid_svc->svc_handle,
+         &ble_svc_hid_chars[HidSvcGattCharacteristicProtocolMode],
+         &hid_svc->chars[HidSvcGattCharacteristicProtocolMode]);
++    if(!hid_svc->chars[HidSvcGattCharacteristicProtocolMode].characteristic) {
++        FURI_LOG_E(TAG, "Failed to add characteristic %u", HidSvcGattCharacteristicProtocolMode);
++        goto error;
++    }
++    chars_initialized |= 1U << HidSvcGattCharacteristicProtocolMode;
+ 
+     uint8_t protocol_mode = 1;
+-    ble_gatt_characteristic_update(
+-        hid_svc->svc_handle,
+-        &hid_svc->chars[HidSvcGattCharacteristicProtocolMode],
+-        &protocol_mode);
++    if(ble_gatt_characteristic_update(
++           hid_svc->svc_handle,
++           &hid_svc->chars[HidSvcGattCharacteristicProtocolMode],
++           &protocol_mode)) {
++        FURI_LOG_E(TAG, "Failed to initialize protocol mode");
++        goto error;
++    }
+ 
+     // reports
+     BleGattCharacteristicDescriptorParams ble_svc_hid_char_descr;
+@@ -238,6 +270,13 @@ BleServiceHid* ble_svc_hid_start(void) {
+                 hid_svc->svc_handle,
+                 &report_char,
+                 &hid_report_chars[report_type_idx].chars[report_idx]);
++            if(!hid_report_chars[report_type_idx].chars[report_idx].characteristic) {
++                FURI_LOG_E(TAG, "Failed to add %u report %u", report_type_idx, report_idx);
++                goto error;
++            }
++            if(report_type_idx == 0U) {
++                input_reports_initialized++;
++            }
+         }
+     }
+ 
+@@ -245,9 +284,18 @@ BleServiceHid* ble_svc_hid_start(void) {
+     for(size_t i = HidSvcGattCharacteristicReportMap; i < HidSvcGattCharacteristicCount; i++) {
+         ble_gatt_characteristic_init(
+             hid_svc->svc_handle, &ble_svc_hid_chars[i], &hid_svc->chars[i]);
++        if(!hid_svc->chars[i].characteristic) {
++            FURI_LOG_E(TAG, "Failed to add characteristic %u", i);
++            goto error;
++        }
++        chars_initialized |= 1U << i;
+     }
+ 
+     return hid_svc;
++
++error:
++    ble_svc_hid_start_cleanup(hid_svc, chars_initialized, input_reports_initialized);
++    return NULL;
+ }
+ 
+ bool ble_svc_hid_update_report_map(BleServiceHid* hid_svc, const uint8_t* data, uint16_t len) {
+diff --git a/targets/f7/ble_glue/app_conf.h b/targets/f7/ble_glue/app_conf.h
+index 9ceb747c..321dc2d4 100644
+--- a/targets/f7/ble_glue/app_conf.h
++++ b/targets/f7/ble_glue/app_conf.h
+@@ -72,7 +72,7 @@
+  *  - 2, if extended properties is used
+  *  The total amount of memory needed is the sum of the above quantities for each attribute.
+  */
+-#define CFG_BLE_ATT_VALUE_ARRAY_SIZE (1344)
++#define CFG_BLE_ATT_VALUE_ARRAY_SIZE (1812)
+ 
+ /**
+  * Prepare Write List size in terms of number of packet
+diff --git a/targets/f7/ble_glue/furi_ble/gatt.c b/targets/f7/ble_glue/furi_ble/gatt.c
+index b8ab094f..b96f5d0e 100644
+--- a/targets/f7/ble_glue/furi_ble/gatt.c
++++ b/targets/f7/ble_glue/furi_ble/gatt.c
+@@ -22,10 +22,16 @@ void ble_gatt_characteristic_init(
+ 
+     // Copy the descriptor to the instance, since it may point to stack memory
+     char_instance->characteristic = malloc(sizeof(BleGattCharacteristicParams));
++    if(!char_instance->characteristic) {
++        FURI_LOG_E(TAG, "Failed to allocate %s char", char_descriptor->name);
++        return;
++    }
+     memcpy(
+         (void*)char_instance->characteristic,
+         char_descriptor,
+         sizeof(BleGattCharacteristicParams));
++    char_instance->handle = 0;
++    char_instance->descriptor_handle = 0;
+ 
+     uint16_t char_data_size = 0;
+     if(char_descriptor->data_prop_type == FlipperGattCharacteristicDataFixed) {
+@@ -46,13 +52,14 @@ void ble_gatt_characteristic_init(
+         GATT_MIN_READ_KEY_SIZE,
+         char_descriptor->is_variable,
+         &char_instance->handle);
+-    if(status) {
++    if(status != BLE_STATUS_SUCCESS) {
+         FURI_LOG_E(TAG, "Failed to add %s char: %d", char_descriptor->name, status);
+-        ble_gatt_strict_crash("Failed to add characteristic");
++        free((void*)char_instance->characteristic);
++        char_instance->characteristic = NULL;
++        return;
+     }
+ 
+-    char_instance->descriptor_handle = 0;
+-    if((status == 0) && char_descriptor->descriptor_params) {
++    if(char_descriptor->descriptor_params) {
+         uint8_t const* char_data = NULL;
+         const BleGattCharacteristicDescriptorParams* char_data_descriptor =
+             char_descriptor->descriptor_params;
+@@ -73,13 +80,26 @@ void ble_gatt_characteristic_init(
+             GATT_MIN_READ_KEY_SIZE,
+             char_data_descriptor->is_variable,
+             &char_instance->descriptor_handle);
+-        if(status) {
++        if(status != BLE_STATUS_SUCCESS) {
+             FURI_LOG_E(TAG, "Failed to add %s char descriptor: %d", char_descriptor->name, status);
+-            ble_gatt_strict_crash("Failed to add characteristic descriptor");
+         }
+         if(release_data) {
+             free((void*)char_data);
+         }
++        if(status != BLE_STATUS_SUCCESS) {
++            const tBleStatus delete_status = aci_gatt_del_char(svc_handle, char_instance->handle);
++            if(delete_status != BLE_STATUS_SUCCESS) {
++                FURI_LOG_E(
++                    TAG,
++                    "Failed to clean up %s char after descriptor error: %d",
++                    char_descriptor->name,
++                    delete_status);
++            }
++            free((void*)char_instance->characteristic);
++            char_instance->characteristic = NULL;
++            char_instance->handle = 0;
++            return;
++        }
+     }
+ }
+ 
+@@ -154,7 +174,6 @@ bool ble_gatt_service_add(
+         Service_UUID_Type, Service_UUID, Service_Type, Max_Attribute_Records, Service_Handle);
+     if(result) {
+         FURI_LOG_E(TAG, "Failed to add service: %x", result);
+-        ble_gatt_strict_crash("Failed to add service");
+     }
+ 
+     return result == BLE_STATUS_SUCCESS;
+diff --git a/targets/f7/ble_glue/furi_ble/gatt.h b/targets/f7/ble_glue/furi_ble/gatt.h
+index d4d85181..fe71041f 100644
+--- a/targets/f7/ble_glue/furi_ble/gatt.h
++++ b/targets/f7/ble_glue/furi_ble/gatt.h
+@@ -72,7 +72,7 @@ typedef struct {
+     uint16_t descriptor_handle;
+ } BleGattCharacteristicInstance;
+ 
+-/* Initialize a characteristic instance; copies the characteristic descriptor 
++/* Initialize a characteristic instance; copies the characteristic descriptor
+  * into the instance */
+ void ble_gatt_characteristic_init(
+     uint16_t svc_handle,
 diff --git a/targets/f7/ble_glue/gap.c b/targets/f7/ble_glue/gap.c
 index 38fc5e42..19bf4fdf 100644
 --- a/targets/f7/ble_glue/gap.c
@@ -117,6 +847,662 @@ index 38fc5e42..19bf4fdf 100644
      furi_check(furi_message_queue_put(gap->command_queue, &command, 0) == FuriStatusOk);
  }
  
+diff --git a/targets/f7/ble_glue/services/airbridge_dev_info_service.c b/targets/f7/ble_glue/services/airbridge_dev_info_service.c
+new file mode 100644
+index 00000000..80bc088c
+--- /dev/null
++++ b/targets/f7/ble_glue/services/airbridge_dev_info_service.c
+@@ -0,0 +1,167 @@
++#include "airbridge_dev_info_service.h"
++#include "app_common.h"
++#include <furi_ble/gatt.h>
++
++#include <ble/ble.h>
++
++#include <furi.h>
++
++#define TAG "BtAirbridgeDevInfoSvc"
++
++typedef enum {
++    AirbridgeDevInfoSvcGattCharacteristicMfgName = 0,
++    AirbridgeDevInfoSvcGattCharacteristicModel,
++    AirbridgeDevInfoSvcGattCharacteristicSerial,
++    AirbridgeDevInfoSvcGattCharacteristicPnpId,
++    AirbridgeDevInfoSvcGattCharacteristicCount,
++} AirbridgeDevInfoSvcGattCharacteristicId;
++
++struct BleServiceAirbridgeDevInfo {
++    uint16_t service_handle;
++    BleGattCharacteristicInstance characteristics[AirbridgeDevInfoSvcGattCharacteristicCount];
++    char* manufacturer_name;
++    char* model_number;
++    char* serial_number;
++    uint8_t pnp_id[7];
++};
++
++static void
++    airbridge_dev_info_set_pnp_id(BleServiceAirbridgeDevInfo* service, uint16_t pnp_version) {
++    service->pnp_id[0] = 0x01;
++    service->pnp_id[1] = 0xF0;
++    service->pnp_id[2] = 0x03;
++    service->pnp_id[3] = 0x41;
++    service->pnp_id[4] = 0x53;
++    service->pnp_id[5] = pnp_version & 0xFF;
++    service->pnp_id[6] = pnp_version >> 8;
++}
++
++static void ble_svc_airbridge_dev_info_start_cleanup(
++    BleServiceAirbridgeDevInfo* service,
++    size_t characteristics_initialized) {
++    for(size_t i = 0; i < characteristics_initialized; i++) {
++        ble_gatt_characteristic_delete(service->service_handle, &service->characteristics[i]);
++    }
++    ble_gatt_service_delete(service->service_handle);
++    free(service->manufacturer_name);
++    free(service->model_number);
++    free(service->serial_number);
++    free(service);
++}
++
++BleServiceAirbridgeDevInfo* ble_svc_airbridge_dev_info_start(const AirbridgeDisStrings* strings) {
++    furi_check(strings);
++    furi_check(strings->manufacturer_name);
++    furi_check(strings->model_number);
++    furi_check(strings->serial_number);
++
++    BleServiceAirbridgeDevInfo* service = malloc(sizeof(BleServiceAirbridgeDevInfo));
++    if(!service) {
++        return NULL;
++    }
++
++    service->manufacturer_name = strdup(strings->manufacturer_name);
++    service->model_number = strdup(strings->model_number);
++    service->serial_number = strdup(strings->serial_number);
++    if(!service->manufacturer_name || !service->model_number || !service->serial_number) {
++        free(service->manufacturer_name);
++        free(service->model_number);
++        free(service->serial_number);
++        free(service);
++        return NULL;
++    }
++
++    airbridge_dev_info_set_pnp_id(service, strings->pnp_version);
++
++    const BleGattCharacteristicParams characteristics[AirbridgeDevInfoSvcGattCharacteristicCount] =
++        {[AirbridgeDevInfoSvcGattCharacteristicMfgName] =
++             {.name = "Manufacturer Name",
++              .data_prop_type = FlipperGattCharacteristicDataFixed,
++              .data.fixed.length = strlen(service->manufacturer_name),
++              .data.fixed.ptr = (const uint8_t*)service->manufacturer_name,
++              .uuid.Char_UUID_16 = MANUFACTURER_NAME_UUID,
++              .uuid_type = UUID_TYPE_16,
++              .char_properties = CHAR_PROP_READ,
++              .security_permissions = ATTR_PERMISSION_AUTHEN_READ,
++              .gatt_evt_mask = GATT_DONT_NOTIFY_EVENTS,
++              .is_variable = CHAR_VALUE_LEN_CONSTANT},
++         [AirbridgeDevInfoSvcGattCharacteristicModel] =
++             {.name = "Model Number",
++              .data_prop_type = FlipperGattCharacteristicDataFixed,
++              .data.fixed.length = strlen(service->model_number),
++              .data.fixed.ptr = (const uint8_t*)service->model_number,
++              .uuid.Char_UUID_16 = MODEL_NUMBER_UUID,
++              .uuid_type = UUID_TYPE_16,
++              .char_properties = CHAR_PROP_READ,
++              .security_permissions = ATTR_PERMISSION_AUTHEN_READ,
++              .gatt_evt_mask = GATT_DONT_NOTIFY_EVENTS,
++              .is_variable = CHAR_VALUE_LEN_CONSTANT},
++         [AirbridgeDevInfoSvcGattCharacteristicSerial] =
++             {.name = "Serial Number",
++              .data_prop_type = FlipperGattCharacteristicDataFixed,
++              .data.fixed.length = strlen(service->serial_number),
++              .data.fixed.ptr = (const uint8_t*)service->serial_number,
++              .uuid.Char_UUID_16 = SERIAL_NUMBER_UUID,
++              .uuid_type = UUID_TYPE_16,
++              .char_properties = CHAR_PROP_READ,
++              .security_permissions = ATTR_PERMISSION_AUTHEN_READ,
++              .gatt_evt_mask = GATT_DONT_NOTIFY_EVENTS,
++              .is_variable = CHAR_VALUE_LEN_CONSTANT},
++         [AirbridgeDevInfoSvcGattCharacteristicPnpId] = {
++             .name = "PnP ID",
++             .data_prop_type = FlipperGattCharacteristicDataFixed,
++             .data.fixed.length = sizeof(service->pnp_id),
++             .data.fixed.ptr = service->pnp_id,
++             .uuid.Char_UUID_16 = PNP_ID_UUID,
++             .uuid_type = UUID_TYPE_16,
++             .char_properties = CHAR_PROP_READ,
++             .security_permissions = ATTR_PERMISSION_AUTHEN_READ,
++             .gatt_evt_mask = GATT_DONT_NOTIFY_EVENTS,
++             .is_variable = CHAR_VALUE_LEN_CONSTANT}};
++
++    uint16_t uuid = DEVICE_INFORMATION_SERVICE_UUID;
++    if(!ble_gatt_service_add(
++           UUID_TYPE_16,
++           (Service_UUID_t*)&uuid,
++           PRIMARY_SERVICE,
++           1 + 2 * AirbridgeDevInfoSvcGattCharacteristicCount,
++           &service->service_handle)) {
++        free(service->manufacturer_name);
++        free(service->model_number);
++        free(service->serial_number);
++        free(service);
++        return NULL;
++    }
++
++    for(size_t i = 0; i < AirbridgeDevInfoSvcGattCharacteristicCount; i++) {
++        ble_gatt_characteristic_init(
++            service->service_handle, &characteristics[i], &service->characteristics[i]);
++        if(!service->characteristics[i].characteristic) {
++            FURI_LOG_E(TAG, "Failed to add characteristic %u", i);
++            ble_svc_airbridge_dev_info_start_cleanup(service, i);
++            return NULL;
++        }
++        if(ble_gatt_characteristic_update(
++               service->service_handle, &service->characteristics[i], NULL)) {
++            FURI_LOG_E(TAG, "Failed to initialize characteristic %u", i);
++            ble_svc_airbridge_dev_info_start_cleanup(service, i + 1U);
++            return NULL;
++        }
++    }
++
++    return service;
++}
++
++void ble_svc_airbridge_dev_info_stop(BleServiceAirbridgeDevInfo* service) {
++    furi_check(service);
++
++    for(size_t i = 0; i < AirbridgeDevInfoSvcGattCharacteristicCount; i++) {
++        ble_gatt_characteristic_delete(service->service_handle, &service->characteristics[i]);
++    }
++    ble_gatt_service_delete(service->service_handle);
++
++    free(service->manufacturer_name);
++    free(service->model_number);
++    free(service->serial_number);
++    free(service);
++}
+diff --git a/targets/f7/ble_glue/services/airbridge_dev_info_service.h b/targets/f7/ble_glue/services/airbridge_dev_info_service.h
+new file mode 100644
+index 00000000..2cbc9780
+--- /dev/null
++++ b/targets/f7/ble_glue/services/airbridge_dev_info_service.h
+@@ -0,0 +1,25 @@
++#pragma once
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct BleServiceAirbridgeDevInfo BleServiceAirbridgeDevInfo;
++
++typedef struct {
++    const char* manufacturer_name;
++    const char* model_number;
++    const char* serial_number;
++    uint16_t pnp_version;
++} AirbridgeDisStrings;
++
++BleServiceAirbridgeDevInfo*
++    ble_svc_airbridge_dev_info_start(const AirbridgeDisStrings* strings);
++
++void ble_svc_airbridge_dev_info_stop(BleServiceAirbridgeDevInfo* service);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/targets/f7/ble_glue/services/airbridge_serial_service.c b/targets/f7/ble_glue/services/airbridge_serial_service.c
+new file mode 100644
+index 00000000..eab3a5b1
+--- /dev/null
++++ b/targets/f7/ble_glue/services/airbridge_serial_service.c
+@@ -0,0 +1,336 @@
++#include "airbridge_serial_service.h"
++#include "airbridge_serial_uuid.h"
++#include "app_common.h"
++#include <ble/ble.h>
++#include <furi_ble/event_dispatcher.h>
++#include <furi_ble/gatt.h>
++
++#include <furi.h>
++
++#include <stdint.h>
++
++#define TAG "BtAirbridgeSerialSvc"
++
++typedef enum {
++    AirbridgeSerialSvcGattCharacteristicRx = 0,
++    AirbridgeSerialSvcGattCharacteristicTx,
++    AirbridgeSerialSvcGattCharacteristicFlowCtrl,
++    AirbridgeSerialSvcGattCharacteristicStatus,
++    AirbridgeSerialSvcGattCharacteristicCount,
++} AirbridgeSerialSvcGattCharacteristicId;
++
++static const BleGattCharacteristicParams
++    ble_svc_airbridge_serial_chars[AirbridgeSerialSvcGattCharacteristicCount] = {
++        [AirbridgeSerialSvcGattCharacteristicRx] =
++            {.name = "RX",
++             .data_prop_type = FlipperGattCharacteristicDataFixed,
++             .data.fixed.length = BLE_SVC_AIRBRIDGE_SERIAL_DATA_LEN_MAX,
++             .uuid.Char_UUID_128 = BLE_SVC_AIRBRIDGE_SERIAL_RX_CHAR_UUID,
++             .uuid_type = UUID_TYPE_128,
++             .char_properties = CHAR_PROP_WRITE_WITHOUT_RESP | CHAR_PROP_WRITE | CHAR_PROP_READ,
++             .security_permissions = ATTR_PERMISSION_AUTHEN_READ | ATTR_PERMISSION_AUTHEN_WRITE,
++             .gatt_evt_mask = GATT_NOTIFY_ATTRIBUTE_WRITE,
++             .is_variable = CHAR_VALUE_LEN_VARIABLE},
++        [AirbridgeSerialSvcGattCharacteristicTx] =
++            {.name = "TX",
++             .data_prop_type = FlipperGattCharacteristicDataFixed,
++             .data.fixed.length = BLE_SVC_AIRBRIDGE_SERIAL_DATA_LEN_MAX,
++             .uuid.Char_UUID_128 = BLE_SVC_AIRBRIDGE_SERIAL_TX_CHAR_UUID,
++             .uuid_type = UUID_TYPE_128,
++             .char_properties = CHAR_PROP_READ | CHAR_PROP_NOTIFY,
++             .security_permissions = ATTR_PERMISSION_AUTHEN_READ,
++             .gatt_evt_mask = GATT_DONT_NOTIFY_EVENTS,
++             .is_variable = CHAR_VALUE_LEN_VARIABLE},
++        [AirbridgeSerialSvcGattCharacteristicFlowCtrl] =
++            {.name = "Flow control",
++             .data_prop_type = FlipperGattCharacteristicDataFixed,
++             .data.fixed.length = sizeof(uint32_t),
++             .uuid.Char_UUID_128 = BLE_SVC_AIRBRIDGE_SERIAL_FLOW_CONTROL_UUID,
++             .uuid_type = UUID_TYPE_128,
++             .char_properties = CHAR_PROP_READ | CHAR_PROP_NOTIFY,
++             .security_permissions = ATTR_PERMISSION_AUTHEN_READ,
++             .gatt_evt_mask = GATT_DONT_NOTIFY_EVENTS,
++             .is_variable = CHAR_VALUE_LEN_CONSTANT},
++        [AirbridgeSerialSvcGattCharacteristicStatus] = {
++            .name = "RPC status",
++            .data_prop_type = FlipperGattCharacteristicDataFixed,
++            .data.fixed.length = sizeof(uint32_t),
++            .uuid.Char_UUID_128 = BLE_SVC_AIRBRIDGE_SERIAL_STATUS_UUID,
++            .uuid_type = UUID_TYPE_128,
++            .char_properties = CHAR_PROP_READ | CHAR_PROP_WRITE | CHAR_PROP_NOTIFY,
++            .security_permissions = ATTR_PERMISSION_AUTHEN_READ | ATTR_PERMISSION_AUTHEN_WRITE,
++            .gatt_evt_mask = GATT_NOTIFY_ATTRIBUTE_WRITE,
++            .is_variable = CHAR_VALUE_LEN_CONSTANT}};
++
++static const Service_UUID_t airbridge_serial_service_uuid = {
++    .Service_UUID_128 = BLE_SVC_AIRBRIDGE_SERIAL_SERVICE_UUID,
++};
++
++struct BleServiceAirbridgeSerial {
++    uint16_t svc_handle;
++    BleGattCharacteristicInstance chars[AirbridgeSerialSvcGattCharacteristicCount];
++    FuriMutex* buff_size_mtx;
++    uint32_t buff_size;
++    uint16_t bytes_ready_to_receive;
++    AirbridgeSerialServiceEventCallback callback;
++    void* context;
++    GapSvcEventHandler* event_handler;
++};
++
++static BleServiceAirbridgeSerial* active_airbridge_serial_service = NULL;
++
++static BleEventAckStatus ble_svc_airbridge_serial_event_handler(void* event, void* context) {
++    BleServiceAirbridgeSerial* serial_svc = (BleServiceAirbridgeSerial*)context;
++    BleEventAckStatus ret = BleEventNotAck;
++    hci_event_pckt* event_pckt = (hci_event_pckt*)(((hci_uart_pckt*)event)->data);
++    evt_blecore_aci* blecore_evt = (evt_blecore_aci*)event_pckt->data;
++    aci_gatt_attribute_modified_event_rp0* attribute_modified;
++    if(event_pckt->evt == HCI_VENDOR_SPECIFIC_DEBUG_EVT_CODE) {
++        if(blecore_evt->ecode == ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE) {
++            attribute_modified = (aci_gatt_attribute_modified_event_rp0*)blecore_evt->data;
++            if(attribute_modified->Attr_Handle ==
++               serial_svc->chars[AirbridgeSerialSvcGattCharacteristicRx].handle + 2) {
++                ret = BleEventAckFlowEnable;
++                FURI_LOG_D(TAG, "RX descriptor event");
++            } else if(
++                attribute_modified->Attr_Handle ==
++                serial_svc->chars[AirbridgeSerialSvcGattCharacteristicRx].handle + 1) {
++                FURI_LOG_D(TAG, "Received %d bytes", attribute_modified->Attr_Data_Length);
++                if(serial_svc->callback) {
++                    furi_check(
++                        furi_mutex_acquire(serial_svc->buff_size_mtx, FuriWaitForever) ==
++                        FuriStatusOk);
++                    if(attribute_modified->Attr_Data_Length > serial_svc->bytes_ready_to_receive) {
++                        FURI_LOG_W(
++                            TAG,
++                            "Received %d, while was ready to receive %d bytes. Can lead to buffer overflow!",
++                            attribute_modified->Attr_Data_Length,
++                            serial_svc->bytes_ready_to_receive);
++                    }
++                    serial_svc->bytes_ready_to_receive -= MIN(
++                        serial_svc->bytes_ready_to_receive, attribute_modified->Attr_Data_Length);
++                    SerialServiceEvent event = {
++                        .event = SerialServiceEventTypeDataReceived,
++                        .data = {
++                            .buffer = attribute_modified->Attr_Data,
++                            .size = attribute_modified->Attr_Data_Length,
++                        }};
++                    uint32_t buff_free_size = serial_svc->callback(event, serial_svc->context);
++                    FURI_LOG_D(TAG, "Available buff size: %ld", buff_free_size);
++                    furi_check(furi_mutex_release(serial_svc->buff_size_mtx) == FuriStatusOk);
++                }
++                ret = BleEventAckFlowEnable;
++            } else if(
++                attribute_modified->Attr_Handle ==
++                serial_svc->chars[AirbridgeSerialSvcGattCharacteristicStatus].handle + 1) {
++                bool* rpc_status = (bool*)attribute_modified->Attr_Data;
++                if(!*rpc_status) {
++                    if(serial_svc->callback) {
++                        SerialServiceEvent event = {
++                            .event = SerialServiceEventTypesBleResetRequest,
++                        };
++                        serial_svc->callback(event, serial_svc->context);
++                    }
++                }
++            }
++        } else if(blecore_evt->ecode == ACI_GATT_SERVER_CONFIRMATION_VSEVT_CODE) {
++            FURI_LOG_T(TAG, "Ack received");
++            if(serial_svc->callback) {
++                SerialServiceEvent event = {
++                    .event = SerialServiceEventTypeDataSent,
++                };
++                serial_svc->callback(event, serial_svc->context);
++            }
++            ret = BleEventAckFlowEnable;
++        }
++    }
++    return ret;
++}
++
++typedef enum {
++    AirbridgeSerialServiceRpcStatusNotActive = 0UL,
++    AirbridgeSerialServiceRpcStatusActive = 1UL,
++} AirbridgeSerialServiceRpcStatus;
++
++static bool ble_svc_airbridge_serial_update_rpc_char(
++    BleServiceAirbridgeSerial* serial_svc,
++    AirbridgeSerialServiceRpcStatus status) {
++    return !ble_gatt_characteristic_update(
++        serial_svc->svc_handle,
++        &serial_svc->chars[AirbridgeSerialSvcGattCharacteristicStatus],
++        &status);
++}
++
++static void ble_svc_airbridge_serial_start_cleanup(
++    BleServiceAirbridgeSerial* serial_svc,
++    uint8_t chars_initialized) {
++    for(uint8_t i = 0; i < chars_initialized; i++) {
++        ble_gatt_characteristic_delete(serial_svc->svc_handle, &serial_svc->chars[i]);
++    }
++    ble_gatt_service_delete(serial_svc->svc_handle);
++    if(serial_svc->buff_size_mtx) {
++        furi_mutex_free(serial_svc->buff_size_mtx);
++    }
++    free(serial_svc);
++}
++
++BleServiceAirbridgeSerial* ble_svc_airbridge_serial_start(void) {
++    furi_check(!active_airbridge_serial_service);
++
++    BleServiceAirbridgeSerial* serial_svc = malloc(sizeof(BleServiceAirbridgeSerial));
++    if(!serial_svc) {
++        FURI_LOG_E(TAG, "Failed to allocate service");
++        return NULL;
++    }
++    memset(serial_svc, 0, sizeof(*serial_svc));
++
++    if(!ble_gatt_service_add(
++           UUID_TYPE_128,
++           &airbridge_serial_service_uuid,
++           PRIMARY_SERVICE,
++           12,
++           &serial_svc->svc_handle)) {
++        free(serial_svc);
++        return NULL;
++    }
++    for(uint8_t i = 0; i < AirbridgeSerialSvcGattCharacteristicCount; i++) {
++        ble_gatt_characteristic_init(
++            serial_svc->svc_handle, &ble_svc_airbridge_serial_chars[i], &serial_svc->chars[i]);
++        if(!serial_svc->chars[i].characteristic) {
++            FURI_LOG_E(TAG, "Failed to add characteristic %u", i);
++            ble_svc_airbridge_serial_start_cleanup(serial_svc, i);
++            return NULL;
++        }
++    }
++
++    if(!ble_svc_airbridge_serial_update_rpc_char(
++           serial_svc, AirbridgeSerialServiceRpcStatusNotActive)) {
++        FURI_LOG_E(TAG, "Failed to initialize RPC status characteristic");
++        ble_svc_airbridge_serial_start_cleanup(
++            serial_svc, AirbridgeSerialSvcGattCharacteristicCount);
++        return NULL;
++    }
++    serial_svc->buff_size_mtx = furi_mutex_alloc(FuriMutexTypeNormal);
++    if(!serial_svc->buff_size_mtx) {
++        FURI_LOG_E(TAG, "Failed to allocate buffer-size mutex");
++        ble_svc_airbridge_serial_start_cleanup(
++            serial_svc, AirbridgeSerialSvcGattCharacteristicCount);
++        return NULL;
++    }
++    serial_svc->event_handler = ble_event_dispatcher_register_svc_handler(
++        ble_svc_airbridge_serial_event_handler, serial_svc);
++    if(!serial_svc->event_handler) {
++        FURI_LOG_E(TAG, "Failed to register event handler");
++        ble_svc_airbridge_serial_start_cleanup(
++            serial_svc, AirbridgeSerialSvcGattCharacteristicCount);
++        return NULL;
++    }
++    active_airbridge_serial_service = serial_svc;
++
++    return serial_svc;
++}
++
++void ble_svc_airbridge_serial_set_callbacks(
++    BleServiceAirbridgeSerial* serial_svc,
++    uint16_t buff_size,
++    AirbridgeSerialServiceEventCallback callback,
++    void* context) {
++    furi_check(serial_svc);
++    serial_svc->callback = callback;
++    serial_svc->context = context;
++    serial_svc->buff_size = buff_size;
++    serial_svc->bytes_ready_to_receive = buff_size;
++
++    uint32_t buff_size_reversed = REVERSE_BYTES_U32(serial_svc->buff_size);
++    ble_gatt_characteristic_update(
++        serial_svc->svc_handle,
++        &serial_svc->chars[AirbridgeSerialSvcGattCharacteristicFlowCtrl],
++        &buff_size_reversed);
++}
++
++void ble_svc_airbridge_serial_notify_buffer_is_empty(BleServiceAirbridgeSerial* serial_svc) {
++    furi_check(serial_svc);
++    furi_check(serial_svc->buff_size_mtx);
++
++    furi_check(furi_mutex_acquire(serial_svc->buff_size_mtx, FuriWaitForever) == FuriStatusOk);
++    if(serial_svc->bytes_ready_to_receive == 0) {
++        FURI_LOG_D(TAG, "Buffer is empty. Notifying client");
++        serial_svc->bytes_ready_to_receive = serial_svc->buff_size;
++
++        uint32_t buff_size_reversed = REVERSE_BYTES_U32(serial_svc->buff_size);
++        ble_gatt_characteristic_update(
++            serial_svc->svc_handle,
++            &serial_svc->chars[AirbridgeSerialSvcGattCharacteristicFlowCtrl],
++            &buff_size_reversed);
++    }
++    furi_check(furi_mutex_release(serial_svc->buff_size_mtx) == FuriStatusOk);
++}
++
++void ble_svc_airbridge_serial_stop(BleServiceAirbridgeSerial* serial_svc) {
++    furi_check(serial_svc);
++    furi_check(serial_svc == active_airbridge_serial_service);
++
++    active_airbridge_serial_service = NULL;
++    ble_event_dispatcher_unregister_svc_handler(serial_svc->event_handler);
++
++    for(uint8_t i = 0; i < AirbridgeSerialSvcGattCharacteristicCount; i++) {
++        ble_gatt_characteristic_delete(serial_svc->svc_handle, &serial_svc->chars[i]);
++    }
++    ble_gatt_service_delete(serial_svc->svc_handle);
++    furi_mutex_free(serial_svc->buff_size_mtx);
++    free(serial_svc);
++}
++
++bool ble_svc_airbridge_serial_update_tx(
++    BleServiceAirbridgeSerial* serial_svc,
++    uint8_t* data,
++    uint16_t data_len) {
++    if(data_len > BLE_SVC_AIRBRIDGE_SERIAL_DATA_LEN_MAX) {
++        return false;
++    }
++
++    for(uint16_t remained = data_len; remained > 0;) {
++        uint8_t value_len = MIN(BLE_SVC_AIRBRIDGE_SERIAL_CHAR_VALUE_LEN_MAX, remained);
++        uint16_t value_offset = data_len - remained;
++        remained -= value_len;
++
++        tBleStatus result;
++        uint8_t retries = 100;
++        do {
++            retries--;
++            // TX is CHAR_PROP_NOTIFY, so the final fragment must use SEND_NOTIFICATION (0x01).
++            // If TX ever returns to CHAR_PROP_INDICATE, this must be SEND_INDICATION (0x02).
++            result = aci_gatt_update_char_value_ext(
++                0,
++                serial_svc->svc_handle,
++                serial_svc->chars[AirbridgeSerialSvcGattCharacteristicTx].handle,
++                remained ? GATT_CHAR_UPDATE_LOCAL_ONLY : GATT_CHAR_UPDATE_SEND_NOTIFICATION,
++                data_len,
++                value_offset,
++                value_len,
++                data + value_offset);
++            if(result == BLE_STATUS_INSUFFICIENT_RESOURCES) {
++                FURI_LOG_W(TAG, "Insufficient resources for TX update, retrying");
++                furi_delay_ms(1);
++            }
++        } while(result == BLE_STATUS_INSUFFICIENT_RESOURCES && retries);
++
++        if(result) {
++            FURI_LOG_E(TAG, "Failed updating TX characteristic: %d", result);
++            return false;
++        }
++    }
++
++    return true;
++}
++
++void ble_svc_airbridge_serial_set_rpc_active(BleServiceAirbridgeSerial* serial_svc, bool active) {
++    furi_check(serial_svc);
++    ble_svc_airbridge_serial_update_rpc_char(
++        serial_svc,
++        active ? AirbridgeSerialServiceRpcStatusActive : AirbridgeSerialServiceRpcStatusNotActive);
++}
++
++BleServiceAirbridgeSerial* ble_svc_airbridge_serial_get_active(void) {
++    return active_airbridge_serial_service;
++}
+diff --git a/targets/f7/ble_glue/services/airbridge_serial_service.h b/targets/f7/ble_glue/services/airbridge_serial_service.h
+new file mode 100644
+index 00000000..6ec796d3
+--- /dev/null
++++ b/targets/f7/ble_glue/services/airbridge_serial_service.h
+@@ -0,0 +1,42 @@
++#pragma once
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "serial_service.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define BLE_SVC_AIRBRIDGE_SERIAL_DATA_LEN_MAX       (244)
++#define BLE_SVC_AIRBRIDGE_SERIAL_CHAR_VALUE_LEN_MAX (243)
++
++typedef SerialServiceEventCallback AirbridgeSerialServiceEventCallback;
++
++typedef struct BleServiceAirbridgeSerial BleServiceAirbridgeSerial;
++
++BleServiceAirbridgeSerial* ble_svc_airbridge_serial_start(void);
++
++void ble_svc_airbridge_serial_stop(BleServiceAirbridgeSerial* service);
++
++void ble_svc_airbridge_serial_set_callbacks(
++    BleServiceAirbridgeSerial* service,
++    uint16_t buff_size,
++    AirbridgeSerialServiceEventCallback callback,
++    void* context);
++
++void ble_svc_airbridge_serial_set_rpc_active(BleServiceAirbridgeSerial* service, bool active);
++
++void ble_svc_airbridge_serial_notify_buffer_is_empty(BleServiceAirbridgeSerial* service);
++
++bool ble_svc_airbridge_serial_update_tx(
++    BleServiceAirbridgeSerial* service,
++    uint8_t* data,
++    uint16_t data_len);
++
++BleServiceAirbridgeSerial* ble_svc_airbridge_serial_get_active(void);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/targets/f7/ble_glue/services/airbridge_serial_uuid.h b/targets/f7/ble_glue/services/airbridge_serial_uuid.h
+new file mode 100644
+index 00000000..5a8b2089
+--- /dev/null
++++ b/targets/f7/ble_glue/services/airbridge_serial_uuid.h
+@@ -0,0 +1,25 @@
++#pragma once
++
++/*
++ * Canonical Pocket AirBridge vendor serial UUID family.
++ *
++ * The byte arrays are in the same network-order form used by the BLE glue.
++ * Keep each UUID in one named macro: tools/gen_identity.py parses this header.
++ *
++ * Service:      a327d613-269c-465f-b4c5-f0ba2812877b
++ * TX:           274fa3ea-83b0-4232-b78c-9873c05e8287
++ * RX:           8dc92161-f67f-41ba-9858-b7e3eb7e2f15
++ * Flow control: 254f82db-bd5b-4cd2-8f56-d8cbbf68d9d2
++ * Status:       b3b673bf-db37-45bb-aebb-db631371bbbe
++ */
++
++#define BLE_SVC_AIRBRIDGE_SERIAL_SERVICE_UUID \
++    {0xA3, 0x27, 0xD6, 0x13, 0x26, 0x9C, 0x46, 0x5F, 0xB4, 0xC5, 0xF0, 0xBA, 0x28, 0x12, 0x87, 0x7B}
++#define BLE_SVC_AIRBRIDGE_SERIAL_TX_CHAR_UUID \
++    {0x27, 0x4F, 0xA3, 0xEA, 0x83, 0xB0, 0x42, 0x32, 0xB7, 0x8C, 0x98, 0x73, 0xC0, 0x5E, 0x82, 0x87}
++#define BLE_SVC_AIRBRIDGE_SERIAL_RX_CHAR_UUID \
++    {0x8D, 0xC9, 0x21, 0x61, 0xF6, 0x7F, 0x41, 0xBA, 0x98, 0x58, 0xB7, 0xE3, 0xEB, 0x7E, 0x2F, 0x15}
++#define BLE_SVC_AIRBRIDGE_SERIAL_FLOW_CONTROL_UUID \
++    {0x25, 0x4F, 0x82, 0xDB, 0xBD, 0x5B, 0x4C, 0xD2, 0x8F, 0x56, 0xD8, 0xCB, 0xBF, 0x68, 0xD9, 0xD2}
++#define BLE_SVC_AIRBRIDGE_SERIAL_STATUS_UUID \
++    {0xB3, 0xB6, 0x73, 0xBF, 0xDB, 0x37, 0x45, 0xBB, 0xAE, 0xBB, 0xDB, 0x63, 0x13, 0x71, 0xBB, 0xBE}
+diff --git a/targets/f7/ble_glue/services/battery_service.c b/targets/f7/ble_glue/services/battery_service.c
+index 66aafc49..7af01e85 100644
+--- a/targets/f7/ble_glue/services/battery_service.c
++++ b/targets/f7/ble_glue/services/battery_service.c
+@@ -85,6 +85,10 @@ static bool instances_initialized = false;
+ 
+ BleServiceBattery* ble_svc_battery_start(bool auto_update) {
+     BleServiceBattery* battery_svc = malloc(sizeof(BleServiceBattery));
++    if(!battery_svc) {
++        FURI_LOG_E(TAG, "Failed to allocate service");
++        return NULL;
++    }
+ 
+     if(!ble_gatt_service_add(
+            UUID_TYPE_16,
+@@ -98,6 +102,15 @@ BleServiceBattery* ble_svc_battery_start(bool auto_update) {
+     for(size_t i = 0; i < BatterySvcGattCharacteristicCount; i++) {
+         ble_gatt_characteristic_init(
+             battery_svc->svc_handle, &battery_svc_chars[i], &battery_svc->chars[i]);
++        if(!battery_svc->chars[i].characteristic) {
++            FURI_LOG_E(TAG, "Failed to add characteristic %u", i);
++            for(size_t j = 0; j < i; j++) {
++                ble_gatt_characteristic_delete(battery_svc->svc_handle, &battery_svc->chars[j]);
++            }
++            ble_gatt_service_delete(battery_svc->svc_handle);
++            free(battery_svc);
++            return NULL;
++        }
+     }
+ 
+     battery_svc->auto_update = auto_update;
 diff --git a/targets/f7/furi_hal/furi_hal_usb_airbridge.c b/targets/f7/furi_hal/furi_hal_usb_airbridge.c
 new file mode 100644
 index 00000000..f38c527b
@@ -866,6 +2252,18 @@ index 00000000..f38c527b
 +
 +    return usbd_fail;
 +}
+diff --git a/targets/f7/target.json b/targets/f7/target.json
+index 911aa082..e7f24974 100644
+--- a/targets/f7/target.json
++++ b/targets/f7/target.json
+@@ -47,6 +47,7 @@
+         "update_util",
+         "heatshrink",
+         "flipperformat",
++        "ble_profile",
+         "flipper7",
+         "bit_lib",
+         "toolbox",
 diff --git a/targets/furi_hal_include/furi_hal_usb.h b/targets/furi_hal_include/furi_hal_usb.h
 index 213e8d56..77fd13a7 100644
 --- a/targets/furi_hal_include/furi_hal_usb.h

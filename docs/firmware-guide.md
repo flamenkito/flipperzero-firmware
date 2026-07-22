@@ -5,15 +5,15 @@
 You already have `~/projects/flipperzero-firmware`. We added:
 
 1. **New USB HID profile** `usb_airbridge` (bidirectional 64-byte vendor HID, based on the U2F profile)
-2. **BLE Serial passthrough patch** in `bt_service/bt.c` to let our FAP intercept raw serial data
+2. **AirBridge BLE impersonation profile** (Battery + DIS + HIDS + AirBridge serial), config-driven identity, and `bt_service` routing so the FAP can intercept raw serial data
 3. **FAP** `pocket_airbridge` in `applications_user/pocket_airbridge/`, including `icon.png` wired through `fap_icon`
 
 **Starting from a pristine firmware checkout instead?** Everything above is bundled in
-[`docs/firmware/`](firmware/): `airbridge-firmware.patch` (HAL + BT + GAP changes),
+[`docs/firmware/`](firmware/): `airbridge-firmware.patch` (USB, BLE-profile, BT, and GAP changes),
 `api-symbols-additions.patch`, and the FAP source. See `docs/firmware/README.md` for
-apply instructions. The patches were audited against latest upstream `dev` on
-2026-07-20: upstream still has no raw-serial API and no custom HID mechanism, and
-has not touched the patched files since, so they apply cleanly.
+apply instructions. The bundle is regenerated from firmware commit `31f929b2`
+against pristine upstream `dev` base `c9ab2b68`; apply the firmware patch, then
+the API-symbol patch, before copying the FAP.
 
 The firmware is a dumb, stateless byte relay between the two transports. The
 Flipper never parses protocol frames and never buffers more than the small
@@ -30,7 +30,7 @@ in-flight event queue.
   observed once during a mid-flight cancel race and is benign (see
   Troubleshooting).
 
-## Files Changed
+## Key Files Changed
 
 ```
 flipperzero-firmware/
@@ -45,9 +45,13 @@ flipperzero-firmware/
 │   ├── furi_hal_usb.h                    (add usb_airbridge extern)
 │   └── furi_hal_usb_airbridge.h        (NEW)
 ├── applications/services/bt/bt_service/
-│   ├── bt.c                              (raw serial hook + bt_serial_tx)
-│   ├── bt.h                              (public API declarations)
-│   └── bt_i.h                            (note about public declarations)
+│   ├── bt.c                              (AirBridge raw serial routing)
+│   └── bt.h                              (public API declarations)
+├── lib/ble_profile/extra_profiles/
+│   └── airbridge_profile.c               (HIDS + DIS + serial BLE profile)
+├── targets/f7/ble_glue/services/
+│   ├── airbridge_dev_info_service.c      (config-driven DIS)
+│   └── airbridge_serial_service.c        (AirBridge serial notify service)
 └── targets/f7/api_symbols.csv          (export new symbols)
 ```
 
@@ -143,10 +147,13 @@ The Deploy flow reads its files from `/ext/apps_data/pocket_airbridge/` on the S
 | SD path | Source | Role |
 |---|---|---|
 | `/ext/apps_data/pocket_airbridge/bootstrap.js` | `web/bootstrap.js` | The typed snippet. ASCII-only, 1,200 characters. The snippet carries a WebHID filter list that enumerates every profile VID/PID (Logitech, Dell, MSFT, HP), so it matches whichever impersonation is active; on the target machine only the Flipper is present. |
-| `/ext/apps_data/pocket_airbridge/bootstrap-ble.js` | `web/bootstrap-ble.js` | The BLE twin of `bootstrap.js`. ASCII-only, ~1,601 characters, typed character-by-character over BLE HID during a BLE Deploy run. The snippet matches the AirBridge serial UUID family inlined from `web/airbridge-identity.js`; it requests a Web Bluetooth device by exact name and HP company ID, connects GATT, subscribes to the TX-indicate characteristic, writes the 0x42 bundle request, and replaces the page with the streamed app bundle. |
-| `/ext/apps_data/pocket_airbridge/app-usb.html` | `dist/app-usb.html` | The single-file app bundle that gets streamed to the PC. |
+| `/ext/apps_data/pocket_airbridge/bootstrap-ble.js` | `web/bootstrap-ble.js` | The BLE twin of `bootstrap.js`, typed character-by-character through BLE HIDS during a BLE Deploy run. It opens Web Bluetooth, subscribes to the AirBridge serial TX **notify** characteristic, writes the `0x42` request, and boots the streamed app. |
+| `/ext/apps_data/pocket_airbridge/app-usb.html` | `dist/app-usb.html` | The single-file WebHID app bundle streamed by **UP = USB Deploy**. |
+| `/ext/apps_data/pocket_airbridge/app-ble.html` | `dist/app-ble.html` | The single-file Web Bluetooth app bundle streamed by **DOWN = BLE Deploy**. |
 
-Build the bundle, then send both files. The AirBridge app must NOT be running while you do this (the serial port only exists when the app is exited):
+Build both bundles, then send all four deploy artifacts. The AirBridge app must
+NOT be running while you do this (the serial port only exists when the app is
+exited):
 
 ```bash
 cd ~/projects/flipper-hid
@@ -158,14 +165,25 @@ python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
   /ext/apps_data/pocket_airbridge/bootstrap.js
 
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
+  ~/projects/flipper-hid/web/bootstrap-ble.js \
+  /ext/apps_data/pocket_airbridge/bootstrap-ble.js
+
+python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
   ~/projects/flipper-hid/dist/app-usb.html \
   /ext/apps_data/pocket_airbridge/app-usb.html
 
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 size \
   /ext/apps_data/pocket_airbridge/app-usb.html
+
+python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
+  ~/projects/flipper-hid/dist/app-ble.html \
+  /ext/apps_data/pocket_airbridge/app-ble.html
+
+python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 size \
+  /ext/apps_data/pocket_airbridge/app-ble.html
 ```
 
-The `size` command should report `70415` bytes for the current bundle.
+The `size` commands confirm that both transport-matched bundles were uploaded.
 
 **Timing matters:** while a composite profile is active (Bridge or Deploy mode) the Flipper has NO serial port at all, and `storage.py` fails with `Failed to resolve port`. Deploy these files BEFORE entering Bridge/Deploy, or exit the app to restore the CLI, then send them.
 
@@ -192,14 +210,15 @@ python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
 
 ### The Deploy Flow
 
-1. Select **Deploy app** in the FAP menu.
-2. The screen prompts: `Place cursor in browser console, then press OK`. On the target PC, open a tab at `https://example.com` (not `about:blank` — some Chrome builds report `window.isSecureContext === false` there, which blocks WebHID; verify with `console.log(window.isSecureContext)`).
-3. On OK, the FAP types `bootstrap.js` from the SD card over the keyboard interface. The screen shows `TYPING…` for the entire emission; BACK aborts instantly.
-4. The screen shows `Waiting for request…`. On the PC, the executed bootstrap paints a landing page; clicking **Connect** opens WebHID and sends the `0x42` bundle request on the vendor interface.
-5. The FAP streams the length+checksum header, then the bundle in 64-byte reports (see [protocol.md](protocol.md), "Bootstrap Stream Protocol").
-6. The screen shows `Done` and prompts to enter Bridge mode.
+1. From the Bridge screen, press **UP** for USB Deploy or **DOWN** for BLE Deploy.
+2. The screen prompts: `Place cursor in browser console, then press OK`. On the target PC, open a tab at `https://example.com` (not `about:blank` — some Chrome builds report `window.isSecureContext === false` there).
+3. On OK, the FAP types `bootstrap.js` over USB or `bootstrap-ble.js` over BLE HIDS. The screen shows `TYPING…` for the entire emission; BACK aborts instantly.
+4. The executed bootstrap paints a landing page. Clicking **Connect** supplies the browser user gesture, opens the matching WebHID or Web Bluetooth transport, and sends `0x42`.
+5. The FAP streams the length+checksum header and transport-matched `app-usb.html` or `app-ble.html` bundle (see [protocol.md](protocol.md), "Bootstrap Stream Protocol").
+6. The screen shows `Done` and returns to Bridge.
 
-Deploy requires a kbd+vendor profile. If the active personality were vendor-only, Deploy would refuse with `Set USB mode to Kbd+Vendor first`.
+USB Deploy requires a kbd+vendor USB profile. BLE Deploy uses the AirBridge HIDS
+keyboard report and does not depend on the USB keyboard collection.
 
 ## Revert Firmware Changes
 
@@ -237,17 +256,22 @@ We patched `bt_service` to expose two new functions:
 - `bt_set_raw_serial_callback(cb, ctx)` — intercepts all BLE Serial RX data before the RPC system sees it
 - `bt_serial_tx(data, len)` — sends raw bytes over BLE Serial
 
-The chat page connects to the existing **Flipper Serial-over-BLE** service using these browser-canonical UUIDs:
+The chat page connects to the AirBridge serial service using the on-air UUIDs
+generated in `web/airbridge-identity.js`:
 
 | Role | UUID | Direction |
 |------|------|-----------|
-| Service | `8fe5b3d5-2e7f-4a98-2a48-7acc60fe0000` | — |
-| TX (Indicate) | `19ed82ae-ed21-4c9d-4145-228e61fe0000` | Flipper → Browser |
-| RX (Write) | `19ed82ae-ed21-4c9d-4145-228e62fe0000` | Browser → Flipper |
+| Service | `7b871228-baf0-c5b4-5f46-9c2613d627a3` | — |
+| TX (Notify) | `87825ec0-7398-8cb7-3242-b083eaa34f27` | Flipper → Browser |
+| RX (Write) | `152f7eeb-e3b7-5898-ba41-7ff66121c98d` | Browser → Flipper |
+| Flow control (Notify) | `d2d968bf-cbd8-568f-d24c-5bbddb824f25` | Flipper → Browser |
+| Status (Notify/Read/Write) | `bebb7113-63db-bbae-bb45-37dbbf73b6b3` | Both |
 
-The firmware source lists the same UUID bytes in controller byte order in
-`targets/f7/ble_glue/services/serial_service_uuid.inc`; Web Bluetooth exposes
-the browser-canonical UUID strings above.
+The firmware source keeps the controller-order values in
+`targets/f7/ble_glue/services/airbridge_serial_uuid.h`; the browser uses the
+byte-reversed on-air strings above. The profile advertises HIDS and includes
+DIS with values from the FAP config, while persistent BLE bonding is disabled to
+avoid macOS holding the keyboard connection after a session.
 
 ### Bridge Logic (Inside the FAP)
 
@@ -301,9 +325,8 @@ Then open:
 - `http://localhost:8080/chat-usb.html` on PC-A (WebHID chat page)
 - `http://localhost:8080/chat-ble.html` on PC-B (Web Bluetooth chat page)
 
-Legacy file-transfer-only pages are still available:
-- `http://localhost:8080/sender.html` on PC-A
-- `http://localhost:8080/receiver.html` on PC-B
+The superseded `sender.html` and `receiver.html` file-transfer pages were removed;
+use the chat pages above for all transfers.
 
 ## Step-by-Step Chat Demo Script
 
@@ -326,7 +349,7 @@ Legacy file-transfer-only pages are still available:
 | `app may not be runnable. Symbols not resolved` | Make sure new functions are declared in `bt.h` and added to `api_symbols.csv` |
 | WebHID can't open device | Check that the chat-usb page targets the active impersonation profile and is on `localhost` or `https` |
 | Web Bluetooth can't find Flipper | Make sure the Flipper is advertising (app running) and Bluetooth is enabled on PC-B. Use Chrome/Edge |
-| Web Bluetooth selects Flipper but says Serial service UUID is missing | Refresh `chat-ble.html`; the browser must use the canonical UUIDs (`8fe5...`, `19ed...`), not the firmware byte-order strings |
+| Web Bluetooth selects Flipper but says Serial service UUID is missing | Refresh `chat-ble.html`; it must use the generated AirBridge UUIDs (`7b871228...`, `87825ec0...`, `152f7eeb...`), not controller-order UUID bytes |
 | Transfer is slow | Expected — 64-byte chunks at ~50-100 Hz is normal for BLE HID demo throughput |
 | Cancel doesn't work | Make sure both sides run the latest chat pages that handle `MSG.CANCEL` and `AbortController` |
 | Flipper reboots | Increase `stack_size` in `application.fam` (try `3 * 1024`) |

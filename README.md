@@ -99,11 +99,12 @@ flipper-hid/
 │   ├── chat-ble.html       # Web Bluetooth chat page (send/receive over BLE)
 │   ├── airbridge-protocol.js   # Shared wire protocol (frames, ACK, ItemSender/ItemReceiver)
 │   ├── airbridge-transports.js # Shared WebHID/Web Bluetooth transport helpers
-│   ├── protocol-harness.html   # In-browser protocol test harness
-│   ├── sender.html         # Legacy WebHID file sender
-│   └── receiver.html       # Legacy Web Bluetooth file receiver
+│   └── protocol-harness.html   # In-browser protocol test harness
 └── README.md               # This file
 ```
+
+The superseded `sender.html` and `receiver.html` file-transfer pages were removed;
+use `chat-usb.html` and `chat-ble.html` instead.
 
 ## Task Breakdown for Implementation
 
