@@ -94,7 +94,7 @@ function parseMessage(data) {
 $('connectBtn').onclick = async () => {
   try {
     const devices = await navigator.hid.requestDevice({
-      filters: [{ vendorId: 0x0483, productId: 0x5742 }] // Pocket AirBridge vendor HID profile
+      filters: [{ vendorId: 0x03F0, productId: 0x5341, usagePage: 0xFF00 }] // Pocket AirBridge vendor HID profile
     });
     if (!devices.length) { log('No device selected.','error'); return; }
     device = devices[0];

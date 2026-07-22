@@ -30,6 +30,7 @@
 <ul id="results" aria-live="polite"></ul>
 
 <script type="module">
+import { identity } from './airbridge-identity.js';
 import {
   ItemReceiver,
   ItemSender,
@@ -48,6 +49,13 @@ const MAX_PAYLOAD = Number(PROTOCOL_MAX_PAYLOAD ?? 59);
 const REPORT_ID = 0x01;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const MOCK_BLE_UUIDS = Object.freeze({
+  service: identity.SERIAL_SERVICE_UUID,
+  tx: identity.SERIAL_TX_CHAR_UUID,
+  rx: identity.SERIAL_RX_CHAR_UUID,
+  flowControl: identity.SERIAL_FLOW_CONTROL_UUID,
+  status: identity.SERIAL_STATUS_UUID,
+});
 
 const MSG = {
   HELLO: PROTOCOL_MSG.HELLO,
@@ -212,6 +220,7 @@ async function sha256Hex(buffer) {
 function createMockTransport(name) {
   return {
     name,
+    bleUuids: MOCK_BLE_UUIDS,
     peer: null,
     sentReports: [],
     onInputReport: null,
@@ -758,6 +767,7 @@ function createBootstrapStreamReports(bytes, checksum) {
 function createBootstrapMockHid(reports) {
   const listeners = new Set();
   return {
+    collections: [{ usagePage: 0xFF00, usage: 0x01 }],
     sentReports: [],
     addEventListener(type, listener) { if (type === 'inputreport') listeners.add(listener); },
     removeEventListener(type, listener) { if (type === 'inputreport') listeners.delete(listener); },
@@ -850,6 +860,7 @@ function createHidDeviceMock(reports) {
   const listeners = new Set();
 
   const device = {
+    collections: [{ usagePage: 0xFF00, usage: 0x01 }],
     sentReports: [],
     closeCallOrder: [],
     async open() {},

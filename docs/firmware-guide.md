@@ -143,6 +143,7 @@ The Deploy flow reads its files from `/ext/apps_data/pocket_airbridge/` on the S
 | SD path | Source | Role |
 |---|---|---|
 | `/ext/apps_data/pocket_airbridge/bootstrap.js` | `web/bootstrap.js` | The typed snippet. ASCII-only, 1,200 characters. The snippet carries a WebHID filter list that enumerates every profile VID/PID (Logitech, Dell, MSFT, HP), so it matches whichever impersonation is active; on the target machine only the Flipper is present. |
+| `/ext/apps_data/pocket_airbridge/bootstrap-ble.js` | `web/bootstrap-ble.js` | The BLE twin of `bootstrap.js`. ASCII-only, ~1,601 characters, typed character-by-character over BLE HID during a BLE Deploy run. The snippet matches the AirBridge serial UUID family inlined from `web/airbridge-identity.js`; it requests a Web Bluetooth device by exact name and HP company ID, connects GATT, subscribes to the TX-indicate characteristic, writes the 0x42 bundle request, and replaces the page with the streamed app bundle. |
 | `/ext/apps_data/pocket_airbridge/app-usb.html` | `dist/app-usb.html` | The single-file app bundle that gets streamed to the PC. |
 
 Build the bundle, then send both files. The AirBridge app must NOT be running while you do this (the serial port only exists when the app is exited):

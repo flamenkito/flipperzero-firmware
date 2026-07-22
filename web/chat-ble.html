@@ -74,10 +74,11 @@
       </div>
     </div>
     <div class="connection-row">
-      <button type="button" id="connectBtn">Pair with Flipper (BLE)</button>
+      <button type="button" id="connectBtn">Pair</button>
       <button type="button" id="disconnectBtn" disabled>Disconnect</button>
     </div>
   </div>
+  <p>Pick the HP Wireless device in the list.</p>
 </section>
 
 <section class="card" aria-labelledby="chatTitle">
@@ -405,7 +406,9 @@ async function connect() {
   setConnectionStatus('connecting');
   log(mockMode ? 'Connecting to in-page mock BLE transport...' : 'Opening Web Bluetooth picker...');
   try {
-    transport = mockMode ? createMockBleTransport() : new WebBluetoothAdapter({ onDisconnect: handleDisconnected });
+    transport = mockMode
+      ? createMockBleTransport()
+      : new WebBluetoothAdapter({ onDisconnect: handleDisconnected });
     await transport.connect();
     sender = new ItemSender(sendFrameWithBusyBackoff, { timeoutMs: mockMode ? 800 : 5000, retries: 4 });
     receiver = new ItemReceiver({ sendFn: frame => transport.send(frame), busy: false });

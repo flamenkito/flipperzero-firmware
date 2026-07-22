@@ -24,36 +24,30 @@
 <body>
 <div class="legacy-banner">This page is legacy. Use the new chat pages: <a href="chat-usb.html">chat-usb.html</a> (WebHID) and <a href="chat-ble.html">chat-ble.html</a> (Web Bluetooth).</div>
 <h1>Pocket AirBridge — Receiver</h1>
-<p>Connect to the Flipper Zero bridge via Web Bluetooth and receive the file.</p>
+<p>Pick the HP Wireless device in the list.</p>
 
-<button type="button" id="connectBtn">1. Pair with Flipper (BLE)</button>
+<button type="button" id="connectBtn">Pair</button>
 <button type="button" id="disconnectBtn" disabled>Disconnect</button>
 
 <div id="progressWrap"><div id="progressBar"></div></div>
 <div id="status">Waiting...</div>
 <div id="downloadArea"></div>
 
-<script>
+<script type="module">
 /* Pocket AirBridge — Receiver (Web Bluetooth)
- * Receives files from a Flipper Zero acting as a BLE GATT bridge.
+ * Receives files from an AirBridge BLE GATT bridge.
  */
+
+import { identity } from './airbridge-identity.js';
 
 const MSG = { HELLO: 0x01, META: 0x02, DATA: 0x03, ACK: 0x04, NACK: 0x05, DONE: 0x06, ERROR: 0x07 };
 
-// Flipper Serial-over-BLE UUIDs. Flipper firmware stores 128-bit UUIDs in the
-// controller byte order; Web Bluetooth exposes the browser-canonical form.
 const SERIAL_UUIDS = [
   {
-    name: 'browser-canonical',
-    service: '8fe5b3d5-2e7f-4a98-2a48-7acc60fe0000',
-    tx: '19ed82ae-ed21-4c9d-4145-228e61fe0000', // Flipper -> Receiver (indicate)
-    rx: '19ed82ae-ed21-4c9d-4145-228e62fe0000', // Receiver -> Flipper (write)
-  },
-  {
-    name: 'firmware-byte-order',
-    service: '0000fe60-cc7a-482a-984a-7f2ed5b3e58f',
-    tx: '0000fe61-8e22-4541-9d4c-21edae82ed19',
-    rx: '0000fe62-8e22-4541-9d4c-21edae82ed19',
+    name: 'airbridge',
+    service: identity.SERIAL_SERVICE_UUID,
+    tx: identity.SERIAL_TX_CHAR_UUID,
+    rx: identity.SERIAL_RX_CHAR_UUID,
   },
 ];
 
@@ -76,7 +70,6 @@ const log = (text, cls='') => {
   $('status').scrollTop = $('status').scrollHeight;
 };
 const setProgress = pct => $('progressBar').style.width = `${pct}%`;
-
 async function sha256(buf) {
   const hash = await crypto.subtle.digest('SHA-256', buf);
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
@@ -109,7 +102,7 @@ $('connectBtn').onclick = async () => {
   try {
     device = await navigator.bluetooth.requestDevice({
       acceptAllDevices: true,
-      optionalServices: SERIAL_UUIDS.map(uuids => uuids.service)
+      optionalServices: [identity.SERIAL_SERVICE_UUID],
     });
     log(`Selected: ${device.name || 'Unknown'}`, 'ok');
     device.addEventListener('gattserverdisconnected', onDisconnected);
@@ -126,7 +119,7 @@ $('connectBtn').onclick = async () => {
         // Try the next UUID representation.
       }
     }
-    if (!matched || !service) throw new Error('Flipper Serial BLE service not found');
+    if (!matched || !service) throw new Error('AirBridge serial BLE service not found');
 
     txChar = await service.getCharacteristic(matched.tx);
     rxChar = await service.getCharacteristic(matched.rx);

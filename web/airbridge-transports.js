@@ -1,9 +1,11 @@
+import { identity } from './airbridge-identity.js';
+
 const HID_FILTERS = [
-  { vendorId: 0x046D, productId: 0xC31C },
-  { vendorId: 0x413C, productId: 0x2113 },
-  { vendorId: 0x045E, productId: 0x07F8 },
-  { vendorId: 0x045E, productId: 0x07A5 },
-  { vendorId: 0x03F0, productId: 0x5341 },
+  { vendorId: 0x046D, productId: 0xC31C, usagePage: 0xFF00 },
+  { vendorId: 0x413C, productId: 0x2113, usagePage: 0xFF00 },
+  { vendorId: 0x045E, productId: 0x07F8, usagePage: 0xFF00 },
+  { vendorId: 0x045E, productId: 0x07A5, usagePage: 0xFF00 },
+  { vendorId: 0x03F0, productId: 0x5341, usagePage: 0xFF00 },
 ];
 
 const PINNED_PIDS = new Set(
@@ -14,24 +16,11 @@ const HID_REPORT_LEN = 64;
 const HEADER_LEN = 5;
 
 const SERIAL_UUIDS = [
-  // Real Flipper UUIDs decoded from `serial_service_uuid.inc`.
   {
-    name: 'flipper-actual',
-    service: '60fe0000-7acc-2a48-984a-7f2ed5b3e58f',
-    tx: '61fe0000-228e-4145-9d4c-21edae82ed19',
-    rx: '62fe0000-228e-4145-9d4c-21edae82ed19',
-  },
-  {
-    name: 'browser-canonical',
-    service: '8fe5b3d5-2e7f-4a98-2a48-7acc60fe0000',
-    tx: '19ed82ae-ed21-4c9d-4145-228e61fe0000',
-    rx: '19ed82ae-ed21-4c9d-4145-228e62fe0000',
-  },
-  {
-    name: 'firmware-byte-order',
-    service: '0000fe60-cc7a-482a-984a-7f2ed5b3e58f',
-    tx: '0000fe61-8e22-4541-9d4c-21edae82ed19',
-    rx: '0000fe62-8e22-4541-9d4c-21edae82ed19',
+    name: 'airbridge',
+    service: identity.SERIAL_SERVICE_UUID,
+    tx: identity.SERIAL_TX_CHAR_UUID,
+    rx: identity.SERIAL_RX_CHAR_UUID,
   },
 ];
 
@@ -81,10 +70,17 @@ export class WebHIDAdapter {
     const cachedDevices = await navigator.hid.getDevices();
     // Prefer an exact vendorId+productId match from the pinned set; fall back to
     // vendorId-only (legacy entries) only when no pinned device is available.
-    let device = cachedDevices.find(
+    const cachedPinnedDevices = cachedDevices.filter(
       ({ vendorId, productId }) =>
         PINNED_PIDS.has(`${vendorId.toString(16).padStart(4,'0')}:${productId.toString(16).padStart(4,'0')}`),
     );
+    let device = cachedPinnedDevices.find(({ collections }) =>
+      collections.some(c => c.usagePage === 0xFF00),
+    );
+    if (!device && cachedPinnedDevices.length) {
+      console.warn('No cached AirBridge HID device exposes usage page 0xFF00; falling back to the first pinned device.');
+      [device] = cachedPinnedDevices;
+    }
     if (!device) {
       device = cachedDevices.find(({ vendorId, productId }) =>
         HID_FILTERS.some(filter => filter.vendorId === vendorId && filter.productId == null),
@@ -219,8 +215,8 @@ export class WebBluetoothAdapter {
     if (!navigator.bluetooth) throw new Error('Web Bluetooth is not available in this browser');
 
     this.device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'Flipper' }],
-      optionalServices: [0x3080, ...SERIAL_UUIDS.map(u => u.service)],
+      acceptAllDevices: true,
+      optionalServices: [identity.SERIAL_SERVICE_UUID],
     });
     this.device.addEventListener('gattserverdisconnected', this.handleDisconnected);
     this.server = await this.device.gatt.connect();
@@ -313,7 +309,7 @@ export class WebBluetoothAdapter {
         return { service, uuids };
       } catch (_) {}
     }
-    throw new Error('Flipper Serial BLE service not found');
+    throw new Error('AirBridge serial BLE service not found');
   }
 
   handleCharacteristicValueChanged(event) {
