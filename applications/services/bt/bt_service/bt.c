@@ -240,14 +240,19 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
             furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
         }
     } else if(event.event == SerialServiceEventTypesBleResetRequest) {
-        FURI_LOG_I(TAG, "BLE restart request received");
-        BtMessage message = {
-            .type = BtMessageTypeSetProfile,
-            .data.profile.params = NULL,
-            .data.profile.template = ble_profile_serial,
-        };
-        furi_check(
-            furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
+        if(bt_profile_is_airbridge(bt->current_profile)) {
+            FURI_LOG_W(TAG, "Ignoring reset request for AirBridge profile");
+        } else {
+            FURI_LOG_I(TAG, "BLE restart request received");
+            BtMessage message = {
+                .type = BtMessageTypeSetProfile,
+                .data.profile.params = NULL,
+                .data.profile.template = ble_profile_serial,
+            };
+            furi_check(
+                furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) ==
+                FuriStatusOk);
+        }
     }
     return ret;
 }
