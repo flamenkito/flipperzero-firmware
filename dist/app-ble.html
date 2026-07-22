@@ -836,8 +836,6 @@ class WebHIDAdapter {
     if (!navigator.hid) throw new Error('WebHID is not available in this browser');
 
     const cachedDevices = await navigator.hid.getDevices();
-    // Prefer an exact vendorId+productId match from the pinned set; fall back to
-    // vendorId-only (legacy entries) only when no pinned device is available.
     const cachedPinnedDevices = cachedDevices.filter(
       ({ vendorId, productId }) =>
         PINNED_PIDS.has(`${vendorId.toString(16).padStart(4,'0')}:${productId.toString(16).padStart(4,'0')}`),
@@ -845,15 +843,6 @@ class WebHIDAdapter {
     let device = cachedPinnedDevices.find(({ collections }) =>
       collections.some(c => c.usagePage === 0xFF00),
     );
-    if (!device && cachedPinnedDevices.length) {
-      console.warn('No cached AirBridge HID device exposes usage page 0xFF00; falling back to the first pinned device.');
-      [device] = cachedPinnedDevices;
-    }
-    if (!device) {
-      device = cachedDevices.find(({ vendorId, productId }) =>
-        HID_FILTERS.some(filter => filter.vendorId === vendorId && filter.productId == null),
-      );
-    }
 
     if (!device) {
       const devices = await navigator.hid.requestDevice({ filters: HID_FILTERS });
@@ -1075,7 +1064,9 @@ class WebBluetoothAdapter {
       try {
         const service = await this.server.getPrimaryService(uuids.service);
         return { service, uuids };
-      } catch (_) {}
+      } catch (_) {
+        // A miss is expected while probing each supported serial-service UUID.
+      }
     }
     throw new Error('AirBridge serial BLE service not found');
   }
