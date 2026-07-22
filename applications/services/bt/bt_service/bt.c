@@ -233,7 +233,12 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
         }
         ret = rpc_session_get_available_size(bt->rpc_session);
     } else if(event.event == SerialServiceEventTypeDataSent) {
-        furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
+        bool current_profile_is_airbridge = bt_profile_is_airbridge(bt->current_profile);
+        if(current_profile_is_airbridge && bt_raw_serial_cb) {
+            ret = bt_raw_serial_cb(NULL, 0, bt_raw_serial_ctx);
+        } else {
+            furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
+        }
     } else if(event.event == SerialServiceEventTypesBleResetRequest) {
         FURI_LOG_I(TAG, "BLE restart request received");
         BtMessage message = {
@@ -305,9 +310,12 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
 
         if(current_profile_is_airbridge) {
             BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
-            furi_check(serial_svc);
-            ble_svc_airbridge_serial_set_callbacks(
-                serial_svc, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
+            if(serial_svc) {
+                ble_svc_airbridge_serial_set_callbacks(
+                    serial_svc, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
+            } else {
+                FURI_LOG_E(TAG, "AirBridge serial service unavailable on connect");
+            }
         }
 
         if(current_profile_is_serial) {
@@ -339,8 +347,9 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
     } else if(event.type == GapEventTypeDisconnected) {
         if(current_profile_is_airbridge) {
             BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
-            furi_check(serial_svc);
-            ble_svc_airbridge_serial_set_callbacks(serial_svc, 0, NULL, NULL);
+            if(serial_svc) {
+                ble_svc_airbridge_serial_set_callbacks(serial_svc, 0, NULL, NULL);
+            }
         }
         if(current_profile_is_serial && bt->rpc_session) {
             FURI_LOG_I(TAG, "Close RPC connection");

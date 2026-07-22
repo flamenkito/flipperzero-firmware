@@ -5,6 +5,12 @@
 #include <furi_ble/profile_interface.h>
 #include <core/common_defines.h>
 
+/** Raw serial callback.
+ * @note For data deliveries len > 0 and data points to the received bytes.
+ * @note A TX-confirmation sentinel is delivered as data == NULL and len == 0.
+ *       It is NOT a data packet; consumers must ignore it for relay/input parsing
+ *       and use it only to pace outgoing BLE serial transmissions.
+ */
 typedef uint16_t (*BtRawSerialCallback)(const uint8_t* data, uint16_t len, void* context);
 
 #ifdef __cplusplus

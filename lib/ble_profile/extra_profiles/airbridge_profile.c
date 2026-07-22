@@ -10,6 +10,8 @@
 #include <usb_hid.h>
 #include <ble/ble.h>
 
+#define TAG "BleAirbridgeProfile"
+
 #define HID_INFO_BASE_USB_SPECIFICATION                    (0x0101)
 #define HID_INFO_COUNTRY_CODE                              (0x00)
 #define BLE_PROFILE_HID_INFO_FLAG_REMOTE_WAKE_MSK          (0x01)
@@ -117,13 +119,13 @@ _Static_assert(offsetof(BleProfileAirbridge, base) == 0, "Wrong layout");
  * compiled-in placeholders so a missing params block never exposes Flipper data.
  */
 static const AirbridgeBleIdentityParams airbridge_default_identity = {
-    .device_name = "HP Wireless KB",
+    .device_name = "HP 725 K+M",
     .mac_address = {0x3C, 0x52, 0x82, 0x00, 0x00, 0x01},
     .appearance = GAP_APPEARANCE_KEYBOARD,
     .manufacturer_data = {0x0E, 0x00},
     .manufacturer_data_len = 2,
     .dis_manufacturer = "HP",
-    .dis_model = "HP Wireless KB",
+    .dis_model = "HP 725 K+M",
     .dis_serial = "HP000001",
     .dis_pnp_version = 0x0100,
 };
@@ -132,6 +134,22 @@ static const AirbridgeBleIdentityParams*
     ble_profile_airbridge_get_identity(FuriHalBleProfileParams profile_params) {
     const AirbridgeBleIdentityParams* identity = (const AirbridgeBleIdentityParams*)profile_params;
     return identity ? identity : &airbridge_default_identity;
+}
+
+static void ble_profile_airbridge_free(BleProfileAirbridge* profile) {
+    if(profile->serial_svc) {
+        ble_svc_airbridge_serial_stop(profile->serial_svc);
+    }
+    if(profile->hid_svc) {
+        ble_svc_hid_stop(profile->hid_svc);
+    }
+    if(profile->dev_info_svc) {
+        ble_svc_airbridge_dev_info_stop(profile->dev_info_svc);
+    }
+    if(profile->battery_svc) {
+        ble_svc_battery_stop(profile->battery_svc);
+    }
+    free(profile);
 }
 
 static FuriHalBleProfileBase* ble_profile_airbridge_start(FuriHalBleProfileParams profile_params) {
@@ -145,17 +163,37 @@ static FuriHalBleProfileBase* ble_profile_airbridge_start(FuriHalBleProfileParam
     };
 
     BleProfileAirbridge* profile = malloc(sizeof(BleProfileAirbridge));
+    if(!profile) {
+        FURI_LOG_E(TAG, "Failed to allocate profile");
+        return NULL;
+    }
+    memset(profile, 0, sizeof(*profile));
     profile->base.config = ble_profile_airbridge;
 
     // GATT budget: battery(8) + AirBridge DIS(9) + HID(23) + serial(12) = 52 <= 68.
     profile->battery_svc = ble_svc_battery_start(true);
+    if(!profile->battery_svc) {
+        FURI_LOG_E(TAG, "Failed to start battery service");
+        goto error;
+    }
     profile->dev_info_svc = ble_svc_airbridge_dev_info_start(&dis_strings);
+    if(!profile->dev_info_svc) {
+        FURI_LOG_E(TAG, "Failed to start device information service");
+        goto error;
+    }
     profile->hid_svc = ble_svc_hid_start();
+    if(!profile->hid_svc) {
+        FURI_LOG_E(TAG, "Failed to start HID service");
+        goto error;
+    }
 
-    ble_svc_hid_update_report_map(
-        profile->hid_svc,
-        ble_profile_airbridge_report_map_data,
-        sizeof(ble_profile_airbridge_report_map_data));
+    if(ble_svc_hid_update_report_map(
+           profile->hid_svc,
+           ble_profile_airbridge_report_map_data,
+           sizeof(ble_profile_airbridge_report_map_data))) {
+        FURI_LOG_E(TAG, "Failed to initialize HID report map");
+        goto error;
+    }
     uint8_t hid_info_val[4] = {
         HID_INFO_BASE_USB_SPECIFICATION & 0x00FF,
         (HID_INFO_BASE_USB_SPECIFICATION & 0xFF00) >> 8,
@@ -163,23 +201,29 @@ static FuriHalBleProfileBase* ble_profile_airbridge_start(FuriHalBleProfileParam
         BLE_PROFILE_HID_INFO_FLAG_REMOTE_WAKE_MSK |
             BLE_PROFILE_HID_INFO_FLAG_NORMALLY_CONNECTABLE_MSK,
     };
-    ble_svc_hid_update_info(profile->hid_svc, hid_info_val);
+    if(ble_svc_hid_update_info(profile->hid_svc, hid_info_val)) {
+        FURI_LOG_E(TAG, "Failed to initialize HID information");
+        goto error;
+    }
 
     profile->serial_svc = ble_svc_airbridge_serial_start();
+    if(!profile->serial_svc) {
+        FURI_LOG_E(TAG, "Failed to start AirBridge serial service");
+        goto error;
+    }
 
     return &profile->base;
+
+error:
+    ble_profile_airbridge_free(profile);
+    return NULL;
 }
 
 static void ble_profile_airbridge_stop(FuriHalBleProfileBase* profile) {
     furi_check(profile);
     furi_check(profile->config == ble_profile_airbridge);
 
-    BleProfileAirbridge* airbridge_profile = (BleProfileAirbridge*)profile;
-    ble_svc_airbridge_serial_stop(airbridge_profile->serial_svc);
-    ble_svc_hid_stop(airbridge_profile->hid_svc);
-    ble_svc_airbridge_dev_info_stop(airbridge_profile->dev_info_svc);
-    ble_svc_battery_stop(airbridge_profile->battery_svc);
-    free(airbridge_profile);
+    ble_profile_airbridge_free((BleProfileAirbridge*)profile);
 }
 
 static bool ble_profile_airbridge_report(
@@ -227,7 +271,7 @@ static const GapConfig template_config = {
             .Service_UUID_16 = HUMAN_INTERFACE_DEVICE_SERVICE_UUID,
         },
     .appearance_char = GAP_APPEARANCE_KEYBOARD,
-    .bonding_mode = true,
+    .bonding_mode = false,
     .pairing_method = GapPairingPinCodeVerifyYesNo,
     .conn_param =
         {

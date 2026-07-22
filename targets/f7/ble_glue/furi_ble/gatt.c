@@ -22,10 +22,16 @@ void ble_gatt_characteristic_init(
 
     // Copy the descriptor to the instance, since it may point to stack memory
     char_instance->characteristic = malloc(sizeof(BleGattCharacteristicParams));
+    if(!char_instance->characteristic) {
+        FURI_LOG_E(TAG, "Failed to allocate %s char", char_descriptor->name);
+        return;
+    }
     memcpy(
         (void*)char_instance->characteristic,
         char_descriptor,
         sizeof(BleGattCharacteristicParams));
+    char_instance->handle = 0;
+    char_instance->descriptor_handle = 0;
 
     uint16_t char_data_size = 0;
     if(char_descriptor->data_prop_type == FlipperGattCharacteristicDataFixed) {
@@ -46,13 +52,14 @@ void ble_gatt_characteristic_init(
         GATT_MIN_READ_KEY_SIZE,
         char_descriptor->is_variable,
         &char_instance->handle);
-    if(status) {
+    if(status != BLE_STATUS_SUCCESS) {
         FURI_LOG_E(TAG, "Failed to add %s char: %d", char_descriptor->name, status);
-        ble_gatt_strict_crash("Failed to add characteristic");
+        free((void*)char_instance->characteristic);
+        char_instance->characteristic = NULL;
+        return;
     }
 
-    char_instance->descriptor_handle = 0;
-    if((status == 0) && char_descriptor->descriptor_params) {
+    if(char_descriptor->descriptor_params) {
         uint8_t const* char_data = NULL;
         const BleGattCharacteristicDescriptorParams* char_data_descriptor =
             char_descriptor->descriptor_params;
@@ -73,12 +80,25 @@ void ble_gatt_characteristic_init(
             GATT_MIN_READ_KEY_SIZE,
             char_data_descriptor->is_variable,
             &char_instance->descriptor_handle);
-        if(status) {
+        if(status != BLE_STATUS_SUCCESS) {
             FURI_LOG_E(TAG, "Failed to add %s char descriptor: %d", char_descriptor->name, status);
-            ble_gatt_strict_crash("Failed to add characteristic descriptor");
         }
         if(release_data) {
             free((void*)char_data);
+        }
+        if(status != BLE_STATUS_SUCCESS) {
+            const tBleStatus delete_status = aci_gatt_del_char(svc_handle, char_instance->handle);
+            if(delete_status != BLE_STATUS_SUCCESS) {
+                FURI_LOG_E(
+                    TAG,
+                    "Failed to clean up %s char after descriptor error: %d",
+                    char_descriptor->name,
+                    delete_status);
+            }
+            free((void*)char_instance->characteristic);
+            char_instance->characteristic = NULL;
+            char_instance->handle = 0;
+            return;
         }
     }
 }
@@ -154,7 +174,6 @@ bool ble_gatt_service_add(
         Service_UUID_Type, Service_UUID, Service_Type, Max_Attribute_Records, Service_Handle);
     if(result) {
         FURI_LOG_E(TAG, "Failed to add service: %x", result);
-        ble_gatt_strict_crash("Failed to add service");
     }
 
     return result == BLE_STATUS_SUCCESS;

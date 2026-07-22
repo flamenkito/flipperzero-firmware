@@ -72,7 +72,7 @@ typedef struct {
     uint16_t descriptor_handle;
 } BleGattCharacteristicInstance;
 
-/* Initialize a characteristic instance; copies the characteristic descriptor 
+/* Initialize a characteristic instance; copies the characteristic descriptor
  * into the instance */
 void ble_gatt_characteristic_init(
     uint16_t svc_handle,

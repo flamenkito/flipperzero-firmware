@@ -37,7 +37,7 @@ static const BleGattCharacteristicParams
              .data.fixed.length = BLE_SVC_AIRBRIDGE_SERIAL_DATA_LEN_MAX,
              .uuid.Char_UUID_128 = BLE_SVC_AIRBRIDGE_SERIAL_TX_CHAR_UUID,
              .uuid_type = UUID_TYPE_128,
-             .char_properties = CHAR_PROP_READ | CHAR_PROP_INDICATE,
+             .char_properties = CHAR_PROP_READ | CHAR_PROP_NOTIFY,
              .security_permissions = ATTR_PERMISSION_AUTHEN_READ,
              .gatt_evt_mask = GATT_DONT_NOTIFY_EVENTS,
              .is_variable = CHAR_VALUE_LEN_VARIABLE},
@@ -152,22 +152,37 @@ typedef enum {
     AirbridgeSerialServiceRpcStatusActive = 1UL,
 } AirbridgeSerialServiceRpcStatus;
 
-static void ble_svc_airbridge_serial_update_rpc_char(
+static bool ble_svc_airbridge_serial_update_rpc_char(
     BleServiceAirbridgeSerial* serial_svc,
     AirbridgeSerialServiceRpcStatus status) {
-    ble_gatt_characteristic_update(
+    return !ble_gatt_characteristic_update(
         serial_svc->svc_handle,
         &serial_svc->chars[AirbridgeSerialSvcGattCharacteristicStatus],
         &status);
+}
+
+static void ble_svc_airbridge_serial_start_cleanup(
+    BleServiceAirbridgeSerial* serial_svc,
+    uint8_t chars_initialized) {
+    for(uint8_t i = 0; i < chars_initialized; i++) {
+        ble_gatt_characteristic_delete(serial_svc->svc_handle, &serial_svc->chars[i]);
+    }
+    ble_gatt_service_delete(serial_svc->svc_handle);
+    if(serial_svc->buff_size_mtx) {
+        furi_mutex_free(serial_svc->buff_size_mtx);
+    }
+    free(serial_svc);
 }
 
 BleServiceAirbridgeSerial* ble_svc_airbridge_serial_start(void) {
     furi_check(!active_airbridge_serial_service);
 
     BleServiceAirbridgeSerial* serial_svc = malloc(sizeof(BleServiceAirbridgeSerial));
-
-    serial_svc->event_handler = ble_event_dispatcher_register_svc_handler(
-        ble_svc_airbridge_serial_event_handler, serial_svc);
+    if(!serial_svc) {
+        FURI_LOG_E(TAG, "Failed to allocate service");
+        return NULL;
+    }
+    memset(serial_svc, 0, sizeof(*serial_svc));
 
     if(!ble_gatt_service_add(
            UUID_TYPE_128,
@@ -181,10 +196,35 @@ BleServiceAirbridgeSerial* ble_svc_airbridge_serial_start(void) {
     for(uint8_t i = 0; i < AirbridgeSerialSvcGattCharacteristicCount; i++) {
         ble_gatt_characteristic_init(
             serial_svc->svc_handle, &ble_svc_airbridge_serial_chars[i], &serial_svc->chars[i]);
+        if(!serial_svc->chars[i].characteristic) {
+            FURI_LOG_E(TAG, "Failed to add characteristic %u", i);
+            ble_svc_airbridge_serial_start_cleanup(serial_svc, i);
+            return NULL;
+        }
     }
 
-    ble_svc_airbridge_serial_update_rpc_char(serial_svc, AirbridgeSerialServiceRpcStatusNotActive);
+    if(!ble_svc_airbridge_serial_update_rpc_char(
+           serial_svc, AirbridgeSerialServiceRpcStatusNotActive)) {
+        FURI_LOG_E(TAG, "Failed to initialize RPC status characteristic");
+        ble_svc_airbridge_serial_start_cleanup(
+            serial_svc, AirbridgeSerialSvcGattCharacteristicCount);
+        return NULL;
+    }
     serial_svc->buff_size_mtx = furi_mutex_alloc(FuriMutexTypeNormal);
+    if(!serial_svc->buff_size_mtx) {
+        FURI_LOG_E(TAG, "Failed to allocate buffer-size mutex");
+        ble_svc_airbridge_serial_start_cleanup(
+            serial_svc, AirbridgeSerialSvcGattCharacteristicCount);
+        return NULL;
+    }
+    serial_svc->event_handler = ble_event_dispatcher_register_svc_handler(
+        ble_svc_airbridge_serial_event_handler, serial_svc);
+    if(!serial_svc->event_handler) {
+        FURI_LOG_E(TAG, "Failed to register event handler");
+        ble_svc_airbridge_serial_start_cleanup(
+            serial_svc, AirbridgeSerialSvcGattCharacteristicCount);
+        return NULL;
+    }
     active_airbridge_serial_service = serial_svc;
 
     return serial_svc;
@@ -254,15 +294,26 @@ bool ble_svc_airbridge_serial_update_tx(
         uint16_t value_offset = data_len - remained;
         remained -= value_len;
 
-        tBleStatus result = aci_gatt_update_char_value_ext(
-            0,
-            serial_svc->svc_handle,
-            serial_svc->chars[AirbridgeSerialSvcGattCharacteristicTx].handle,
-            remained ? 0x00 : 0x02,
-            data_len,
-            value_offset,
-            value_len,
-            data + value_offset);
+        tBleStatus result;
+        uint8_t retries = 100;
+        do {
+            retries--;
+            // TX is CHAR_PROP_NOTIFY, so the final fragment must use SEND_NOTIFICATION (0x01).
+            // If TX ever returns to CHAR_PROP_INDICATE, this must be SEND_INDICATION (0x02).
+            result = aci_gatt_update_char_value_ext(
+                0,
+                serial_svc->svc_handle,
+                serial_svc->chars[AirbridgeSerialSvcGattCharacteristicTx].handle,
+                remained ? GATT_CHAR_UPDATE_LOCAL_ONLY : GATT_CHAR_UPDATE_SEND_NOTIFICATION,
+                data_len,
+                value_offset,
+                value_len,
+                data + value_offset);
+            if(result == BLE_STATUS_INSUFFICIENT_RESOURCES) {
+                FURI_LOG_W(TAG, "Insufficient resources for TX update, retrying");
+                furi_delay_ms(1);
+            }
+        } while(result == BLE_STATUS_INSUFFICIENT_RESOURCES && retries);
 
         if(result) {
             FURI_LOG_E(TAG, "Failed updating TX characteristic: %d", result);

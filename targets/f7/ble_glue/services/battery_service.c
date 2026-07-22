@@ -85,6 +85,10 @@ static bool instances_initialized = false;
 
 BleServiceBattery* ble_svc_battery_start(bool auto_update) {
     BleServiceBattery* battery_svc = malloc(sizeof(BleServiceBattery));
+    if(!battery_svc) {
+        FURI_LOG_E(TAG, "Failed to allocate service");
+        return NULL;
+    }
 
     if(!ble_gatt_service_add(
            UUID_TYPE_16,
@@ -98,6 +102,15 @@ BleServiceBattery* ble_svc_battery_start(bool auto_update) {
     for(size_t i = 0; i < BatterySvcGattCharacteristicCount; i++) {
         ble_gatt_characteristic_init(
             battery_svc->svc_handle, &battery_svc_chars[i], &battery_svc->chars[i]);
+        if(!battery_svc->chars[i].characteristic) {
+            FURI_LOG_E(TAG, "Failed to add characteristic %u", i);
+            for(size_t j = 0; j < i; j++) {
+                ble_gatt_characteristic_delete(battery_svc->svc_handle, &battery_svc->chars[j]);
+            }
+            ble_gatt_service_delete(battery_svc->svc_handle);
+            free(battery_svc);
+            return NULL;
+        }
     }
 
     battery_svc->auto_update = auto_update;

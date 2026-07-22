@@ -170,12 +170,30 @@ static BleEventAckStatus ble_svc_hid_event_handler(void* event, void* context) {
     return ret;
 }
 
+static void ble_svc_hid_start_cleanup(
+    BleServiceHid* hid_svc,
+    uint8_t chars_initialized,
+    size_t input_reports_initialized) {
+    for(size_t i = 0; i < HidSvcGattCharacteristicCount; i++) {
+        if(chars_initialized & (1U << i)) {
+            ble_gatt_characteristic_delete(hid_svc->svc_handle, &hid_svc->chars[i]);
+        }
+    }
+    for(size_t i = 0; i < input_reports_initialized; i++) {
+        ble_gatt_characteristic_delete(hid_svc->svc_handle, &hid_svc->input_report_chars[i]);
+    }
+    ble_event_dispatcher_unregister_svc_handler(hid_svc->event_handler);
+    ble_gatt_service_delete(hid_svc->svc_handle);
+    free(hid_svc);
+}
+
 BleServiceHid* ble_svc_hid_start(void) {
     BleServiceHid* hid_svc = malloc(sizeof(BleServiceHid));
+    if(!hid_svc) {
+        FURI_LOG_E(TAG, "Failed to allocate service");
+        return NULL;
+    }
 
-    // Register event handler
-    hid_svc->event_handler =
-        ble_event_dispatcher_register_svc_handler(ble_svc_hid_event_handler, hid_svc);
     /**
      *  Add Human Interface Device Service
      */
@@ -192,17 +210,31 @@ BleServiceHid* ble_svc_hid_start(void) {
         return NULL;
     }
 
+    // Register event handler
+    hid_svc->event_handler =
+        ble_event_dispatcher_register_svc_handler(ble_svc_hid_event_handler, hid_svc);
+    uint8_t chars_initialized = 0;
+    size_t input_reports_initialized = 0;
+
     // Maintain previously defined characteristic order
     ble_gatt_characteristic_init(
         hid_svc->svc_handle,
         &ble_svc_hid_chars[HidSvcGattCharacteristicProtocolMode],
         &hid_svc->chars[HidSvcGattCharacteristicProtocolMode]);
+    if(!hid_svc->chars[HidSvcGattCharacteristicProtocolMode].characteristic) {
+        FURI_LOG_E(TAG, "Failed to add characteristic %u", HidSvcGattCharacteristicProtocolMode);
+        goto error;
+    }
+    chars_initialized |= 1U << HidSvcGattCharacteristicProtocolMode;
 
     uint8_t protocol_mode = 1;
-    ble_gatt_characteristic_update(
-        hid_svc->svc_handle,
-        &hid_svc->chars[HidSvcGattCharacteristicProtocolMode],
-        &protocol_mode);
+    if(ble_gatt_characteristic_update(
+           hid_svc->svc_handle,
+           &hid_svc->chars[HidSvcGattCharacteristicProtocolMode],
+           &protocol_mode)) {
+        FURI_LOG_E(TAG, "Failed to initialize protocol mode");
+        goto error;
+    }
 
     // reports
     BleGattCharacteristicDescriptorParams ble_svc_hid_char_descr;
@@ -238,6 +270,13 @@ BleServiceHid* ble_svc_hid_start(void) {
                 hid_svc->svc_handle,
                 &report_char,
                 &hid_report_chars[report_type_idx].chars[report_idx]);
+            if(!hid_report_chars[report_type_idx].chars[report_idx].characteristic) {
+                FURI_LOG_E(TAG, "Failed to add %u report %u", report_type_idx, report_idx);
+                goto error;
+            }
+            if(report_type_idx == 0U) {
+                input_reports_initialized++;
+            }
         }
     }
 
@@ -245,9 +284,18 @@ BleServiceHid* ble_svc_hid_start(void) {
     for(size_t i = HidSvcGattCharacteristicReportMap; i < HidSvcGattCharacteristicCount; i++) {
         ble_gatt_characteristic_init(
             hid_svc->svc_handle, &ble_svc_hid_chars[i], &hid_svc->chars[i]);
+        if(!hid_svc->chars[i].characteristic) {
+            FURI_LOG_E(TAG, "Failed to add characteristic %u", i);
+            goto error;
+        }
+        chars_initialized |= 1U << i;
     }
 
     return hid_svc;
+
+error:
+    ble_svc_hid_start_cleanup(hid_svc, chars_initialized, input_reports_initialized);
+    return NULL;
 }
 
 bool ble_svc_hid_update_report_map(BleServiceHid* hid_svc, const uint8_t* data, uint16_t len) {

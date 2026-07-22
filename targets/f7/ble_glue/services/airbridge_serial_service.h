@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define BLE_SVC_AIRBRIDGE_SERIAL_DATA_LEN_MAX       (486)
+#define BLE_SVC_AIRBRIDGE_SERIAL_DATA_LEN_MAX       (244)
 #define BLE_SVC_AIRBRIDGE_SERIAL_CHAR_VALUE_LEN_MAX (243)
 
 typedef SerialServiceEventCallback AirbridgeSerialServiceEventCallback;
