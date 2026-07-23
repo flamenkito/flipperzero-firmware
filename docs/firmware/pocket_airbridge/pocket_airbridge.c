@@ -98,7 +98,6 @@ typedef struct {
     bool typing_enter_done;
     uint32_t typing_next_tick;
     bool ble_connected;
-    bool ble_waiting_ever_connected;
     uint32_t ble_waiting_last_pump_tick;
     char error[32];
 } AirbridgeApp;
@@ -153,10 +152,6 @@ static void app_ble_status_changed_callback(BtStatus status, void* context) {
 
     app->ble_connected = connected;
     if(connected) {
-        if(app->screen == AirbridgeScreenWaiting &&
-           app->typing_transport == AirbridgeTypingTransportBle) {
-            app->ble_waiting_ever_connected = true;
-        }
         FURI_LOG_D(TAG, "BLE central connected");
     } else {
         // Restart advertising after any client disconnect so Bridge mode does not go silent.
@@ -620,7 +615,6 @@ static void app_typing_step(AirbridgeApp* app) {
 
     app->screen = AirbridgeScreenWaiting;
     if(app->typing_transport == AirbridgeTypingTransportBle) {
-        app->ble_waiting_ever_connected = false;
         app->ble_waiting_last_pump_tick = furi_get_tick();
         bt_disconnect(app->bt);
         furi_hal_bt_start_advertising();
@@ -628,7 +622,6 @@ static void app_typing_step(AirbridgeApp* app) {
 }
 
 static bool app_start_stream(AirbridgeApp* app) {
-    app->ble_waiting_ever_connected = false;
     const bool use_ble_bundle = app->typing_transport == AirbridgeTypingTransportBle;
     const char* bundle_path = use_ble_bundle ? APP_DATA_PATH("app-ble.html") :
                                                APP_DATA_PATH("app-usb.html");
@@ -752,16 +745,16 @@ static void app_stream_step_ble(AirbridgeApp* app) {
         app_show_error(app, "STREAM ERROR");
         return;
     }
-    if(bt_serial_tx(buffer, read)) {
-        app->stream_sent += read;
-        app->stream_tx_strikes = 0;
-    } else {
+    while(!bt_serial_tx(buffer, read)) {
         app->stream_tx_strikes++;
         if(app->stream_tx_strikes >= BLE_STREAM_RETRY_MAX) {
             app_stream_close(app);
             app_show_error(app, "STREAM STALLED");
+            return;
         }
     }
+    app->stream_sent += read;
+    app->stream_tx_strikes = 0;
 }
 
 static void usb_event_callback(HidVendorEvent ev, void* context) {
@@ -810,6 +803,44 @@ static uint16_t ble_raw_serial_callback(const uint8_t* data, uint16_t len, void*
     return 0;
 }
 
+// USB plug outline 7x8 (link down)
+static const uint8_t icon_usb_outline[] = {
+    0x3E, 0x55, 0x41, 0x3E, 0x04, 0x04, 0x04, 0x1C,
+};
+// USB plug filled 7x8 (link up; body solid, contact slits stay holes)
+static const uint8_t icon_usb_filled[] = {
+    0x3E, 0x6B, 0x7F, 0x3E, 0x04, 0x04, 0x04, 0x1C,
+};
+// BT rune 5x8 (from stock Bluetooth_Idle_5x8)
+static const uint8_t icon_bt_rune[] = {
+    0x04, 0x0D, 0x16, 0x0C, 0x0C, 0x16, 0x0D, 0x04,
+};
+// Right arrow 5x5
+static const uint8_t icon_arrow_r[] = {
+    0x04, 0x08, 0x1F, 0x08, 0x04,
+};
+// Trash can 8x8 (DROP)
+static const uint8_t icon_trash[] = {
+    0x7E, 0x81, 0x55, 0x55, 0x55, 0x55, 0x81, 0x7E,
+};
+// Alert triangle 9x8 (TXERR, from stock Alert_9x8)
+static const uint8_t icon_alert[] = {
+    0x10, 0x00, 0x38, 0x00, 0x28, 0x00, 0x6C, 0x00,
+    0x6C, 0x00, 0xFE, 0x00, 0xEE, 0x00, 0xFF, 0x01,
+};
+
+static void draw_usb_glyph(Canvas* canvas, uint8_t x, uint8_t y, bool connected) {
+    canvas_draw_xbm(canvas, x, y, 7, 8, connected ? icon_usb_filled : icon_usb_outline);
+}
+
+static void draw_bt_glyph(Canvas* canvas, uint8_t x, uint8_t y, bool connected) {
+    canvas_draw_xbm(canvas, x, y, 5, 8, icon_bt_rune);
+    if(connected) {
+        // Solid pedestal over the sparse bottom rows: "filled" rune, same 8px footprint.
+        canvas_draw_box(canvas, x, y + 6, 5, 2);
+    }
+}
+
 static void draw_identity(Canvas* canvas, AirbridgeApp* app, uint8_t y) {
     if(app->ble_identity_warning) {
         canvas_draw_str(canvas, 0, y, "WARN: BLE ID DEFAULT");
@@ -839,25 +870,28 @@ static void render_bridge(Canvas* canvas, AirbridgeApp* app) {
     canvas_set_font(canvas, FontSecondary);
     draw_identity(canvas, app, 19);
 
-    draw_up_arrow(canvas, 0, 25);
-    canvas_draw_str(canvas, 9, 31, "U->B");
-    draw_down_arrow(canvas, 32, 25);
-    canvas_draw_str(canvas, 41, 31, "B->U");
-    canvas_draw_str(canvas, 64, 31, "!DROP");
-    canvas_draw_str(canvas, 96, 31, "XTXERR");
+    // Icon header row (y=24): direction composites + trash + alert.
+    // Glyphs encode live link state: filled = connected, outline = down.
+    draw_usb_glyph(canvas, 0, 24, usb_connected);
+    canvas_draw_xbm(canvas, 9, 26, 5, 5, icon_arrow_r);
+    draw_bt_glyph(canvas, 16, 24, app->ble_connected);
+
+    draw_bt_glyph(canvas, 32, 24, app->ble_connected);
+    canvas_draw_xbm(canvas, 39, 26, 5, 5, icon_arrow_r);
+    draw_usb_glyph(canvas, 46, 24, usb_connected);
+
+    canvas_draw_xbm(canvas, 64, 24, 8, 8, icon_trash);
+    canvas_draw_xbm(canvas, 96, 24, 9, 8, icon_alert);
 
     char line[16];
     snprintf(line, sizeof(line), "%lu", chunks_usb_to_ble);
-    canvas_draw_str(canvas, 0, 42, line);
+    canvas_draw_str_aligned(canvas, 0, 35, AlignLeft, AlignTop, line);
     snprintf(line, sizeof(line), "%lu", chunks_ble_to_usb);
-    canvas_draw_str(canvas, 32, 42, line);
+    canvas_draw_str_aligned(canvas, 32, 35, AlignLeft, AlignTop, line);
     snprintf(line, sizeof(line), "%lu", dropped);
-    canvas_draw_str(canvas, 64, 42, line);
+    canvas_draw_str_aligned(canvas, 64, 35, AlignLeft, AlignTop, line);
     snprintf(line, sizeof(line), "%lu", tx_errors);
-    canvas_draw_str(canvas, 96, 42, line);
-
-    snprintf(line, sizeof(line), "V%lu", vendor_out_requests);
-    canvas_draw_str(canvas, 113, 42, line);
+    canvas_draw_str_aligned(canvas, 96, 35, AlignLeft, AlignTop, line);
 
     draw_up_arrow(canvas, 0, 47);
     canvas_draw_str(canvas, 9, 53, "USB deploy");
@@ -987,7 +1021,6 @@ static void app_handle_input(AirbridgeApp* app, InputKey key, bool* running) {
 
     if(app->screen == AirbridgeScreenWaiting) {
         if(key == InputKeyBack) {
-            app->ble_waiting_ever_connected = false;
             app->screen = AirbridgeScreenBridge;
         }
         return;
@@ -1092,11 +1125,11 @@ int32_t pocket_airbridge_app(void* p) {
                 uint32_t now = furi_get_tick();
                 if(now - app->ble_waiting_last_pump_tick >= BLE_WAITING_PUMP_MS) {
                     app->ble_waiting_last_pump_tick = now;
-                    if(!app->ble_waiting_ever_connected) {
-                        FURI_LOG_D(TAG, "BLE Waiting pump: disconnect + restart adv");
-                        bt_disconnect(app->bt);
-                        furi_hal_bt_start_advertising();
-                    }
+                    // This starts advertising only from GapStateIdle. During a link or
+                    // numeric-comparison pairing, GAP is already active, so never
+                    // disconnect it merely to recover a genuinely idle advertiser.
+                    FURI_LOG_D(TAG, "BLE Waiting pump: restart adv if idle");
+                    furi_hal_bt_start_advertising();
                 }
             }
         }
