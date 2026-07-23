@@ -97,6 +97,13 @@ python3 scripts/runfap.py -p /dev/cu.usbmodemflip_Luwot1 \
 
 The `size` command should report the uploaded FAP size. In the verified build it reported `3776` bytes.
 
+**Canonical location:** the FAP lives ONLY at `/ext/apps/USB/pocket_airbridge.fap` (the `fap_category="USB"` menu location). Never deploy a copy to `/ext/apps/` root or another category folder — a second copy goes stale silently and the menu can launch the old build. Before deploying, check for duplicates:
+```bash
+python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 list /ext/apps | grep -i airbridge
+# must print exactly: /ext/apps/USB/pocket_airbridge.fap
+# remove strays with: python3 scripts/storage.py -p <port> remove <path>
+```
+
 When `runfap.py` launches this app, it may end with:
 
 ```text
@@ -300,9 +307,19 @@ directly.
    `DROP` counter increments. With ACK-per-frame backpressure there is at most
    ~1 frame in flight per direction, so any non-zero `DROP` indicates a real
    problem.
-6. **Status screen** — shows `USB: CONNECTED/--`, `BLE: ACTIVE/--`, and the
-   counters `U->B`, `B->U`, `DROP`, `TXERR`. The green LED blinks every
-   500 ms as a heartbeat while the app runs.
+6. **Status screen** — title `Pocket AirBridge` (y=10) with the active USB
+   identity line `HID: <profile>` beneath it (y=19). An icon header row
+   (y=24) shows two horizontal direction composites — USB plug → arrow → BT
+   rune (x=0/9/16) and its mirror BT rune → arrow → USB plug (x=32/39/46) —
+   plus a trash-can icon (DROP, x=64) and an alert-triangle icon (TXERR,
+   x=96). The four frame counters (`U->B`, `B->U`, `DROP`, `TXERR`) are
+   digits left-aligned under each icon group (x=0/32/64/96, y=35). Link state
+   is encoded in the glyphs: the USB plug is filled when a USB host is
+   connected and an outline when down; the BT rune gains a solid pedestal
+   when a BLE central is connected and is the bare rune when down. A deploy
+   hint row (up-arrow `USB deploy`, down-arrow `BLE deploy`, y=47-53) sits
+   above `BACK: exit` (y=63). The green LED blinks every 500 ms as a
+   heartbeat while the app runs.
 7. **Graceful USB failure** — if `furi_hal_usb_set_config` fails at startup,
    the app shows `ERR: CONFIG` on screen instead of crashing (a crash here
    would wedge USB until reboot).
@@ -358,6 +375,7 @@ use the chat pages above for all transfers.
 | Flipper unresponsive after app launch or a USB mode switch | Probe with `python3 tools/flipper_alive.py --wait 30` (from this repo). A healthy CLI answers `\r` with a `>:` prompt within 5 s. Port present but silent means the firmware is hung (USB CDC still enumerated, firmware dead). Recovery is a physical reset; do not attempt a DTR-toggle reset from software |
 | `storage.py` can't find `/dev/cu.usbmodemflip_*` | The AirBridge app is still running — exit it (BACK) or restart the Flipper so the serial port reappears |
 | `TXERR` counter is non-zero | One `TXERR` can occur during a mid-flight cancel race (a frame reaches the main loop after the peer went away); benign if the transfer error is visible on both pages. Persistent `TXERR` growth means the BLE link is down — reconnect PC-B |
+| Pairing code dialog vanishes during deploy Connect before it can be confirmed | Fixed 2026-07-23: the deploy Waiting pump now only restarts advertising from GAP-idle and never disconnects, so a pairing code shown during deploy Connect can be confirmed at leisure. Previously the pump force-disconnected every 2.5 s and killed in-progress pairings — redeploy the current FAP |
 | App is missing an icon | Add `applications_user/pocket_airbridge/icon.png` and `fap_icon="icon.png"` in `application.fam`, then rebuild/redeploy |
 
 ## Important Notes
