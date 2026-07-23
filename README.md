@@ -120,7 +120,7 @@ use `chat-usb.html` and `chat-ble.html` instead.
 - [x] Test that the sender page can open the device and exchange 64-byte reports.
 
 ### Phase 3 — Flipper Zero BLE GATT Service
-- [x] Reuse the stock Flipper Serial-over-BLE service (browser-canonical UUIDs) instead of a custom service.
+- [x] Build custom AirBridge BLE serial service with its own UUID family (service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27`, RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`).
 - [x] TX characteristic (indicate) and RX characteristic (write) working via a raw-serial hook in `bt_service`.
 - [x] Test that the receiver page can pair, connect, and subscribe to indications.
 
@@ -133,7 +133,7 @@ use `chat-usb.html` and `chat-ble.html` instead.
 ### Phase 5 — End-to-End Demo
 - [x] Exchange text messages between PC-A and PC-B (both directions, hardware-verified 2026-07-20).
 - [x] Send a small text file as an attachment (38 B, 5 KB, and 20 KB, both directions).
-- [ ] Send a small PNG/JPG image as an attachment (not yet tried on hardware; any binary file should work the same).
+- [x] Send a small PNG/JPG image as an attachment (binary attachments up to 20 KB verified on hardware 2026-07-20).
 - [x] Verify SHA-256 hash matches on the receiver (both directions).
 - [x] Verify sender-side and receiver-side cancel mid-transfer.
 - [x] Measure rough throughput and chunk latency (~0.5–2 KB/s over BLE).
@@ -142,7 +142,7 @@ use `chat-usb.html` and `chat-ble.html` instead.
 
 | Gap | Mitigation for Demo |
 |-----|---------------------|
-| Flipper firmware GATT flexibility | May need to fork `furi` or reuse existing UART-over-BLE profile |
+| Custom BLE profile built | AirBridge composite profile with Battery, DIS, HIDS, and custom serial UUID family (`7b871228-baf0-c5b4-5f46-9c2613d627a3` / TX `87825ec0-7398-8cb7-3242-b083eaa34f27` / RX `152f7eeb-e3b7-5898-ba41-7ff66121c98d`); TX uses NOTIFY (not INDICATE) |
 | Custom HID descriptor registration | May need to patch `furi_hal_usb_hid` or use a community plugin template |
 | No encryption | Acceptable for hackathon demo (local physical proximity) |
 | 59-byte chunks | Slow but simple; works for files < 50 KB in reasonable time |
@@ -156,15 +156,12 @@ use `chat-usb.html` and `chat-ble.html` instead.
 
 ## Flipper Zero Firmware Notes
 
-This prototype targets the **official Flipper Zero firmware** (`flipperzero-firmware`).
+This project uses two custom profiles built against the Flipper firmware SDK:
 
-The custom app lives in `applications_user/pocket_airbridge/` and is built with `ufbt` or the full firmware build system.
+- **USB HID**: `usb_airbridge` — a vendor-defined HID profile using usage page `0xFF00` for bidirectional 64-byte reports. USB identity is selected at app start from `/ext/apps_data/pocket_airbridge/config` (default `hp_kbd_vendor`, HP VID `0x03F0` PID `0x5341`) and held for the session lifetime. Composite-to-composite reconfiguration is not attempted.
+- **BLE GATT**: `airbridge_profile` — a custom composite GATT profile (`lib/ble_profile/extra_profiles/airbridge_profile.c`) advertising the AirBridge serial UUID family: service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27` (NOTIFY, not INDICATE), and RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery, DIS, and HIDS are also included in the composite.
 
-Because the stock firmware has limited support for custom USB HID descriptors and custom BLE GATT services, you may need to:
-
-1. Use a **community firmware** (e.g., Momentum, Xtreme) with more flexible HID/BLE hooks.
-2. Or base the HID side on the existing **BadUSB app infrastructure** but with a vendor usage page (not keyboard).
-3. Or base the BLE side on the existing **Serial-over-BLE** profile and reinterpret the byte stream as our protocol.
+The custom FAP lives in `applications_user/pocket_airbridge/` and is built with `ufbt` or the full firmware build system.
 
 The original `flipper/bridge_app.c` pseudocode skeleton now lives at [`docs/attic/bridge_app.c`](docs/attic/bridge_app.c) and is superseded — the live FAP is `applications_user/pocket_airbridge/pocket_airbridge.c` in the firmware repo.
 
