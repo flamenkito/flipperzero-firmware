@@ -219,9 +219,9 @@ python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
 
 1. From the Bridge screen, press **UP** for USB Deploy or **DOWN** for BLE Deploy.
 2. The screen prompts: `Place cursor in browser console, then press OK`. On the target PC, open a tab at `https://example.com` (not `about:blank` — some Chrome builds report `window.isSecureContext === false` there).
-3. On OK, the FAP types `bootstrap.js` over USB or `bootstrap-ble.js` over BLE HIDS. The screen shows `TYPING…` for the entire emission; BACK aborts instantly.
-4. The executed bootstrap paints a landing page. Clicking **Connect** supplies the browser user gesture, opens the matching WebHID or Web Bluetooth transport, and sends `0x42`.
-5. The FAP streams the length+checksum header and transport-matched `app-usb.html` or `app-ble.html` bundle (see [protocol.md](protocol.md), "Bootstrap Stream Protocol").
+3. On OK, the FAP types `bootstrap.js` over USB or `bootstrap-ble.js` over BLE HIDS. The `TYPING via USB/BLE` screen shows a determinate progress bar (chars typed / total, plus %) for the entire emission; BACK aborts instantly.
+4. The executed bootstrap paints a landing page. While it waits, the FAP shows `Waiting for browser...` with an indeterminate marquee (a block bouncing across the bar frame) and the hint `Click Connect in the browser`. Clicking **Connect** supplies the browser user gesture, opens the matching WebHID or Web Bluetooth transport, and sends `0x42`.
+5. The FAP streams the length+checksum header and transport-matched `app-usb.html` or `app-ble.html` bundle (see [protocol.md](protocol.md), "Bootstrap Stream Protocol"). The `Serving app via USB/BLE` screen shows a determinate progress bar (KB sent / total, plus %); BACK aborts.
 6. The screen shows `Done` and returns to Bridge.
 
 USB Deploy requires a kbd+vendor USB profile. BLE Deploy uses the AirBridge HIDS
