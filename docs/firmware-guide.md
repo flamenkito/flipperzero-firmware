@@ -9,8 +9,8 @@ You already have `~/projects/flipperzero-firmware`. We added:
 3. **FAP** `pocket_airbridge` in `applications_user/pocket_airbridge/`, including `icon.png` wired through `fap_icon`
 
 **Starting from a pristine firmware checkout instead?** Everything above is bundled in
-[`docs/firmware/`](firmware/): `airbridge-firmware.patch` (USB, BLE-profile, BT, and GAP changes),
-`api-symbols-additions.patch`, and the FAP source. See `docs/firmware/README.md` for
+[`firmware/`](../firmware/): `airbridge-firmware.patch` (USB, BLE-profile, BT, and GAP changes),
+`api-symbols-additions.patch`, and the FAP source. See `firmware/README.md` for
 apply instructions. The bundle is regenerated from firmware commit `31f929b2`
 against pristine upstream `dev` base `c9ab2b68`; apply the firmware patch, then
 the API-symbol patch, before copying the FAP.

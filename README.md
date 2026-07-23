@@ -94,6 +94,7 @@ flipper-hid/
 │   ├── firmware-guide.md   # How to build & deploy the Flipper app
 │   └── attic/
 │       └── bridge_app.c    # Superseded pseudocode skeleton (historical)
+├── firmware/               # Reproducible firmware bundle (patches + FAP source + apply README)
 ├── web/
 │   ├── chat-usb.html       # WebHID chat page (send/receive over USB)
 │   ├── chat-ble.html       # Web Bluetooth chat page (send/receive over BLE)
