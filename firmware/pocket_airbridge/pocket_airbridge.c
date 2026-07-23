@@ -916,6 +916,90 @@ static void render_deploy_prompt(Canvas* canvas, AirbridgeApp* app) {
     canvas_draw_str(canvas, 0, 63, "BACK: Bridge");
 }
 
+static void draw_progress_bar(Canvas* canvas, uint8_t y, uint32_t pos, uint32_t total) {
+    canvas_draw_frame(canvas, 4, y, 120, 8);
+    if(total == 0) return;
+    uint32_t fill_w = 118 * pos / total;
+    if(fill_w > 118) fill_w = 118;
+    canvas_draw_box(canvas, 5, y + 1, fill_w, 6);
+}
+
+static void render_typing(Canvas* canvas, AirbridgeApp* app) {
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(
+        canvas,
+        0,
+        10,
+        app->typing_transport == AirbridgeTypingTransportUsb ? "TYPING via USB" :
+                                                               "TYPING via BLE");
+    canvas_set_font(canvas, FontSecondary);
+    draw_identity(canvas, app, 19);
+    draw_progress_bar(canvas, 28, app->typing_position, app->bootstrap_len);
+
+    char line[32];
+    snprintf(
+        line,
+        sizeof(line),
+        "%lu/%lu chars",
+        (unsigned long)app->typing_position,
+        (unsigned long)app->bootstrap_len);
+    canvas_draw_str_aligned(canvas, 0, 45, AlignLeft, AlignTop, line);
+    uint32_t pct =
+        app->bootstrap_len > 0 ? 100 * (uint32_t)app->typing_position / app->bootstrap_len : 0;
+    snprintf(line, sizeof(line), "%lu%%", pct);
+    canvas_draw_str_aligned(canvas, 124, 45, AlignRight, AlignTop, line);
+
+    canvas_draw_str(canvas, 0, 63, "BACK: abort");
+}
+
+static void render_streaming(Canvas* canvas, AirbridgeApp* app) {
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(
+        canvas,
+        0,
+        10,
+        app->typing_transport == AirbridgeTypingTransportUsb ? "Serving app via USB" :
+                                                               "Serving app via BLE");
+    canvas_set_font(canvas, FontSecondary);
+    draw_identity(canvas, app, 19);
+    draw_progress_bar(canvas, 28, app->stream_sent, app->stream_total_len);
+
+    char line[32];
+    uint32_t sent_t = app->stream_sent * 10 / 1024;
+    uint32_t total_t = app->stream_total_len * 10 / 1024;
+    snprintf(
+        line,
+        sizeof(line),
+        "%lu.%lu/%lu.%lu KB",
+        sent_t / 10,
+        sent_t % 10,
+        total_t / 10,
+        total_t % 10);
+    canvas_draw_str_aligned(canvas, 0, 45, AlignLeft, AlignTop, line);
+    uint32_t pct =
+        app->stream_total_len > 0 ? 100 * app->stream_sent / app->stream_total_len : 0;
+    snprintf(line, sizeof(line), "%lu%%", pct);
+    canvas_draw_str_aligned(canvas, 124, 45, AlignRight, AlignTop, line);
+
+    canvas_draw_str(canvas, 0, 63, "BACK: abort");
+}
+
+static void render_waiting(Canvas* canvas, AirbridgeApp* app) {
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 0, 10, "Waiting for browser...");
+    canvas_set_font(canvas, FontSecondary);
+    draw_identity(canvas, app, 19);
+
+    canvas_draw_frame(canvas, 4, 28, 120, 8);
+    uint32_t phase = (furi_get_tick() / 50) % 64;
+    uint32_t offset = phase < 32 ? phase : 63 - phase;
+    canvas_draw_box(canvas, 5 + offset * (118 - 12) / 31, 29, 12, 6);
+
+    canvas_draw_str_aligned(
+        canvas, 0, 45, AlignLeft, AlignTop, "Click Connect in the browser");
+    canvas_draw_str(canvas, 0, 63, "BACK: abort");
+}
+
 static void
     render_message(Canvas* canvas, AirbridgeApp* app, const char* title, const char* detail) {
     canvas_set_font(canvas, FontPrimary);
@@ -937,18 +1021,13 @@ static void render_callback(Canvas* canvas, void* context) {
         render_deploy_prompt(canvas, app);
         break;
     case AirbridgeScreenTyping:
-        render_message(canvas, app, "TYPING...", "BACK aborts");
+        render_typing(canvas, app);
         break;
     case AirbridgeScreenWaiting:
-        render_message(
-            canvas,
-            app,
-            "Waiting for request...",
-            app->typing_transport == AirbridgeTypingTransportBle ? "Waiting for browser..." :
-                                                                   "Send bundle via USB");
+        render_waiting(canvas, app);
         break;
     case AirbridgeScreenStreaming:
-        render_message(canvas, app, "Serving app...", "BACK aborts");
+        render_streaming(canvas, app);
         break;
     case AirbridgeScreenDone:
         render_message(canvas, app, "Done", "OK or BACK: Bridge");
