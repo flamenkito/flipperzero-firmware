@@ -248,6 +248,9 @@ export class WebBluetoothAdapter {
       } catch (error) {
         console.debug(`getDevices reconnect attempt ${attempt}/3 failed:`, error);
         this.clearGattState();
+        // disconnect() raced the bring-up: abort the retry loop, or the next
+        // attempt would resurrect the session the user just killed.
+        if (!this.autoReconnect) throw error;
         if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
@@ -257,28 +260,56 @@ export class WebBluetoothAdapter {
 
   /**
    * Connect GATT on this.device and bring up the AirBridge serial characteristics.
+   * A disconnect() racing this bring-up bumps reconnectEpoch and disarms
+   * autoReconnect; the staleness check after each awaited GATT step then tears
+   * down the partially opened session and throws instead of letting a stale
+   * session come alive. (connect() bumps the epoch too, so staleness also
+   * requires autoReconnect to be disarmed — only disconnect() does both, and a
+   * fresh connect() can still share this in-flight bring-up.)
    * @returns {Promise<void>}
    */
   async openGattSession() {
-    this.device.addEventListener('gattserverdisconnected', this.handleDisconnected);
-    this.server = await this.device.gatt.connect();
-
-    const discoveredServices = await this.server.getPrimaryServices();
-
-    let service;
-    let uuids;
+    const device = this.device;
+    const epoch = this.reconnectEpoch;
+    const staleSession = () => epoch !== this.reconnectEpoch && !this.autoReconnect;
+    const throwIfStale = () => {
+      if (staleSession()) throw new Error('GATT session cancelled by disconnect');
+    };
+    device.addEventListener('gattserverdisconnected', this.handleDisconnected);
     try {
-      ({ service, uuids } = await this.findSerialService());
+      this.server = await device.gatt.connect();
+      throwIfStale();
+
+      const discoveredServices = await this.server.getPrimaryServices();
+      throwIfStale();
+
+      let service;
+      let uuids;
+      try {
+        ({ service, uuids } = await this.findSerialService());
+      } catch (error) {
+        const discoveredUuids = discoveredServices.map(discovered => discovered.uuid).join(', ') || '(none)';
+        console.debug('Web Bluetooth discovered services:', discoveredUuids);
+        throw new Error(`${error.message}. Discovered services: ${discoveredUuids}`);
+      }
+      throwIfStale();
+
+      this.matchedUuids = uuids;
+      this.txChar = await service.getCharacteristic(uuids.tx);
+      this.rxChar = await service.getCharacteristic(uuids.rx);
+      throwIfStale();
+
+      await this.txChar.startNotifications();
+      throwIfStale();
+      this.txChar.addEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
     } catch (error) {
-      const discoveredUuids = discoveredServices.map(discovered => discovered.uuid).join(', ') || '(none)';
-      console.debug('Web Bluetooth discovered services:', discoveredUuids);
-      throw new Error(`${error.message}. Discovered services: ${discoveredUuids}`);
+      if (staleSession()) {
+        device.removeEventListener('gattserverdisconnected', this.handleDisconnected);
+        if (device.gatt?.connected) device.gatt.disconnect();
+        if (this.server?.device === device) this.clearGattState();
+      }
+      throw error;
     }
-    this.matchedUuids = uuids;
-    this.txChar = await service.getCharacteristic(uuids.tx);
-    this.rxChar = await service.getCharacteristic(uuids.rx);
-    await this.txChar.startNotifications();
-    this.txChar.addEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
   }
 
   /**
@@ -304,7 +335,8 @@ export class WebBluetoothAdapter {
 
   /**
    * Disconnect GATT, cancel pending auto-reconnect retries, and clear
-   * characteristic listeners.
+   * characteristic listeners. The reconnectEpoch bump also makes an in-flight
+   * openGattSession() tear down its partially opened session and throw.
    * @returns {Promise<void>}
    */
   async disconnect() {
