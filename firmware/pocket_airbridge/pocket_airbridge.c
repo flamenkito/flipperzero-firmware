@@ -33,7 +33,8 @@ static const bool airbridge_ble_enabled = true; // flip to false to skip BLE ins
 
 #define BLE_TYPING_RETRY_MAX      5
 #define BLE_TYPING_RETRY_DELAY_MS 20
-#define BLE_WAITING_PUMP_MS       2500
+#define BLE_WAITING_PUMP_MS          2500
+#define BLE_WAITING_SQUATTER_KICK_MS 15000
 #define BLE_STREAM_RETRY_MAX      20
 
 #define BLE_DEFAULT_NAME           "HP 725 K+M"
@@ -98,6 +99,7 @@ typedef struct {
     bool typing_enter_done;
     uint32_t typing_next_tick;
     bool ble_connected;
+    uint32_t ble_connected_since;
     uint32_t ble_waiting_last_pump_tick;
     char error[32];
 } AirbridgeApp;
@@ -115,7 +117,25 @@ static void usb_event_callback(HidVendorEvent ev, void* context);
 static uint16_t ble_raw_serial_callback(const uint8_t* data, uint16_t len, void* context);
 static void app_ble_status_changed_callback(BtStatus status, void* context);
 
+static void app_set_hids_adv(AirbridgeApp* app, bool enable) {
+    /* Mid-link the GAP stops advertising and the typing-end OFF re-latches
+     * name-only before adv could air again, so an ON swap while connected is
+     * pointless. OFF is never pointless: gap_set_adv_hids latches under the GAP
+     * mutex in every state and applies at the next adv start, pre-staging
+     * name-only advertising for when the link drops (bt_disconnect does not wait
+     * for the disconnection-complete event, so ble_connected is still true right
+     * after it — a guarded OFF there would leak HIDS into the Waiting adv). */
+    if(enable && app->ble_connected) return;
+    furi_hal_bt_set_adv_hids(enable);
+    furi_hal_bt_start_advertising();
+}
+
 static void app_show_error(AirbridgeApp* app, const char* message) {
+    if((app->screen == AirbridgeScreenTyping ||
+        app->screen == AirbridgeScreenDeployPrompt) &&
+       app->typing_transport == AirbridgeTypingTransportBle) {
+        app_set_hids_adv(app, false);
+    }
     snprintf(app->error, sizeof(app->error), "%s", message);
     app->screen = AirbridgeScreenError;
 }
@@ -152,6 +172,7 @@ static void app_ble_status_changed_callback(BtStatus status, void* context) {
 
     app->ble_connected = connected;
     if(connected) {
+        app->ble_connected_since = furi_get_tick();
         FURI_LOG_D(TAG, "BLE central connected");
     } else {
         // Restart advertising after any client disconnect so Bridge mode does not go silent.
@@ -163,6 +184,9 @@ static void app_ble_status_changed_callback(BtStatus status, void* context) {
 }
 
 static void app_abort_typing(AirbridgeApp* app) {
+    if(app->typing_transport == AirbridgeTypingTransportBle) {
+        app_set_hids_adv(app, false);
+    }
     if(app->typing_key_down) {
         if(app->typing_transport == AirbridgeTypingTransportBle) {
             uint8_t report[8] = {0};
@@ -524,6 +548,9 @@ static void app_start_typing(AirbridgeApp* app, AirbridgeTypingTransport transpo
     app->typing_enter_pending = false;
     app->typing_enter_done = false;
     app->typing_next_tick = furi_get_tick();
+    if(transport == AirbridgeTypingTransportBle) {
+        app_set_hids_adv(app, true);
+    }
     app->screen = AirbridgeScreenTyping;
 }
 
@@ -615,6 +642,7 @@ static void app_typing_step(AirbridgeApp* app) {
 
     app->screen = AirbridgeScreenWaiting;
     if(app->typing_transport == AirbridgeTypingTransportBle) {
+        app_set_hids_adv(app, false);
         app->ble_waiting_last_pump_tick = furi_get_tick();
         bt_disconnect(app->bt);
         furi_hal_bt_start_advertising();
@@ -905,8 +933,13 @@ static void render_deploy_prompt(Canvas* canvas, AirbridgeApp* app) {
     canvas_draw_str(canvas, 0, 10, "Deploy app");
     canvas_set_font(canvas, FontSecondary);
     draw_identity(canvas, app, 19);
-    canvas_draw_str(canvas, 0, 31, "Place cursor in browser");
-    canvas_draw_str(canvas, 0, 42, "console, then press OK");
+    if(app->typing_transport == AirbridgeTypingTransportUsb) {
+        canvas_draw_str(canvas, 0, 31, "Place cursor in browser");
+        canvas_draw_str(canvas, 0, 42, "console, then press OK");
+    } else {
+        canvas_draw_str(canvas, 0, 31, "Pair \"HP 725 K+M\" in BT");
+        canvas_draw_str(canvas, 0, 42, "settings, then press OK");
+    }
     canvas_draw_str(
         canvas,
         0,
@@ -1068,6 +1101,7 @@ static void app_handle_input(AirbridgeApp* app, InputKey key, bool* running) {
             }
         } else if(key == InputKeyDown) {
             app->typing_transport = AirbridgeTypingTransportBle;
+            app_set_hids_adv(app, true);
             app->screen = AirbridgeScreenDeployPrompt;
         }
         return;
@@ -1075,6 +1109,9 @@ static void app_handle_input(AirbridgeApp* app, InputKey key, bool* running) {
 
     if(app->screen == AirbridgeScreenDeployPrompt) {
         if(key == InputKeyBack) {
+            if(app->typing_transport == AirbridgeTypingTransportBle) {
+                app_set_hids_adv(app, false);
+            }
             app->screen = AirbridgeScreenBridge;
         } else if(key == InputKeyOk) {
             app_start_typing(app, app->typing_transport);
@@ -1189,6 +1226,9 @@ int32_t pocket_airbridge_app(void* p) {
                 app_show_error(app, "BLE CONFIG ERROR");
                 running = false;
             }
+            if(app->ble_profile_installed) {
+                app_set_hids_adv(app, false);
+            }
         }
 
         if(app->screen == AirbridgeScreenTyping) {
@@ -1210,6 +1250,31 @@ int32_t pocket_airbridge_app(void* p) {
                     FURI_LOG_D(TAG, "BLE Waiting pump: restart adv if idle");
                     furi_hal_bt_start_advertising();
                 }
+                /* Squatter kick (deploy-scoped, BLE Waiting only): a bonded macOS
+                 * HID daemon auto-reconnects the keyboard and sits on HIDS without
+                 * ever writing the vendor RX, holding the link and keeping the Web
+                 * Bluetooth picker empty. Chrome's bootstrap writes the 0x42 bundle
+                 * request immediately after subscribing, which transitions Waiting
+                 * -> Streaming in app_handle_relay/app_start_stream — so any central
+                 * still connected in Waiting past the deadline never requested the
+                 * bundle and is safe to kick. The kick can never fire after 0x42:
+                 * the screen is no longer Waiting. One kick per connection by
+                 * design: the next rising edge re-stamps ble_connected_since.
+                 * 15 s budget (not shorter): on a FRESH origin the first bootstrap
+                 * Connect runs a pairing ceremony (numeric code shown on the
+                 * Flipper + human reaction time) BEFORE 0x42 is written; hardware
+                 * showed a 3 s window killing that first connect mid-pairing.
+                 * 15 s covers the ceremony while still cycling squatters off the
+                 * link often enough for pickers to catch advertising windows. */
+                if(app->ble_connected &&
+                   now - app->ble_connected_since >= BLE_WAITING_SQUATTER_KICK_MS) {
+                    FURI_LOG_W(TAG, "BLE Waiting: kicking silent squatter");
+                    bt_disconnect(app->bt);
+                    furi_hal_bt_start_advertising();
+                    /* Defer re-check while the async disconnect lands; the next
+                     * connection's rising edge overwrites this with a fresh window. */
+                    app->ble_connected_since = now;
+                }
             }
         }
         view_port_update(view_port);
@@ -1223,6 +1288,7 @@ int32_t pocket_airbridge_app(void* p) {
     app_stream_close(app);
     app_abort_typing(app);
     app_restore_usb(app);
+    app_set_hids_adv(app, false);
     app_restore_ble(app);
     gui_remove_view_port(gui, view_port);
     furi_record_close(RECORD_GUI);
