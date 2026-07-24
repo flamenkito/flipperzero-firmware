@@ -1,11 +1,11 @@
 # Pocket AirBridge — Firmware Files
 
-**Regenerated 2026-07-22:** This bundle captures firmware commit `31f929b2`
-(`feat: HP-impersonating airbridge BLE profile`) plus the uncommitted F3
-working-tree fix, relative to pristine upstream `dev` base `c9ab2b68`. F3
-ignores `BleResetRequest` while the AirBridge profile is active and corrects
-the fallback manufacturer data to HP company identifier bytes `{0x65, 0x00}`.
-Commit F3 before a future clean, commit-only regeneration.
+**Regenerated 2026-07-24:** This bundle captures the firmware tree through
+`8ba53421` (`fix: block BLE identity downgrade via RPC-status char; correct
+fallback mfg data to HP`) plus the bonded advertising working-tree changes,
+relative to pristine upstream `dev` base `c9ab2b68`. The bundle advertises the
+AirBridge serial UUID continuously, advertises HIDS only for the BLE Deploy
+prompt and typing window, and enables persistent numeric-comparison bonding.
 
 This directory contains everything needed to reproduce the Flipper Zero side of
 Pocket AirBridge on a fresh checkout of the official firmware
@@ -15,8 +15,8 @@ Pocket AirBridge on a fresh checkout of the official firmware
 
 | Path | What it is |
 |---|---|
-| `airbridge-firmware.patch` | All firmware changes except `api_symbols.csv`: the USB composite profile, AirBridge BLE profile/services, raw serial routing, GATT capacity/error handling, and advertising fixes. |
-| `api-symbols-additions.patch` | The matching `targets/f7/api_symbols.csv` changes, including `ble_profile_airbridge` and its keyboard, mouse, and consumer-report exports. |
+| `airbridge-firmware.patch` | All firmware changes except `api_symbols.csv`: the USB composite profile, AirBridge BLE profile/services, raw serial routing, GATT capacity/error handling, and bonded windowed advertising fixes. |
+| `api-symbols-additions.patch` | The matching `targets/f7/api_symbols.csv` changes, including `ble_profile_airbridge`, its keyboard/mouse/consumer-report exports, and the advertising-window API. |
 | `pocket_airbridge/` | The FAP itself (`application.fam`, `pocket_airbridge.c`, `icon.png`). Copy to `applications_user/pocket_airbridge/` in the firmware tree. |
 
 ## Apply
@@ -70,7 +70,8 @@ The new `ble_profile_airbridge` composes Battery, Device Information Service
 (DIS), Human Interface Device Service (HIDS), and the AirBridge serial service.
 HIDS exposes keyboard, mouse, and consumer report maps so the explicit **DOWN
 = BLE Deploy** flow can type its bootstrap; Bridge mode sends no HID keyboard
-reports.
+reports. The serial UUID is advertised continuously; HIDS is advertised only
+while the BLE Deploy prompt or typing screen is active.
 
 The FAP loads the BLE identity from
 `/ext/apps_data/pocket_airbridge/config`. The supported keys are:
@@ -90,10 +91,10 @@ ble_dis_pnp = 0x0126
 `ble_name`, `ble_mac`, GAP appearance, manufacturer data, and DIS values are
 applied to the AirBridge profile. The configured MAC must use an allowlisted HP
 OUI; invalid identity input falls back atomically to compiled HP defaults and
-the FAP displays `WARN: BLE ID DEFAULT`. The profile advertises HIDS (`0x1812`)
-and has `bonding_mode = false`: numeric-comparison pairing and authenticated
-GATT access are still used per connection, but macOS cannot retain a persistent
-bonded keyboard link after the session.
+the FAP displays `WARN: BLE ID DEFAULT`. The profile has `bonding_mode = true`:
+the first pairing uses numeric comparison and persists the bond for silent later
+reconnects. HIDS (`0x1812`) stays in the GATT table but is advertised only in
+the BLE Deploy prompt and typing window.
 
 The browser-facing serial UUIDs are generated into
 `web/airbridge-identity.js` in on-air byte order. The service is
@@ -109,9 +110,12 @@ service to RPC only. AirBridge TX uses GATT notifications, not indications.
 
 ### `gap.c` fix
 
-Retains fast advertising and fixes AdvFast-to-AdvFast restart. The FAP also
-restarts advertising after central disconnects, preventing a Bridge-mode
-discovery wedge.
+Retains fast advertising and fixes AdvFast-to-AdvFast restart. It keeps the
+AirBridge serial UUID in the advertising packet, moves name and manufacturer
+data to the scan response, and adds or removes HIDS without changing the serial
+identity. The FAP restarts advertising after central disconnects and disconnects
+an idle BLE Deploy Waiting central after 15 seconds, preventing a bonded macOS
+HID daemon from starving a new browser picker.
 
 ## If `api-symbols-additions.patch` doesn't apply cleanly
 
@@ -131,4 +135,5 @@ main loop forwards USB→BLE via `bt_serial_tx` and BLE→USB via zero-padded
 64-byte `furi_hal_hid_vendor_send_response`, with on-screen counters and a
 500 ms LED heartbeat. From Bridge, **UP** starts USB Deploy
 (`bootstrap.js` → `app-usb.html`) and **DOWN** starts BLE Deploy
-(`bootstrap-ble.js` → `app-ble.html`).
+(`bootstrap-ble.js` → `app-ble.html`), opening the HIDS advertising window for
+the prompt and typing flow only.
