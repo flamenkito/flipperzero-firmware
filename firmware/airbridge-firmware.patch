@@ -824,10 +824,16 @@ index d4d85181..fe71041f 100644
  void ble_gatt_characteristic_init(
      uint16_t svc_handle,
 diff --git a/targets/f7/ble_glue/gap.c b/targets/f7/ble_glue/gap.c
-index 38fc5e42..03a01982 100644
+index 38fc5e42..963fed30 100644
 --- a/targets/f7/ble_glue/gap.c
 +++ b/targets/f7/ble_glue/gap.c
-@@ -13,6 +13,17 @@
+@@ -1,4 +1,5 @@
+ #include "gap.h"
++#include "gap_int.h"
+ 
+ #include "app_common.h"
+ #include <core/mutex.h>
+@@ -13,6 +14,17 @@
  
  #define FAST_ADV_TIMEOUT    30000
  #define INITIAL_ADV_TIMEOUT 60000
@@ -845,7 +851,7 @@ index 38fc5e42..03a01982 100644
  
  #define GAP_INTERVAL_TO_MS(x) (uint16_t)((x) * 1.25)
  
-@@ -23,8 +34,8 @@ typedef struct {
+@@ -23,8 +35,8 @@ typedef struct {
      uint16_t connection_handle;
      uint8_t adv_svc_uuid_len;
      uint8_t adv_svc_uuid[20];
@@ -856,7 +862,7 @@ index 38fc5e42..03a01982 100644
      char* adv_name;
  } GapSvc;
  
-@@ -40,6 +51,7 @@ typedef struct {
+@@ -40,6 +52,7 @@ typedef struct {
      FuriThread* thread;
      FuriMessageQueue* command_queue;
      bool enable_adv;
@@ -864,7 +870,7 @@ index 38fc5e42..03a01982 100644
      bool is_secure;
      uint8_t negotiation_round;
  } Gap;
-@@ -47,6 +59,7 @@ typedef struct {
+@@ -47,6 +60,7 @@ typedef struct {
  typedef enum {
      GapCommandAdvFast,
      GapCommandAdvLowPower,
@@ -872,7 +878,7 @@ index 38fc5e42..03a01982 100644
      GapCommandAdvStop,
      GapCommandKillThread,
  } GapCommand;
-@@ -306,7 +319,7 @@ BleEventFlowStatus ble_event_app_notification(void* pckt) {
+@@ -306,7 +320,7 @@ BleEventFlowStatus ble_event_app_notification(void* pckt) {
      return BleEventFlowEnable;
  }
  
@@ -881,7 +887,7 @@ index 38fc5e42..03a01982 100644
      if(uid_len == 2) {
          gap->service.adv_svc_uuid[0] = AD_TYPE_16_BIT_SERV_UUID;
      } else if(uid_len == 4) {
-@@ -318,12 +331,16 @@ static void set_advertisment_service_uid(uint8_t* uid, uint8_t uid_len) {
+@@ -318,12 +332,16 @@ static void set_advertisment_service_uid(uint8_t* uid, uint8_t uid_len) {
      gap->service.adv_svc_uuid_len += uid_len;
  }
  
@@ -904,7 +910,7 @@ index 38fc5e42..03a01982 100644
  }
  
  static void gap_init_svc(Gap* gap, const GapRootSecurityKeys* root_keys) {
-@@ -424,6 +441,8 @@ static void gap_advertise_start(GapState new_state) {
+@@ -424,6 +442,8 @@ static void gap_advertise_start(GapState new_state) {
      tBleStatus status;
      uint16_t min_interval;
      uint16_t max_interval;
@@ -913,7 +919,7 @@ index 38fc5e42..03a01982 100644
  
      FURI_LOG_D(TAG, "Start: %d", new_state);
  
-@@ -437,9 +456,8 @@ static void gap_advertise_start(GapState new_state) {
+@@ -437,9 +457,8 @@ static void gap_advertise_start(GapState new_state) {
      // Stop advertising timer
      furi_timer_stop(gap->advertise_timer);
  
@@ -925,7 +931,7 @@ index 38fc5e42..03a01982 100644
          status = aci_gap_set_non_discoverable();
          if(status) {
              FURI_LOG_E(TAG, "set_non_discoverable failed %d", status);
-@@ -448,8 +466,15 @@ static void gap_advertise_start(GapState new_state) {
+@@ -448,8 +467,15 @@ static void gap_advertise_start(GapState new_state) {
          }
      }
  
@@ -943,7 +949,7 @@ index 38fc5e42..03a01982 100644
      }
  
      // Configure advertising
-@@ -459,14 +484,32 @@ static void gap_advertise_start(GapState new_state) {
+@@ -459,14 +485,32 @@ static void gap_advertise_start(GapState new_state) {
          max_interval,
          CFG_IDENTITY_ADDRESS,
          0,
@@ -978,7 +984,7 @@ index 38fc5e42..03a01982 100644
      }
      gap->state = new_state;
      GapEvent event = {.type = GapEventTypeStartAdvertising};
-@@ -524,9 +567,27 @@ void gap_stop_advertising(void) {
+@@ -524,9 +568,27 @@ void gap_stop_advertising(void) {
      furi_check(furi_mutex_release(gap->state_mutex) == FuriStatusOk);
  }
  
@@ -1007,7 +1013,15 @@ index 38fc5e42..03a01982 100644
      furi_check(furi_message_queue_put(gap->command_queue, &command, 0) == FuriStatusOk);
  }
  
-@@ -566,10 +627,17 @@ bool gap_init(
+@@ -542,6 +604,7 @@ bool gap_init(
+     furi_check(gap == NULL);
+ 
+     gap = malloc(sizeof(Gap));
++    gap->advertise_hids = false;
+     gap->config = config;
+     // Create advertising timer
+     gap->advertise_timer = furi_timer_alloc(gap_advetise_timer_callback, FuriTimerTypeOnce, NULL);
+@@ -566,10 +629,17 @@ bool gap_init(
      gap->is_secure = false;
      gap->negotiation_round = 0;
  
@@ -1028,7 +1042,7 @@ index 38fc5e42..03a01982 100644
      }
  
      gap->service.adv_svc_uuid_len = 1;
-@@ -646,6 +714,10 @@ static int32_t gap_app(void* context) {
+@@ -646,6 +716,10 @@ static int32_t gap_app(void* context) {
              gap_advertise_start(GapStateAdvFast);
          } else if(command == GapCommandAdvLowPower) {
              gap_advertise_start(GapStateAdvLowPower);
@@ -1065,6 +1079,17 @@ index 57a0bb79..e5558c55 100644
      GapConnectionParamsRequest conn_param;
  } GapConfig;
  
+diff --git a/targets/f7/ble_glue/gap_int.h b/targets/f7/ble_glue/gap_int.h
+new file mode 100644
+index 00000000..234c2bc1
+--- /dev/null
++++ b/targets/f7/ble_glue/gap_int.h
+@@ -0,0 +1,5 @@
++#pragma once
++
++#include <stdbool.h>
++
++void gap_set_adv_hids(bool enable);
 diff --git a/targets/f7/ble_glue/services/airbridge_dev_info_service.c b/targets/f7/ble_glue/services/airbridge_dev_info_service.c
 new file mode 100644
 index 00000000..80bc088c
@@ -1723,19 +1748,18 @@ index 66aafc49..7af01e85 100644
  
      battery_svc->auto_update = auto_update;
 diff --git a/targets/f7/furi_hal/furi_hal_bt.c b/targets/f7/furi_hal/furi_hal_bt.c
-index f1881f94..173ea9d1 100644
+index f1881f94..4645fdcc 100644
 --- a/targets/f7/furi_hal/furi_hal_bt.c
 +++ b/targets/f7/furi_hal/furi_hal_bt.c
-@@ -39,6 +39,8 @@ static FuriHalBt furi_hal_bt = {
- static FuriHalBleProfileBase* current_profile = NULL;
- static GapConfig current_config = {0};
+@@ -1,6 +1,7 @@
+ #include "ble_glue.h"
+ #include <core/check.h>
+ #include <gap.h>
++#include <gap_int.h>
+ #include <furi_hal_bt.h>
+ #include <furi_ble/profile_interface.h>
  
-+void gap_set_adv_hids(bool enable);
-+
- void furi_hal_bt_init(void) {
-     FURI_LOG_I(TAG, "Start BT initialization");
-     furi_hal_bus_enable(FuriHalBusHSEM);
-@@ -267,6 +269,10 @@ void furi_hal_bt_stop_advertising(void) {
+@@ -267,6 +268,10 @@ void furi_hal_bt_stop_advertising(void) {
      }
  }
  
