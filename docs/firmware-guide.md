@@ -154,8 +154,8 @@ The Deploy flow reads its files from `/ext/apps_data/pocket_airbridge/` on the S
 
 | SD path | Source | Role |
 |---|---|---|
-| `/ext/apps_data/pocket_airbridge/bootstrap.js` | `web/bootstrap.js` | The typed snippet. ASCII-only, 1,200 characters. The snippet carries a WebHID filter list that enumerates every profile VID/PID (Logitech, Dell, MSFT, HP), so it matches whichever impersonation is active; on the target machine only the Flipper is present. |
-| `/ext/apps_data/pocket_airbridge/bootstrap-ble.js` | `web/bootstrap-ble.js` | The BLE twin of `bootstrap.js`, typed character-by-character through BLE HIDS during a BLE Deploy run. It opens Web Bluetooth, subscribes to the AirBridge serial TX **notify** characteristic, writes the `0x42` request, and boots the streamed app. |
+| `/ext/apps_data/pocket_airbridge/bootstrap.js` | `web/bootstrap.js` | The typed snippet. ASCII-only, 1,104 characters. The snippet carries a WebHID filter list that enumerates every profile VID/PID (Logitech, Dell, MSFT, HP), so it matches whichever impersonation is active; on the target machine only the Flipper is present. |
+| `/ext/apps_data/pocket_airbridge/bootstrap-ble.js` | `web/bootstrap-ble.js` | The BLE twin of `bootstrap.js` (1,701 characters), typed character-by-character through BLE HIDS during a BLE Deploy run. It opens Web Bluetooth, subscribes to the AirBridge serial TX **notify** characteristic, writes the `0x42` request, and boots the streamed app. |
 | `/ext/apps_data/pocket_airbridge/app-usb.html` | `dist/app-usb.html` | The single-file WebHID app bundle streamed by **UP = USB Deploy**. |
 | `/ext/apps_data/pocket_airbridge/app-ble.html` | `dist/app-ble.html` | The single-file Web Bluetooth app bundle streamed by **DOWN = BLE Deploy**. |
 

@@ -44,7 +44,7 @@ This is BadUSB-shaped by design. Keyboard emulation is the whole point: it is th
 - Keystrokes are emitted only from an explicit `Deploy app` menu action on the Flipper, and only after you place the cursor and press OK to confirm.
 - The Flipper screen shows `TYPING…` for the entire emission; pressing BACK aborts instantly.
 - No keyboard report is ever sent in Bridge mode or on any data path. Typing exists only inside the Deploy flow.
-- The typed payload is a fixed, reviewable, ASCII-only artifact: [`web/bootstrap.js`](web/bootstrap.js) in this repo (1,200 characters).
+- The typed payload is a fixed, reviewable, ASCII-only artifact: [`web/bootstrap.js`](web/bootstrap.js) in this repo (1,104 characters).
 - The whole thing requires physical possession of the Flipper plus explicit on-device actions.
 
 ### Steps
