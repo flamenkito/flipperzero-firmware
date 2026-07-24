@@ -792,6 +792,8 @@ const SERIAL_UUIDS = [
   },
 ];
 
+const BLE_RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
+
 function normalizeFrame(frame) {
   if (frame instanceof Uint8Array) return frame;
   if (ArrayBuffer.isView(frame)) {
@@ -960,21 +962,72 @@ class WebBluetoothAdapter {
     this.matchedUuids = null;
     this.receiveCallback = null;
     this.disconnectCallback = options.onDisconnect ?? null;
+    this.autoReconnect = false;
+    this.reconnectTimer = null;
+    this.reconnectEpoch = 0;
+    this.gattSessionPromise = null;
+    this.gattSessionDevice = null;
     this.handleCharacteristicValueChanged = this.handleCharacteristicValueChanged.bind(this);
     this.handleDisconnected = this.handleDisconnected.bind(this);
   }
 
   /**
-   * Open the Web Bluetooth picker, connect GATT, and subscribe to TX indications.
+   * Open a GATT session, preferring a previously origin-granted device over the picker.
    * @returns {Promise<void>}
    */
   async connect() {
     if (!navigator.bluetooth) throw new Error('Web Bluetooth is not available in this browser');
+    this.cancelReconnect();
+    this.autoReconnect = true;
+
+    if (await this.tryGrantedReconnect()) return;
 
     this.device = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,
+      filters: [{ services: [identity.SERIAL_SERVICE_UUID] }],
       optionalServices: [identity.SERIAL_SERVICE_UUID],
     });
+    await this.openGattSessionSerialized();
+  }
+
+  /**
+   * Try to reconnect to a device this origin already granted, skipping the picker.
+   * getDevices() needs no fresh advertising, which matters on macOS: once paired,
+   * the HID daemon claims the peripheral, it stops advertising, and the picker
+   * finds nothing — while a granted gatt.connect() still reaches it by address.
+   * @returns {Promise<boolean>} True when the GATT session is live.
+   */
+  async tryGrantedReconnect() {
+    // getDevices is flag-gated (#enable-experimental-web-platform-features);
+    // when the flags are off it is undefined — skip straight to the picker.
+    if (!navigator.bluetooth.getDevices) return false;
+    const granted = await navigator.bluetooth.getDevices();
+    const device = granted.find(candidate => candidate.name === identity.BLE_NAME);
+    if (!device) return false;
+
+    // Retry rationale: on macOS a bare gatt.connect() can succeed while the HID
+    // daemon holds the device, and service discovery then fails — the retry
+    // absorbs the transient. The picker fallback in connect() covers a
+    // truly-absent device.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        this.device = device;
+        await this.openGattSessionSerialized();
+        return true;
+      } catch (error) {
+        console.debug(`getDevices reconnect attempt ${attempt}/3 failed:`, error);
+        this.clearGattState();
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+    device.removeEventListener('gattserverdisconnected', this.handleDisconnected);
+    return false;
+  }
+
+  /**
+   * Connect GATT on this.device and bring up the AirBridge serial characteristics.
+   * @returns {Promise<void>}
+   */
+  async openGattSession() {
     this.device.addEventListener('gattserverdisconnected', this.handleDisconnected);
     this.server = await this.device.gatt.connect();
 
@@ -997,10 +1050,34 @@ class WebBluetoothAdapter {
   }
 
   /**
-   * Disconnect GATT and clear characteristic listeners.
+   * Bring up the GATT session, sharing any in-flight bring-up on the same
+   * device. A fresh connect() racing a pending auto-reconnect attempt must not
+   * issue a second gatt.connect() — Chromium rejects concurrent connects.
+   * @returns {Promise<void>}
+   */
+  openGattSessionSerialized() {
+    const device = this.device;
+    if (this.gattSessionPromise && this.gattSessionDevice === device) {
+      return this.gattSessionPromise;
+    }
+    this.gattSessionDevice = device;
+    this.gattSessionPromise = this.openGattSession().finally(() => {
+      if (this.gattSessionDevice === device) {
+        this.gattSessionPromise = null;
+        this.gattSessionDevice = null;
+      }
+    });
+    return this.gattSessionPromise;
+  }
+
+  /**
+   * Disconnect GATT, cancel pending auto-reconnect retries, and clear
+   * characteristic listeners.
    * @returns {Promise<void>}
    */
   async disconnect() {
+    this.autoReconnect = false;
+    this.cancelReconnect();
     const device = this.device;
     this.clearGattState();
     if (!device) return;
@@ -1079,7 +1156,62 @@ class WebBluetoothAdapter {
 
   handleDisconnected() {
     this.clearGattState();
-    if (this.disconnectCallback) this.disconnectCallback();
+    if (!this.autoReconnect) {
+      if (this.disconnectCallback) this.disconnectCallback();
+      return;
+    }
+    this.cancelReconnect();
+    this.scheduleReconnect(0);
+  }
+
+  /**
+   * Retry openGattSession() after an unintentional drop, one attempt per
+   * BLE_RECONNECT_DELAYS_MS entry; on exhaustion disarm and fire the
+   * disconnect callback. A stale epoch (connect/disconnect/fresh drop since
+   * scheduling) stops the chain; a disconnect() racing an in-flight attempt
+   * tears down the session that attempt opened.
+   * @param {number} delayIndex Index into BLE_RECONNECT_DELAYS_MS.
+   */
+  scheduleReconnect(delayIndex) {
+    const epoch = this.reconnectEpoch;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (epoch !== this.reconnectEpoch || !this.autoReconnect || !this.device) return;
+      this.openGattSessionSerialized().then(
+        () => {
+          if (!this.autoReconnect) {
+            const device = this.device;
+            this.clearGattState();
+            if (device) {
+              device.removeEventListener('gattserverdisconnected', this.handleDisconnected);
+              if (device.gatt?.connected) device.gatt.disconnect();
+            }
+          }
+        },
+        (error) => {
+          if (epoch !== this.reconnectEpoch || !this.autoReconnect) return;
+          console.debug(`BLE auto-reconnect attempt ${delayIndex + 1}/${BLE_RECONNECT_DELAYS_MS.length} failed:`, error);
+          this.clearGattState();
+          if (delayIndex + 1 < BLE_RECONNECT_DELAYS_MS.length) {
+            this.scheduleReconnect(delayIndex + 1);
+          } else {
+            this.autoReconnect = false;
+            if (this.disconnectCallback) this.disconnectCallback();
+          }
+        },
+      );
+    }, BLE_RECONNECT_DELAYS_MS[delayIndex]);
+  }
+
+  /**
+   * Invalidate the pending auto-reconnect chain and clear its timer.
+   */
+  cancelReconnect() {
+    this.reconnectEpoch += 1;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   clearGattState() {
