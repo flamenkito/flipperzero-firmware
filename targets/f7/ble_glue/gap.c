@@ -1,4 +1,5 @@
 #include "gap.h"
+#include "gap_int.h"
 
 #include "app_common.h"
 #include <core/mutex.h>
@@ -603,6 +604,7 @@ bool gap_init(
     furi_check(gap == NULL);
 
     gap = malloc(sizeof(Gap));
+    gap->advertise_hids = false;
     gap->config = config;
     // Create advertising timer
     gap->advertise_timer = furi_timer_alloc(gap_advetise_timer_callback, FuriTimerTypeOnce, NULL);

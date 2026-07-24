@@ -1,6 +1,7 @@
 #include "ble_glue.h"
 #include <core/check.h>
 #include <gap.h>
+#include <gap_int.h>
 #include <furi_hal_bt.h>
 #include <furi_ble/profile_interface.h>
 
@@ -38,8 +39,6 @@ static FuriHalBt furi_hal_bt = {
 
 static FuriHalBleProfileBase* current_profile = NULL;
 static GapConfig current_config = {0};
-
-void gap_set_adv_hids(bool enable);
 
 void furi_hal_bt_init(void) {
     FURI_LOG_I(TAG, "Start BT initialization");
