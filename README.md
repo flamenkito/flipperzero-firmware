@@ -56,11 +56,11 @@ This is BadUSB-shaped by design. Keyboard emulation is the whole point: it is th
    This inlines the shared JS modules into a single self-contained `dist/app-usb.html`.
 2. **Deploy the bootstrap and the bundle to the Flipper SD card** (exact commands in [docs/firmware-guide.md](docs/firmware-guide.md)).
 3. **Launch Pocket AirBridge** on the Flipper and select **Deploy app**. The screen asks you to place the cursor, then press OK.
-4. **On the target PC**, open a browser tab at `https://example.com`, open DevTools (F12), and click into the console. Any `https://` page works; `about:blank` is possible but verify first — on some Chrome builds `window.isSecureContext === false` there, which blocks WebHID. Run `console.log(window.isSecureContext)` to confirm before proceeding.
+4. **On the target PC**, open a browser tab at `https://blank.org`, open DevTools (F12), and click into the console. Any `https://` page works; `about:blank` is possible but verify first — on some Chrome builds `window.isSecureContext === false` there, which blocks WebHID. Run `console.log(window.isSecureContext)` to confirm before proceeding.
 5. **Press OK on the Flipper.** The bootstrap types itself into the console while the screen shows `TYPING…` (BACK aborts). Once executed, it paints a minimal landing page with a Connect button.
 6. **Click Connect.** Your real click supplies the user activation WebHID needs; pick the device in the browser prompt. The Flipper streams the full app from its SD card and the bootstrap replaces the page with it.
 
-`data:` URLs are dead for this purpose (`window.isSecureContext === false`, so WebHID is unavailable there). `about:blank` is NOT reliably a secure context — on some Chrome builds `window.isSecureContext === false` and `navigator.hid` is undefined, while the same Chrome build passes on `https://example.com`. The robust validated channel is ANY `https://` page plus the DevTools console. Both facts were confirmed on real Chrome on 2026-07-20 (about:blank insecure on the user's build; https://example.com worked end-to-end on hardware).
+`data:` URLs are dead for this purpose (`window.isSecureContext === false`, so WebHID is unavailable there). `about:blank` is NOT reliably a secure context — on some Chrome builds `window.isSecureContext === false` and `navigator.hid` is undefined, while the same Chrome build passes on `https://blank.org`. The robust validated channel is ANY `https://` page plus the DevTools console. Both facts were confirmed on real Chrome on 2026-07-20 (about:blank insecure on the user's build; https://blank.org worked end-to-end on hardware).
 
 The typed snippet carries a WebHID filter list that enumerates every profile VID/PID (Logitech, Dell, MSFT, HP). On the target machine only the Flipper matches; other devices with those IDs are not present.
 
@@ -153,6 +153,9 @@ use `chat-usb.html` and `chat-ble.html` instead.
 
 - **Chrome / Edge / Brave** (Chromium 89+) on Windows, macOS, or Linux.
 - WebHID and Web Bluetooth require a **secure origin** (`https://` or `localhost`).
+- For persisted `getDevices()` grants across Chrome restarts, enable
+  `chrome://flags/#enable-web-bluetooth-new-permissions-backend`; without it,
+  Bluetooth reconnects fall back to the browser picker.
 - On Linux, Web Bluetooth may need `chrome://flags/#enable-web-bluetooth` or kernel BLE permissions.
 
 ## Flipper Zero Firmware Notes

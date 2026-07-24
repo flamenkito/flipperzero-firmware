@@ -17,10 +17,12 @@ profile includes Battery, DIS, HIDS, and AirBridge serial; Web Bluetooth uses
 only the serial service. HIDS exists for explicit BLE Deploy typing and carries
 no Bridge-mode keyboard traffic.
 
-Pairing remains numeric-comparison/authenticated for each connection, while
-`bonding_mode = false` prevents a persistent keyboard bond from causing macOS
-to hoard the HID connection. The serial service's additional UUIDs are flow
-control notify `d2d968bf-cbd8-568f-d24c-5bbddb824f25` and status notify/read/write
+The serial service UUID is advertised continuously. HIDS is advertised only
+during the BLE Deploy prompt and typing window, so macOS sees the keyboard only
+when it is needed for explicit deploy typing. Bonding is enabled: each host's
+first pairing uses MITM numeric comparison, and later reconnects use the stored
+bond silently. The serial service's additional UUIDs are flow control notify
+`d2d968bf-cbd8-568f-d24c-5bbddb824f25` and status notify/read/write
 `bebb7113-63db-bbae-bb45-37dbbf73b6b3`.
 
 ## Wire Format
@@ -139,10 +141,11 @@ Both sides can initiate transfers, so the **browser endpoints** enforce strict h
 
 There is no application-level authentication or encryption (see Known Limitations). The explicit user consent for a transfer comes from the platform:
 
-1. **BLE numeric comparison on the Flipper screen** — the AirBridge serial service requires authenticated pairing; the user confirms the comparison for each connection before the BLE link can carry data. Bonding is intentionally disabled, so that consent does not persist as a keyboard bond.
-2. **Browser permission pickers** — WebHID (PC-A) and Web Bluetooth (PC-B) both require a user gesture and an explicit device-selection dialog before any byte can flow.
+1. **First BLE pairing numeric comparison on the Flipper screen** — the AirBridge serial service requires MITM-authenticated pairing; the user confirms the code once for each host. Bonding is enabled, so later reconnects from that host reuse the stored bond silently.
+2. **Browser permission pickers** — WebHID (PC-A) and Web Bluetooth (PC-B) require a user gesture and an explicit device-selection dialog before a browser receives its initial device grant. A previously granted browser can reconnect with `getDevices()` without reopening the picker.
 
-A transfer therefore requires physical consent on the Flipper plus explicit per-browser consent on both PCs.
+A transfer therefore requires first-pairing physical consent on the Flipper plus
+explicit initial per-browser consent on both PCs.
 
 ## ACK/NACK Semantics
 
@@ -223,7 +226,7 @@ The additive checksum exists to catch profile-switch race bytes at the start of 
 
 ## Known Limitations (MVP)
 
-- No end-to-end application encryption or authentication beyond per-connection BLE numeric comparison and browser permission pickers (see Consent Model).
+- No end-to-end application encryption or authentication beyond first-pairing BLE numeric comparison and browser permission pickers (see Consent Model).
 - Single item in flight at a time (half-duplex, enforced by the browser endpoints).
 - Single receiver per session.
 - No resume or partial transfer recovery.

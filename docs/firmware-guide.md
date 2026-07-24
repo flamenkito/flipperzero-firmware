@@ -11,9 +11,10 @@ You already have `~/projects/flipperzero-firmware`. We added:
 **Starting from a pristine firmware checkout instead?** Everything above is bundled in
 [`firmware/`](../firmware/): `airbridge-firmware.patch` (USB, BLE-profile, BT, and GAP changes),
 `api-symbols-additions.patch`, and the FAP source. See `firmware/README.md` for
-apply instructions. The bundle is regenerated from firmware commit `31f929b2`
-against pristine upstream `dev` base `c9ab2b68`; apply the firmware patch, then
-the API-symbol patch, before copying the FAP.
+apply instructions. The bundle is regenerated from the firmware tree through
+`8ba53421`, plus the bonded advertising working-tree changes, against pristine
+upstream `dev` base `c9ab2b68`; apply the firmware patch, then the API-symbol
+patch, before copying the FAP.
 
 The firmware is a dumb, stateless byte relay between the two transports. The
 Flipper never parses protocol frames and never buffers more than the small
@@ -218,9 +219,9 @@ python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
 ### The Deploy Flow
 
 1. From the Bridge screen, press **UP** for USB Deploy or **DOWN** for BLE Deploy.
-2. The screen prompts: `Place cursor in browser console, then press OK`. On the target PC, open a tab at `https://example.com` (not `about:blank` — some Chrome builds report `window.isSecureContext === false` there).
-3. On OK, the FAP types `bootstrap.js` over USB or `bootstrap-ble.js` over BLE HIDS. The `TYPING via USB/BLE` screen shows a determinate progress bar (chars typed / total, plus %) for the entire emission; BACK aborts instantly.
-4. The executed bootstrap paints a landing page. While it waits, the FAP shows `Waiting for browser...` with an indeterminate marquee (a block bouncing across the bar frame) and the hint `Click Connect in the browser`. Clicking **Connect** supplies the browser user gesture, opens the matching WebHID or Web Bluetooth transport, and sends `0x42`.
+2. For BLE Deploy, the HIDS advertising window opens for the entire prompt and typing interaction. On the target PC, pair `HP 725 K+M` if this is the first use, then open a tab at `https://blank.org` (not `about:blank` — some Chrome builds report `window.isSecureContext === false` there; blank.org loads from browser cache offline).
+3. On OK, the FAP types `bootstrap.js` over USB or `bootstrap-ble.js` over BLE HIDS. The `TYPING via USB/BLE` screen shows a determinate progress bar (chars typed / total, plus %) for the entire emission; BACK aborts instantly. HIDS stops advertising when BLE typing ends or the deploy flow is aborted; the AirBridge serial UUID remains advertised throughout.
+4. The executed bootstrap paints a landing page. While it waits, the FAP shows `Waiting for browser...` with an indeterminate marquee (a block bouncing across the bar frame) and the hint `Click Connect in the browser`. Clicking **Connect** supplies the browser user gesture, opens the matching WebHID or Web Bluetooth transport, and sends `0x42`. During BLE Deploy Waiting, a central that has not requested the bundle is disconnected after 15 seconds and advertising resumes, preventing a bonded macOS HID connection from starving a new browser picker.
 5. The FAP streams the length+checksum header and transport-matched `app-usb.html` or `app-ble.html` bundle (see [protocol.md](protocol.md), "Bootstrap Stream Protocol"). The `Serving app via USB/BLE` screen shows a determinate progress bar (KB sent / total, plus %); BACK aborts.
 6. The screen shows `Done` and returns to Bridge.
 
@@ -276,9 +277,11 @@ generated in `web/airbridge-identity.js`:
 
 The firmware source keeps the controller-order values in
 `targets/f7/ble_glue/services/airbridge_serial_uuid.h`; the browser uses the
-byte-reversed on-air strings above. The profile advertises HIDS and includes
-DIS with values from the FAP config, while persistent BLE bonding is disabled to
-avoid macOS holding the keyboard connection after a session.
+byte-reversed on-air strings above. The serial service UUID is advertised at all
+times. HIDS is advertised only for the BLE Deploy prompt and typing window, and
+the profile includes DIS values from the FAP config. Bonding is enabled: the
+first pairing uses MITM numeric comparison and stores a bond for silent later
+reconnects.
 
 ### Bridge Logic (Inside the FAP)
 
@@ -344,6 +347,26 @@ Then open:
 
 The superseded `sender.html` and `receiver.html` file-transfer pages were removed;
 use the chat pages above for all transfers.
+
+### Bonding and macOS
+
+Bonding is on and persists across app sessions. The first pairing on each host
+shows a numeric-comparison code; later bonded reconnects are silent. macOS may
+auto-reconnect the bonded keyboard through its HID daemon. The BLE Deploy
+Waiting screen disconnects a central that does not request the bundle within 15
+seconds, then resumes advertising, so a browser picker gets another chance.
+
+For chat, Chrome tries `navigator.bluetooth.getDevices()` before opening a
+picker. Enable `chrome://flags/#enable-web-bluetooth-new-permissions-backend`
+to retain granted devices across Chrome restarts. A bonded macOS HID connection
+can still grip a Bridge-mode link and require an app restart before chat
+connects; a Bridge-mode squatter-kick is a known follow-up, not part of the
+Deploy timeout.
+
+For passive advertising QA, `python3 scripts/ble_qa_scan.py scan` asserts the
+serial UUID alone in Bridge mode. Run the same command with `--expect-hids`
+while the BLE Deploy prompt or typing screen is active; it then requires the
+serial UUID plus HIDS.
 
 ## Step-by-Step Chat Demo Script
 
