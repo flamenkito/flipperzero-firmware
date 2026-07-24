@@ -27,8 +27,15 @@ static const bool airbridge_ble_enabled = true; // flip to false to skip BLE ins
 #define TYPE_RELEASE_DELAY_MS 18
 #define STREAM_TIMEOUT_MS     50
 
-#define BLE_TYPE_PRESS_DELAY_MS     40
-#define BLE_TYPE_RELEASE_DELAY_MS   60
+/* BLE typing pacing at USB parity (12/18). macOS negotiates ~11.25-15 ms
+ * connection intervals for HID keyboards (our profile offers 7.5-45 ms), so a
+ * press+release notification pair drains well within one interval at 12/18 ms;
+ * the old 40/60 was sized for the worst-case 45 ms CI. Transient queue
+ * congestion is absorbed by app_ble_kb_report_with_retry. RISK under hardware
+ * test: a missed release notification corrupts the typed stream (stuck
+ * modifier) — the full-bootstrap typing test must show ZERO corruption. */
+#define BLE_TYPE_PRESS_DELAY_MS     12
+#define BLE_TYPE_RELEASE_DELAY_MS   18
 #define BLE_TYPE_MODIFIED_SETTLE_MS 10
 
 #define BLE_TYPING_RETRY_MAX      5
