@@ -6,7 +6,9 @@
 # ─── How to run ───
 # Install the sole third-party dependency: pip3 install bleak
 # Run the zero-hardware unit tests: python3 scripts/ble_qa_scan.py --selftest
-# Scan the active FAP: python3 scripts/ble_qa_scan.py scan --timeout 8
+# Scan Bridge mode (serial UUID only): python3 scripts/ble_qa_scan.py scan --timeout 8
+# Scan BLE Deploy prompt/typing (serial UUID + HIDS):
+#   python3 scripts/ble_qa_scan.py scan --expect-hids --timeout 8
 # Enumerate GATT (accept the OS numeric-comparison pairing prompt):
 #   python3 scripts/ble_qa_scan.py gatt --timeout 12
 # ──────────────────
@@ -188,7 +190,8 @@ def mac_integer(value: str) -> int | None:
     return int(value.replace(":", ""), 16) if MAC_PATTERN.fullmatch(value) else None
 
 
-def candidate_checks(advertisement: Advertisement, config: IdentityConfig, system: str) -> tuple[Check, ...]:
+def candidate_checks(advertisement: Advertisement, config: IdentityConfig, serial: SerialIdentity,
+                     system: str, expect_hids: bool) -> tuple[Check, ...]:
     """Evaluate all per-advertisement identity assertions without BLE I/O."""
 
     actual_services = frozenset(normalize_uuid(value) for value in advertisement.service_uuids)
@@ -212,6 +215,10 @@ def candidate_checks(advertisement: Advertisement, config: IdentityConfig, syste
                       Evidence("{" + ", ".join(sorted(HP_OUIS)) + "}", oui_actual)) if mac_visible else Check(
         "WARN", "MAC OUI is in the HP allowlist", Evidence("mandatory on Linux/Windows",
         "skipped on Darwin: CoreBluetooth does not expose the on-air MAC"))
+    expected_services = frozenset({serial.service, HIDS_UUID}) if expect_hids else frozenset({serial.service})
+    expected_service_label = (
+        "AirBridge serial plus HIDS during the BLE Deploy window" if expect_hids
+        else "AirBridge serial only outside the BLE Deploy window")
     return (
         check("advertised local name is exact or scan-response-verified prefix", exact_name or truncated_name,
               Evidence(config.name, name_actual)),
@@ -219,14 +226,17 @@ def candidate_checks(advertisement: Advertisement, config: IdentityConfig, syste
               Evidence("case-insensitive absence", "absent" if hidden_name else "found in advertisement data")),
         mac_check,
         oui_check,
-        check("advertised service UUIDs are HIDS only", actual_services == frozenset({HIDS_UUID}),
-              Evidence("0x1812", display_uuids(actual_services))),
+        check("AirBridge serial service UUID is always advertised", serial.service in actual_services,
+              Evidence(display_uuids((serial.service,)), display_uuids(actual_services))),
+        check("advertised service UUIDs match the expected HIDS window", actual_services == expected_services,
+              Evidence(expected_service_label, display_uuids(actual_services))),
         check("HP manufacturer data is present", config.company_id in company_ids,
               Evidence(f"0x{config.company_id:04X}", ", ".join(f"0x{id_:04X}" for id_ in sorted(company_ids)) or "none")),
     )
 
 
-def scan_checks(advertisements: tuple[Advertisement, ...], config: IdentityConfig, system: str) -> tuple[Advertisement | None, tuple[Check, ...]]:
+def scan_checks(advertisements: tuple[Advertisement, ...], config: IdentityConfig, serial: SerialIdentity,
+                system: str, expect_hids: bool) -> tuple[Advertisement | None, tuple[Check, ...]]:
     """Find the named target and assert that a second beacon is not present."""
 
     targets = tuple(item for item in advertisements if item.local_name == config.name or (
@@ -246,7 +256,7 @@ def scan_checks(advertisements: tuple[Advertisement, ...], config: IdentityConfi
         "WARN", "no adjacent-MAC advertisement source exists", Evidence("mandatory on Linux/Windows",
         "skipped on Darwin: CoreBluetooth address is opaque"))
     return target, (check("TARGET FOUND", True, Evidence(config.name, target.address)),
-                    *candidate_checks(target, config, system), source_check, nearby_check)
+                     *candidate_checks(target, config, serial, system, expect_hids), source_check, nearby_check)
 
 
 async def discover_advertisements(timeout: float) -> tuple[Advertisement, ...]:
@@ -420,18 +430,21 @@ def selftest() -> int:
     config_text = CONFIG_PATH.read_text(encoding="utf-8")
     profile_line = next(line for line in config_text.splitlines() if line.strip().startswith("profile="))
     bare_profile = parse_config_text(config_text.replace(profile_line, profile_line.partition("=")[2].strip()), "synthetic-bare-profile")
-    good = Advertisement(config.mac, config.name, config.name, ("1812",),
-                         ((config.company_id, b"HP"),), "complete name and HP scan response")
-    good_target, good_checks = scan_checks((good,), config, "Linux")
-    truncated = Advertisement(config.mac, config.name, config.name[:16], ("1812",),
+    bridge_good = Advertisement(config.mac, config.name, config.name, (serial.service,),
+                                ((config.company_id, b"HP"),), "complete name and HP scan response")
+    good_target, good_checks = scan_checks((bridge_good,), config, serial, "Linux", False)
+    window_good = Advertisement(config.mac, config.name, config.name, (serial.service, "1812"),
+                                ((config.company_id, b"HP"),), "complete name and HP scan response")
+    _, window_checks = scan_checks((window_good,), config, serial, "Linux", True)
+    truncated = Advertisement(config.mac, config.name, config.name[:16], (serial.service,),
                               ((config.company_id, b"HP"),), "truncated advertisement name")
-    truncated_target, truncated_checks = scan_checks((truncated,), config, "Linux")
-    longer = Advertisement(config.mac, config.name, config.name + "X", ("1812",),
+    truncated_target, truncated_checks = scan_checks((truncated,), config, serial, "Linux", False)
+    longer = Advertisement(config.mac, config.name, config.name + "X", (serial.service,),
                            ((config.company_id, b"HP"),), "name longer than expected")
-    longer_name = candidate_checks(longer, config, "Linux")[0]
+    longer_name = candidate_checks(longer, config, serial, "Linux", False)[0]
     bad = Advertisement("00:11:22:33:44:55", "Flipper", "Flipper Beacon", ("fe60",),
                         ((0x0001, b"Flipper"),), "Flipper scan response")
-    bad_checks = candidate_checks(bad, config, "Linux")
+    bad_checks = candidate_checks(bad, config, serial, "Linux", False)
     gap_uuid = "00001800" + BASE_UUID
     dis_uuid = "0000180a" + BASE_UUID
     name_uuid, appearance_uuid = "00002a00" + BASE_UUID, "00002a01" + BASE_UUID
@@ -459,7 +472,7 @@ def selftest() -> int:
                        Evidence("stack-truncated prefix accepted", "accepted" if truncated_target is not None and all(item.passed for item in truncated_checks) else "rejected"))
     longer_rejected = check("name longer than expected is rejected", not longer_name.passed,
                             Evidence("FAIL for longer name", longer_name.status))
-    darwin_mac = candidate_checks(good, config, "Darwin")[2:4]
+    darwin_mac = candidate_checks(bridge_good, config, serial, "Darwin", False)[2:4]
     darwin_skip = check("Darwin MAC and OUI checks warn-and-skip", all(item.status == "WARN" for item in darwin_mac),
                         Evidence("WARN, WARN", ", ".join(item.status for item in darwin_mac)))
     darwin_gatt_ok = check("Darwin GATT shows reduced visible set and warns for hidden system services",
@@ -468,6 +481,7 @@ def selftest() -> int:
     rejected = check("bad synthetic advertisement is rejected", not all(item.passed for item in bad_checks),
                      Evidence("one or more identity assertions fail", "failure detected" if not all(item.passed for item in bad_checks) else "unexpectedly accepted"))
     passed = print_checks("SELF-TEST: GOOD SYNTHETIC ADVERTISEMENT", good_checks)
+    passed = print_checks("SELF-TEST: BLE DEPLOY HIDS WINDOW", window_checks) and passed
     passed = print_checks("SELF-TEST: TRUNCATED-NAME ADVERTISEMENT", truncated_checks) and passed
     passed = print_checks("SELF-TEST: GOOD SYNTHETIC GATT (Linux)", gatt_good) and passed
     passed = print_checks("SELF-TEST: GOOD SYNTHETIC GATT (Darwin)", gatt_darwin) and passed
@@ -476,7 +490,8 @@ def selftest() -> int:
     return 0 if passed else 1
 
 
-async def run_mode(mode: str, config: IdentityConfig, serial: SerialIdentity, timeout: float) -> int:
+async def run_mode(mode: str, config: IdentityConfig, serial: SerialIdentity, timeout: float,
+                   expect_hids: bool) -> int:
     """Run a hardware mode after its config and canonical UUIDs have been parsed."""
 
     advertisements = await discover_advertisements(timeout)
@@ -484,10 +499,10 @@ async def run_mode(mode: str, config: IdentityConfig, serial: SerialIdentity, ti
         case "stock":
             return 0 if print_checks("STOCK RESTORATION SCAN", stock_checks(advertisements)) else 1
         case "scan":
-            _, checks = scan_checks(advertisements, config, platform.system())
+            _, checks = scan_checks(advertisements, config, serial, platform.system(), expect_hids)
             return 0 if print_checks("AIRBRIDGE PASSIVE SCAN", checks) else 1
         case "gatt":
-            target, checks = scan_checks(advertisements, config, platform.system())
+            target, checks = scan_checks(advertisements, config, serial, platform.system(), expect_hids)
             scan_passed = print_checks("AIRBRIDGE GATT PRE-FLIGHT SCAN", checks)
             if target is None:
                 return 1
@@ -506,6 +521,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--name", help="expected advertised local name (default: config ble_name)")
     parser.add_argument("--mac", help="expected on-air MAC (default: config ble_mac)")
     parser.add_argument("--timeout", type=float, default=8.0, help="passive scan/connect timeout in seconds")
+    parser.add_argument("--expect-hids", action="store_true",
+                        help="assert the BLE Deploy prompt/typing window, where HIDS is advertised with the serial UUID")
     parser.add_argument("--selftest", action="store_true", help="run synthetic config and assertion tests without BLE I/O")
     args = parser.parse_args()
     if args.mode and args.mode_option:
@@ -528,7 +545,8 @@ def main() -> int:
         config = replace(config, name=args.name or config.name, mac=(args.mac or config.mac).upper())
         if not MAC_PATTERN.fullmatch(config.mac):
             raise SetupError("--mac is not a six-octet colon-separated address")
-        return asyncio.run(run_mode(args.mode or args.mode_option, config, load_serial_identity(IDENTITY_PATH), args.timeout))
+        return asyncio.run(run_mode(args.mode or args.mode_option, config, load_serial_identity(IDENTITY_PATH),
+                                    args.timeout, args.expect_hids))
     except SetupError as error:
         print(f"SETUP ERROR: {error}", file=sys.stderr)
         return 2
