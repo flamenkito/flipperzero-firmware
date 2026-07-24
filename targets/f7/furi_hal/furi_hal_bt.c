@@ -39,6 +39,8 @@ static FuriHalBt furi_hal_bt = {
 static FuriHalBleProfileBase* current_profile = NULL;
 static GapConfig current_config = {0};
 
+void gap_set_adv_hids(bool enable);
+
 void furi_hal_bt_init(void) {
     FURI_LOG_I(TAG, "Start BT initialization");
     furi_hal_bus_enable(FuriHalBusHSEM);
@@ -265,6 +267,10 @@ void furi_hal_bt_stop_advertising(void) {
             furi_delay_tick(1);
         }
     }
+}
+
+void furi_hal_bt_set_adv_hids(bool enable) {
+    gap_set_adv_hids(enable);
 }
 
 void furi_hal_bt_update_battery_level(uint8_t battery_level) {

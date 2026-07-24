@@ -13,6 +13,17 @@
 
 #define FAST_ADV_TIMEOUT    30000
 #define INITIAL_ADV_TIMEOUT 60000
+#define GAP_ADV_DATA_MAX_LEN 31U
+
+#define GAP_AD_STRUCTURE_OVERHEAD      2U
+#define GAP_ADV_FLAGS_LEN              (GAP_AD_STRUCTURE_OVERHEAD + 1U)
+#define GAP_ADV_128_BIT_UUID_LIST_LEN  (GAP_AD_STRUCTURE_OVERHEAD + 16U)
+#define GAP_ADV_16_BIT_UUID_LIST_LEN   (GAP_AD_STRUCTURE_OVERHEAD + 2U)
+
+_Static_assert(
+    GAP_ADV_FLAGS_LEN + GAP_ADV_128_BIT_UUID_LIST_LEN + GAP_ADV_16_BIT_UUID_LIST_LEN <=
+        GAP_ADV_DATA_MAX_LEN,
+    "AirBridge advertising data exceeds the legacy advertising limit");
 
 #define GAP_INTERVAL_TO_MS(x) (uint16_t)((x) * 1.25)
 
@@ -23,8 +34,8 @@ typedef struct {
     uint16_t connection_handle;
     uint8_t adv_svc_uuid_len;
     uint8_t adv_svc_uuid[20];
-    uint8_t mfg_data_len;
-    uint8_t mfg_data[23];
+    uint8_t scan_response_len;
+    uint8_t scan_response[GAP_ADV_DATA_MAX_LEN];
     char* adv_name;
 } GapSvc;
 
@@ -40,6 +51,7 @@ typedef struct {
     FuriThread* thread;
     FuriMessageQueue* command_queue;
     bool enable_adv;
+    bool advertise_hids;
     bool is_secure;
     uint8_t negotiation_round;
 } Gap;
@@ -47,6 +59,7 @@ typedef struct {
 typedef enum {
     GapCommandAdvFast,
     GapCommandAdvLowPower,
+    GapCommandAdvRefresh,
     GapCommandAdvStop,
     GapCommandKillThread,
 } GapCommand;
@@ -306,7 +319,7 @@ BleEventFlowStatus ble_event_app_notification(void* pckt) {
     return BleEventFlowEnable;
 }
 
-static void set_advertisment_service_uid(uint8_t* uid, uint8_t uid_len) {
+static void set_advertisment_service_uid(const uint8_t* uid, uint8_t uid_len) {
     if(uid_len == 2) {
         gap->service.adv_svc_uuid[0] = AD_TYPE_16_BIT_SERV_UUID;
     } else if(uid_len == 4) {
@@ -318,12 +331,16 @@ static void set_advertisment_service_uid(uint8_t* uid, uint8_t uid_len) {
     gap->service.adv_svc_uuid_len += uid_len;
 }
 
-static void set_manufacturer_data(uint8_t* mfg_data, uint8_t mfg_data_len) {
-    furi_check(mfg_data_len <= sizeof(gap->service.mfg_data) - 2);
-    gap->service.mfg_data[0] = mfg_data_len + 1;
-    gap->service.mfg_data[1] = AD_TYPE_MANUFACTURER_SPECIFIC_DATA;
-    memcpy(&gap->service.mfg_data[gap->service.mfg_data_len], mfg_data, mfg_data_len);
-    gap->service.mfg_data_len += mfg_data_len;
+static void set_scan_response_data(uint8_t ad_type, const uint8_t* data, uint8_t data_len) {
+    furi_check(
+        gap->service.scan_response_len + GAP_AD_STRUCTURE_OVERHEAD + data_len <=
+        sizeof(gap->service.scan_response));
+
+    uint8_t* ad_data = &gap->service.scan_response[gap->service.scan_response_len];
+    ad_data[0] = data_len + 1U;
+    ad_data[1] = ad_type;
+    memcpy(&ad_data[GAP_AD_STRUCTURE_OVERHEAD], data, data_len);
+    gap->service.scan_response_len += GAP_AD_STRUCTURE_OVERHEAD + data_len;
 }
 
 static void gap_init_svc(Gap* gap, const GapRootSecurityKeys* root_keys) {
@@ -424,6 +441,8 @@ static void gap_advertise_start(GapState new_state) {
     tBleStatus status;
     uint16_t min_interval;
     uint16_t max_interval;
+    const uint8_t* adv_name = (const uint8_t*)gap->service.adv_name;
+    uint8_t adv_name_len = strlen(gap->service.adv_name);
 
     FURI_LOG_D(TAG, "Start: %d", new_state);
 
@@ -447,8 +466,15 @@ static void gap_advertise_start(GapState new_state) {
         }
     }
 
-    if(gap->service.mfg_data_len > 0) {
-        hci_le_set_scan_response_data(gap->service.mfg_data_len, gap->service.mfg_data);
+    status = hci_le_set_scan_response_data(
+        gap->service.scan_response_len, gap->service.scan_response);
+    if(status) {
+        FURI_LOG_E(TAG, "set_scan_response_data failed %d", status);
+    }
+
+    if(gap->config->adv_name_in_scan_response) {
+        adv_name = NULL;
+        adv_name_len = 0;
     }
 
     // Configure advertising
@@ -458,14 +484,32 @@ static void gap_advertise_start(GapState new_state) {
         max_interval,
         CFG_IDENTITY_ADDRESS,
         0,
-        strlen(gap->service.adv_name),
-        (uint8_t*)gap->service.adv_name,
+        adv_name_len,
+        adv_name,
         gap->service.adv_svc_uuid_len,
         gap->service.adv_svc_uuid,
         0,
         0);
     if(status) {
         FURI_LOG_E(TAG, "set_discoverable failed %d", status);
+    } else if(gap->config->adv_name_in_scan_response) {
+        status = aci_gap_delete_ad_type(AD_TYPE_TX_POWER_LEVEL);
+        if(status) {
+            FURI_LOG_E(TAG, "delete TX power advertising data failed %d", status);
+        }
+
+        if(gap->advertise_hids) {
+            const uint8_t hids_adv_data[] = {
+                3U,
+                AD_TYPE_16_BIT_SERV_UUID_CMPLT_LIST,
+                HUMAN_INTERFACE_DEVICE_SERVICE_UUID & 0xFFU,
+                HUMAN_INTERFACE_DEVICE_SERVICE_UUID >> 8U,
+            };
+            status = aci_gap_update_adv_data(sizeof(hids_adv_data), hids_adv_data);
+            if(status) {
+                FURI_LOG_E(TAG, "add HIDS advertising data failed %d", status);
+            }
+        }
     }
     gap->state = new_state;
     GapEvent event = {.type = GapEventTypeStartAdvertising};
@@ -523,6 +567,23 @@ void gap_stop_advertising(void) {
     furi_check(furi_mutex_release(gap->state_mutex) == FuriStatusOk);
 }
 
+void gap_set_adv_hids(bool enable) {
+    if(!gap) {
+        return;
+    }
+
+    furi_check(furi_mutex_acquire(gap->state_mutex, FuriWaitForever) == FuriStatusOk);
+
+    gap->advertise_hids = enable;
+
+    if(gap->state == GapStateAdvFast || gap->state == GapStateAdvLowPower) {
+        const GapCommand command = GapCommandAdvRefresh;
+        furi_check(furi_message_queue_put(gap->command_queue, &command, 0) == FuriStatusOk);
+    }
+
+    furi_check(furi_mutex_release(gap->state_mutex) == FuriStatusOk);
+}
+
 static void gap_advetise_timer_callback(void* context) {
     UNUSED(context);
     // Keep fast advertising indefinitely instead of switching to low-power
@@ -566,10 +627,17 @@ bool gap_init(
     gap->is_secure = false;
     gap->negotiation_round = 0;
 
+    gap->service.scan_response_len = 0;
+    if(gap->config->adv_name_in_scan_response) {
+        const char* adv_name = &gap->service.adv_name[1];
+        set_scan_response_data(
+            AD_TYPE_COMPLETE_LOCAL_NAME, (const uint8_t*)adv_name, strlen(adv_name));
+    }
     if(gap->config->mfg_data_len > 0) {
-        // Offset by 2 for length + AD_TYPE_MANUFACTURER_SPECIFIC_DATA
-        gap->service.mfg_data_len = 2;
-        set_manufacturer_data(gap->config->mfg_data, gap->config->mfg_data_len);
+        set_scan_response_data(
+            AD_TYPE_MANUFACTURER_SPECIFIC_DATA,
+            gap->config->mfg_data,
+            gap->config->mfg_data_len);
     }
 
     gap->service.adv_svc_uuid_len = 1;
@@ -646,6 +714,10 @@ static int32_t gap_app(void* context) {
             gap_advertise_start(GapStateAdvFast);
         } else if(command == GapCommandAdvLowPower) {
             gap_advertise_start(GapStateAdvLowPower);
+        } else if(command == GapCommandAdvRefresh) {
+            if(gap->state == GapStateAdvFast || gap->state == GapStateAdvLowPower) {
+                gap_advertise_start(gap->state);
+            }
         } else if(command == GapCommandAdvStop) {
             gap_advertise_stop();
         }

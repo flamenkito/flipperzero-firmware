@@ -137,6 +137,13 @@ void furi_hal_bt_start_advertising(void);
  */
 void furi_hal_bt_stop_advertising(void);
 
+/** Set whether the HID service UUID is included in advertising.
+ *
+ * Active advertising is restarted with the current interval. Changes made while
+ * connected apply when advertising starts next.
+ */
+void furi_hal_bt_set_adv_hids(bool enable);
+
 /** Get BT/BLE system component state
  *
  * @param[in]  buffer  FuriString* buffer to write to

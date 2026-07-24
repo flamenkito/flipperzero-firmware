@@ -2,6 +2,7 @@
 
 #include <services/airbridge_dev_info_service.h>
 #include <services/airbridge_serial_service.h>
+#include <services/airbridge_serial_uuid.h>
 #include <services/battery_service.h>
 #include <extra_services/hid_service.h>
 
@@ -267,11 +268,11 @@ bool ble_profile_airbridge_consumer_report(
 static const GapConfig template_config = {
     .adv_service =
         {
-            .UUID_Type = UUID_TYPE_16,
-            .Service_UUID_16 = HUMAN_INTERFACE_DEVICE_SERVICE_UUID,
+            .UUID_Type = UUID_TYPE_128,
+            .Service_UUID_128 = BLE_SVC_AIRBRIDGE_SERIAL_SERVICE_UUID,
         },
     .appearance_char = GAP_APPEARANCE_KEYBOARD,
-    .bonding_mode = false,
+    .bonding_mode = true,
     .pairing_method = GapPairingPinCodeVerifyYesNo,
     .conn_param =
         {
@@ -293,6 +294,7 @@ static void
 
     memcpy(config->mac_address, identity->mac_address, sizeof(config->mac_address));
     config->appearance_char = identity->appearance;
+    config->adv_name_in_scan_response = true;
 
     memset(config->adv_name, 0, sizeof(config->adv_name));
     config->adv_name[0] = AD_TYPE_COMPLETE_LOCAL_NAME;

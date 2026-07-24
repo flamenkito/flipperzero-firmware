@@ -3,14 +3,15 @@
 /*
  * Canonical Pocket AirBridge vendor serial UUID family.
  *
- * The byte arrays are in the same network-order form used by the BLE glue.
+ * The byte arrays are in STM32WB controller order (least-significant octet first).
+ * The canonical UUID strings used by Web Bluetooth are the byte-reversed form.
  * Keep each UUID in one named macro: tools/gen_identity.py parses this header.
  *
- * Service:      a327d613-269c-465f-b4c5-f0ba2812877b
- * TX:           274fa3ea-83b0-4232-b78c-9873c05e8287
- * RX:           8dc92161-f67f-41ba-9858-b7e3eb7e2f15
- * Flow control: 254f82db-bd5b-4cd2-8f56-d8cbbf68d9d2
- * Status:       b3b673bf-db37-45bb-aebb-db631371bbbe
+ * Service:      7b871228-baf0-c5b4-5f46-9c2613d627a3
+ * TX:           87825ec0-7398-8cb7-3242-b083eaa34f27
+ * RX:           152f7eeb-e3b7-5898-ba41-7ff66121c98d
+ * Flow control: d2d968bf-cbd8-568f-d24c-5bbddb824f25
+ * Status:       bebb7113-63db-bbae-bb45-37dbbf73b6b3
  */
 
 #define BLE_SVC_AIRBRIDGE_SERIAL_SERVICE_UUID \

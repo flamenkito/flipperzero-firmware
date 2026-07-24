@@ -7,6 +7,7 @@
 
 #define GAP_MAC_ADDR_SIZE (6)
 #define GAP_KEY_SIZE      (0x10)
+#define GAP_ADV_NAME_MAX_LEN (20U)
 
 /*
  * GAP helpers - background thread that handles BLE GAP events and advertising.
@@ -76,11 +77,12 @@ typedef struct {
     } adv_service;
     uint8_t mfg_data[23];
     uint8_t mfg_data_len;
+    bool adv_name_in_scan_response;
     uint16_t appearance_char;
     bool bonding_mode;
     GapPairing pairing_method;
     uint8_t mac_address[GAP_MAC_ADDR_SIZE];
-    char adv_name[FURI_HAL_VERSION_DEVICE_NAME_LENGTH];
+    char adv_name[1U + GAP_ADV_NAME_MAX_LEN + 1U];
     GapConnectionParamsRequest conn_param;
 } GapConfig;
 
