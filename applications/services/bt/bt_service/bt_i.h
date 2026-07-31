@@ -75,10 +75,20 @@ struct Bt {
     BtStatus status;
     bool beacon_active;
     FuriHalBleProfileBase* current_profile;
-    /* Serializes current_profile lifetime: the BtSrv thread is the sole writer,
-     * readers hold it only while copying the pointer / computing type booleans
-     * or around a short immediate profile call. */
+    /* Deadlock-freedom invariant: this mutex is only ever held for
+     * pointer/counter manipulation (microseconds) - NEVER across an
+     * aci/hci call (hci_send_req blocks on hci_sem, which is released only
+     * by the BleEventWorker thread, and that thread takes this mutex briefly
+     * in bt_on_gap_event_callback - holding it across an aci call is a
+     * circular wait), an event-flag wait, rpc_session_close, or a delay.
+     * Blocking profile users hold a reader reference instead; the writer
+     * publishes NULL (so no new readers can start), waits for quiescence, and
+     * only then lets furi_hal_bt_change_app free the old profile. */
     FuriMutex* current_profile_mutex;
+    /* In-flight reader references keeping current_profile (and its serial
+     * service) alive across blocking calls; touched only under
+     * current_profile_mutex. */
+    uint32_t current_profile_readers;
     /* Cached profile-type flags, written only under current_profile_mutex.
      * Read without the mutex by bt_serial_event_callback, which runs under a
      * serial service's buff_size_mtx and therefore must never take it. */
