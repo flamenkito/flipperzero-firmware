@@ -1,13 +1,25 @@
 # Pocket AirBridge — Firmware Files
 
 **Regenerated 2026-07-31:** This bundle captures the firmware tree through
-`196f67d9` (`fix: init advertise_hids in gap_init, declare gap_set_adv_hids in
-private gap_int.h`) plus uncommitted working-tree stability fixes (commits are
-permission-blocked in this session), relative to pristine upstream `dev` base
-`c9ab2b68`. The bundle advertises the AirBridge serial UUID continuously,
-advertises HIDS only for the BLE Deploy prompt and typing window, and enables
-persistent numeric-comparison bonding. The stability fixes (no protocol or
-behavior change):
+`54a8c83d` (`fix(bt): refcount current_profile readers; never hold mutex
+across HCI calls`), relative to pristine upstream `dev` base `c9ab2b68`. The
+stability fixes that were uncommitted at the previous regen have since landed
+as commits; the only uncommitted change is the carousel-UI rework of the FAP
+(`applications_user/pocket_airbridge/pocket_airbridge.c`), which ships as the
+`pocket_airbridge/` directory copy — the FAP path is excluded from
+`airbridge-firmware.patch` by design. The FAP copy now also carries the
+carousel stuck-input fix (idempotent `app_set_hids_adv` — redundant HIDS
+advertising toggles blocked the GAP `state_mutex` and wedged input processing)
+and the removal of the on-screen hint rows; the built artifact is 22952 B.
+The carousel rework replaces the
+UP/DOWN deploy keys: the app opens on the Bridge relay screen, LEFT/RIGHT
+rotate Bridge → USB Deploy prompt → BLE Deploy prompt → Bridge, OK on a
+prompt starts that deploy, a short BACK returns to Bridge, a long BACK exits,
+and the relay keeps forwarding in the background on every screen (see
+"FAP behaviour" below). The bundle advertises the AirBridge serial UUID
+continuously, advertises HIDS only for the BLE Deploy prompt and typing
+window, and enables persistent numeric-comparison bonding. The stability
+fixes (no protocol or behavior change):
 
 - `bt_service` `current_profile` lifetime serialization with reader
   refcounting — the mutex is never held across HCI calls (`bt.c`),
@@ -82,8 +94,8 @@ instantly.
 
 The new `ble_profile_airbridge` composes Battery, Device Information Service
 (DIS), Human Interface Device Service (HIDS), and the AirBridge serial service.
-HIDS exposes keyboard, mouse, and consumer report maps so the explicit **DOWN
-= BLE Deploy** flow can type its bootstrap; Bridge mode sends no HID keyboard
+HIDS exposes keyboard, mouse, and consumer report maps so the explicit BLE
+Deploy prompt flow can type its bootstrap; Bridge mode sends no HID keyboard
 reports. The serial UUID is advertised continuously; HIDS is advertised only
 while the BLE Deploy prompt or typing screen is active.
 
@@ -147,7 +159,10 @@ The `api_symbols.csv` file is version-specific. If the patch fails to apply:
 The FAP is a stateless byte relay: USB/GAP callbacks enqueue `BridgeEvent`s, the
 main loop forwards USB→BLE via `bt_serial_tx` and BLE→USB via zero-padded
 64-byte `furi_hal_hid_vendor_send_response`, with on-screen counters and a
-500 ms LED heartbeat. From Bridge, **UP** starts USB Deploy
-(`bootstrap.js` → `app-usb.html`) and **DOWN** starts BLE Deploy
-(`bootstrap-ble.js` → `app-ble.html`), opening the HIDS advertising window for
-the prompt and typing flow only.
+500 ms LED heartbeat. The app opens on the Bridge relay screen; **LEFT** and
+**RIGHT** rotate a carousel of Bridge → USB Deploy prompt → BLE Deploy prompt →
+Bridge, and the relay keeps forwarding in the background on every screen.
+**OK** on the USB prompt starts USB Deploy (`bootstrap.js` → `app-usb.html`);
+**OK** on the BLE prompt starts BLE Deploy (`bootstrap-ble.js` → `app-ble.html`),
+opening the HIDS advertising window for the prompt and typing flow only. A
+short **BACK** returns to Bridge; a long **BACK** exits the app.
