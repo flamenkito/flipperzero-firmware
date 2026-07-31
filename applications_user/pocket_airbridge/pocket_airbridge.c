@@ -64,6 +64,7 @@ typedef enum {
 } AirbridgeScreen;
 
 typedef enum {
+    AirbridgeTypingTransportNone,
     AirbridgeTypingTransportUsb,
     AirbridgeTypingTransportBle,
 } AirbridgeTypingTransport;
@@ -76,6 +77,7 @@ typedef struct {
     uint16_t len;
     bool to_ble;
     InputKey key;
+    InputType input_type;
 } BridgeEvent;
 
 typedef struct {
@@ -101,6 +103,10 @@ typedef struct {
     bool usb_configured;
     bool ble_profile_installed;
     bool ble_identity_warning;
+    /* Last HIDS-advertising state actually commanded through app_set_hids_adv;
+     * makes the setter idempotent. memset-zero matches gap_init's
+     * advertise_hids=false, so the startup OFF latch is a correct no-op. */
+    bool hids_adv_active;
     bool stream_open;
     bool stream_header_pending;
     uint32_t stream_total_len;
@@ -145,16 +151,35 @@ static uint16_t ble_raw_serial_callback(const uint8_t* data, uint16_t len, void*
 static void app_ble_status_changed_callback(BtStatus status, void* context);
 
 static void app_set_hids_adv(AirbridgeApp* app, bool enable) {
+    /* Idempotent: every state change enqueues a GAP advertising refresh, and
+     * the GAP thread holds state_mutex across the whole refresh (several
+     * synchronous HCI round-trips to core2 per gap_advertise_start). Every
+     * redundant toggle therefore costs the main loop a blocked mutex acquire
+     * inside app_service_input — rapid carousel laps chained enough of them
+     * (prompt enter/leave plus the redundant OK/abort/BACK/teardown calls) to
+     * wedge input processing, long BACK included, behind advertising churn.
+     * hids_adv_active is latched only when the HAL is actually commanded, so
+     * it always mirrors gap->advertise_hids and the guard never eats a genuine
+     * transition. */
+    if(enable == app->hids_adv_active) return;
     /* Mid-link the GAP stops advertising and the typing-end OFF re-latches
      * name-only before adv could air again, so an ON swap while connected is
      * pointless. OFF is never pointless: gap_set_adv_hids latches under the GAP
      * mutex in every state and applies at the next adv start, pre-staging
      * name-only advertising for when the link drops (bt_disconnect does not wait
      * for the disconnection-complete event, so ble_connected is still true right
-     * after it — a guarded OFF there would leak HIDS into the Waiting adv). */
+     * after it — a guarded OFF there would leak HIDS into the Waiting adv). The
+     * idempotency guard preserves that: tracked state is true only when HIDS
+     * adv was really commanded, so a genuine OFF always reaches the latch. */
     if(enable && app->ble_connected) return;
     furi_hal_bt_set_adv_hids(enable);
-    furi_hal_bt_start_advertising();
+    /* start_advertising on the ON path only: OFF either refreshes live
+     * advertising (set_adv_hids above) or pre-stages the latch for the
+     * disconnect callback / Waiting pump, which restart adv themselves. */
+    if(enable) {
+        furi_hal_bt_start_advertising();
+    }
+    app->hids_adv_active = enable;
 }
 
 static void app_show_error(AirbridgeApp* app, const char* message) {
@@ -187,8 +212,8 @@ static bool app_ble_kb_report_with_retry(AirbridgeApp* app, uint8_t* report) {
             return false;
         }
         /* Re-check immediately before the send: a report from an aborted
-         * generation must never reach the host — queued BACK -> DOWN -> OK can
-         * start a NEW typing session that reuses AirbridgeScreenTyping. */
+         * generation must never reach the host — queued BACK -> RIGHT -> OK
+         * can start a NEW typing session that reuses AirbridgeScreenTyping. */
         if(app->screen != AirbridgeScreenTyping || generation != app->typing_generation) {
             return false;
         }
@@ -975,18 +1000,6 @@ static void draw_identity(Canvas* canvas, AirbridgeApp* app, uint8_t y) {
     canvas_draw_str(canvas, 0, y, line);
 }
 
-static void draw_up_arrow(Canvas* canvas, uint8_t x, uint8_t y) {
-    canvas_draw_line(canvas, x + 3, y, x, y + 3);
-    canvas_draw_line(canvas, x + 3, y, x + 6, y + 3);
-    canvas_draw_line(canvas, x + 3, y, x + 3, y + 5);
-}
-
-static void draw_down_arrow(Canvas* canvas, uint8_t x, uint8_t y) {
-    canvas_draw_line(canvas, x + 3, y, x + 3, y + 5);
-    canvas_draw_line(canvas, x, y + 2, x + 3, y + 5);
-    canvas_draw_line(canvas, x + 6, y + 2, x + 3, y + 5);
-}
-
 static void render_bridge(Canvas* canvas, AirbridgeApp* app) {
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 0, 10, "Pocket AirBridge");
@@ -1015,17 +1028,15 @@ static void render_bridge(Canvas* canvas, AirbridgeApp* app) {
     canvas_draw_str_aligned(canvas, 64, 35, AlignLeft, AlignTop, line);
     snprintf(line, sizeof(line), "%lu", tx_errors);
     canvas_draw_str_aligned(canvas, 96, 35, AlignLeft, AlignTop, line);
-
-    draw_up_arrow(canvas, 0, 47);
-    canvas_draw_str(canvas, 9, 53, "USB deploy");
-    draw_down_arrow(canvas, 64, 47);
-    canvas_draw_str(canvas, 73, 53, "BLE deploy");
-    canvas_draw_str(canvas, 0, 63, "BACK: exit");
 }
 
 static void render_deploy_prompt(Canvas* canvas, AirbridgeApp* app) {
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 0, 10, "Deploy app");
+    canvas_draw_str(
+        canvas,
+        0,
+        10,
+        app->typing_transport == AirbridgeTypingTransportUsb ? "USB Deploy" : "BLE Deploy");
     canvas_set_font(canvas, FontSecondary);
     draw_identity(canvas, app, 19);
     if(app->typing_transport == AirbridgeTypingTransportUsb) {
@@ -1035,13 +1046,6 @@ static void render_deploy_prompt(Canvas* canvas, AirbridgeApp* app) {
         canvas_draw_str(canvas, 0, 31, "Pair \"HP 725 K+M\" in BT");
         canvas_draw_str(canvas, 0, 42, "settings, then press OK");
     }
-    canvas_draw_str(
-        canvas,
-        0,
-        53,
-        app->typing_transport == AirbridgeTypingTransportUsb ? "OK types via USB" :
-                                                               "OK types via BLE");
-    canvas_draw_str(canvas, 0, 63, "BACK: Bridge");
 }
 
 static void draw_progress_bar(Canvas* canvas, uint8_t y, uint32_t pos, uint32_t total) {
@@ -1168,19 +1172,22 @@ static void render_callback(Canvas* canvas, void* context) {
 
 static void input_callback(InputEvent* input_event, void* context) {
     AirbridgeApp* app = context;
-    bool is_back_press = (input_event->key == InputKeyBack) &&
-                         (input_event->type == InputTypePress);
+    /* Back accepts Press (short-BACK semantics) and Long (exit from any
+     * screen); a held BACK enqueues both, the Press landing first. */
+    bool is_back = (input_event->key == InputKeyBack) &&
+                   (input_event->type == InputTypePress || input_event->type == InputTypeLong);
     bool is_short_non_back = (input_event->key != InputKeyBack) &&
                              (input_event->type == InputTypeShort);
-    if(!is_back_press && !is_short_non_back) return;
+    if(!is_back && !is_short_non_back) return;
 
     BridgeEvent be = {
         .type = EVENT_TYPE_INPUT,
         .tick = furi_get_tick(),
         .sequence = app->next_input_sequence++,
         .key = input_event->key,
+        .input_type = input_event->type,
     };
-    if(is_back_press) {
+    if(is_back) {
         FURI_LOG_D(TAG, "BACK enqueued %lu", furi_get_tick());
         if(furi_message_queue_put(app->back_queue, &be, 0) != FuriStatusOk) {
             /* BACK is never dropped: a full back_queue already holds pending
@@ -1193,22 +1200,65 @@ static void input_callback(InputEvent* input_event, void* context) {
     }
 }
 
-static void app_handle_input(AirbridgeApp* app, InputKey key, bool* running) {
+/* The relay loop runs off its own event queue independently of app->screen,
+ * so carousel switches never interrupt background USB<->BLE traffic. */
+static const struct {
+    AirbridgeScreen screen;
+    AirbridgeTypingTransport transport;
+} app_carousel_states[] = {
+    {AirbridgeScreenBridge, AirbridgeTypingTransportNone},
+    {AirbridgeScreenDeployPrompt, AirbridgeTypingTransportUsb},
+    {AirbridgeScreenDeployPrompt, AirbridgeTypingTransportBle},
+};
+
+static void app_carousel_next(AirbridgeApp* app, int dir) {
+    int current = 0;
+    if(app->screen == AirbridgeScreenDeployPrompt) {
+        current = (app->typing_transport == AirbridgeTypingTransportBle) ? 2 : 1;
+    }
+    const int count = (int)COUNT_OF(app_carousel_states);
+    const int next = (current + dir + count) % count;
+    const AirbridgeScreen next_screen = app_carousel_states[next].screen;
+    const AirbridgeTypingTransport next_transport = app_carousel_states[next].transport;
+
+    if(next_transport == AirbridgeTypingTransportUsb &&
+       !furi_hal_usb_airbridge_profile_has_keyboard(app->profile_index)) {
+        /* A Vendor-only USB profile cannot type; the USB deploy prompt is unreachable for this profile. */
+        app_show_error(app, "Set USB to Kbd+Vendor");
+        return;
+    }
+
+    const bool leaving_ble_prompt = (app->screen == AirbridgeScreenDeployPrompt) &&
+                                    (app->typing_transport == AirbridgeTypingTransportBle);
+    const bool entering_ble_prompt = (next_screen == AirbridgeScreenDeployPrompt) &&
+                                     (next_transport == AirbridgeTypingTransportBle);
+    if(entering_ble_prompt) {
+        app_set_hids_adv(app, true);
+    } else if(leaving_ble_prompt) {
+        app_set_hids_adv(app, false);
+    }
+
+    app->screen = next_screen;
+    app->typing_transport = next_transport;
+}
+
+static void app_handle_input(AirbridgeApp* app, InputKey key, InputType type, bool* running) {
+    /* Long BACK exits from any screen. A held BACK enqueues its Press first,
+     * so the screen's short-BACK semantics (prompt -> Bridge, typing -> abort)
+     * run on the way out — harmless. */
+    if(key == InputKeyBack && type == InputTypeLong) {
+        *running = false;
+        return;
+    }
+
     if(app->screen == AirbridgeScreenBridge) {
-        if(key == InputKeyBack) {
-            *running = false;
-        } else if(key == InputKeyUp) {
-            if(!furi_hal_usb_airbridge_profile_has_keyboard(app->profile_index)) {
-                app_show_error(app, "Set USB to Kbd+Vendor");
-            } else {
-                app->typing_transport = AirbridgeTypingTransportUsb;
-                app->screen = AirbridgeScreenDeployPrompt;
-            }
-        } else if(key == InputKeyDown) {
-            app->typing_transport = AirbridgeTypingTransportBle;
-            app_set_hids_adv(app, true);
-            app->screen = AirbridgeScreenDeployPrompt;
+        if(key == InputKeyLeft) {
+            app_carousel_next(app, -1);
+        } else if(key == InputKeyRight) {
+            app_carousel_next(app, +1);
         }
+        /* Short BACK is a no-op on Bridge so carousel browsing can never
+         * exit by accident. */
         return;
     }
 
@@ -1217,9 +1267,14 @@ static void app_handle_input(AirbridgeApp* app, InputKey key, bool* running) {
             if(app->typing_transport == AirbridgeTypingTransportBle) {
                 app_set_hids_adv(app, false);
             }
+            app->typing_transport = AirbridgeTypingTransportNone;
             app->screen = AirbridgeScreenBridge;
         } else if(key == InputKeyOk) {
             app_start_typing(app, app->typing_transport);
+        } else if(key == InputKeyLeft) {
+            app_carousel_next(app, -1);
+        } else if(key == InputKeyRight) {
+            app_carousel_next(app, +1);
         }
         return;
     }
@@ -1275,13 +1330,14 @@ static void app_service_input(AirbridgeApp* app) {
                           (app->back_head.tick == app->input_head.tick &&
                            app->back_head.sequence < app->input_head.sequence));
         InputKey key = take_back ? app->back_head.key : app->input_head.key;
+        InputType input_type = take_back ? app->back_head.input_type : app->input_head.input_type;
         if(take_back) {
             app->have_back_head = false;
         } else {
             app->have_input_head = false;
         }
 
-        app_handle_input(app, key, &app->running);
+        app_handle_input(app, key, input_type, &app->running);
         if(take_back) {
             FURI_LOG_D(TAG, "BACK handled %lu", furi_get_tick());
         }
