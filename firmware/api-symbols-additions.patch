@@ -1,11 +1,11 @@
 diff --git a/targets/f7/api_symbols.csv b/targets/f7/api_symbols.csv
-index 2bb63b88..0442680d 100644
+index 2bb63b88..eb1201cb 100644
 --- a/targets/f7/api_symbols.csv
 +++ b/targets/f7/api_symbols.csv
 @@ -1,5 +1,5 @@
  entry,status,name,type,params
 -Version,+,87.1,,
-+Version,+,90.1,,
++Version,+,87.4,,
  Header,+,applications/drivers/subghz/cc1101_ext/cc1101_ext_interconnect.h,,
  Header,+,applications/services/bt/bt_service/bt.h,,
  Header,+,applications/services/bt/bt_service/bt_keys_storage.h,,

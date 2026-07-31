@@ -1,5 +1,5 @@
 diff --git a/applications/services/bt/bt_service/bt.c b/applications/services/bt/bt_service/bt.c
-index 7554d87e..83e8b7cd 100644
+index 7554d87e..0b1e7717 100644
 --- a/applications/services/bt/bt_service/bt.c
 +++ b/applications/services/bt/bt_service/bt.c
 @@ -8,6 +8,9 @@
@@ -12,7 +12,7 @@ index 7554d87e..83e8b7cd 100644
  
  #define TAG "BtSrv"
  
-@@ -17,6 +20,30 @@
+@@ -17,6 +20,96 @@
  
  #define ICON_SPACER 2
  
@@ -26,44 +26,129 @@ index 7554d87e..83e8b7cd 100644
 +           furi_hal_bt_check_profile_type(profile, ble_profile_airbridge);
 +}
 +
++/* Publish a new current_profile and refresh the cached type flags.
++ * Always called with bt->current_profile_mutex held, only from the BtSrv thread. */
++static void bt_publish_current_profile(Bt* bt, FuriHalBleProfileBase* profile) {
++    bt->current_profile = profile;
++    bt->current_profile_is_serial = furi_hal_bt_check_profile_type(profile, ble_profile_serial);
++    bt->current_profile_is_airbridge = bt_profile_is_airbridge(profile);
++}
++
++/* Reader-reference protocol for blocking current_profile users.
++ *
++ * Invariant: current_profile_mutex is only ever held for pointer/counter
++ * manipulation (microseconds) - never across hci_send_req/aci/event waits.
++ * hci_send_req blocks on hci_sem, which is released only by the BleEventWorker
++ * thread; that thread takes the mutex (briefly) in bt_on_gap_event_callback,
++ * so holding the mutex across an aci call is a circular wait (confirmed
++ * hardware wedge). A reader reference instead keeps the profile and its
++ * serial service alive across the blocking call: the writer publishes NULL
++ * first (so no new readers can start), waits for quiescence, and only then
++ * lets furi_hal_bt_change_app free the old profile. */
++static FuriHalBleProfileBase* bt_current_profile_acquire(Bt* bt) {
++    furi_mutex_acquire(bt->current_profile_mutex, FuriWaitForever);
++    FuriHalBleProfileBase* profile = bt->current_profile;
++    if(profile) {
++        bt->current_profile_readers++;
++    }
++    furi_mutex_release(bt->current_profile_mutex);
++    return profile;
++}
++
++static void bt_current_profile_release(Bt* bt) {
++    furi_mutex_acquire(bt->current_profile_mutex, FuriWaitForever);
++    furi_assert(bt->current_profile_readers > 0);
++    bt->current_profile_readers--;
++    furi_mutex_release(bt->current_profile_mutex);
++}
++
++/* Writer-side drain: called AFTER publishing NULL (no new readers can start)
++ * and BEFORE furi_hal_bt_change_app frees the old profile. Polls the reader
++ * counter until it reaches zero. The bound is the longest reader-critical
++ * section, which may include blocking aci_* calls, FuriWaitForever message
++ * queue puts, and the PIN-verify modal dialog (bt_on_gap_event_callback holds
++ * its ref across all of these). The mutex is held only for the pointer/counter
++ * snapshot (microseconds) and released before furi_delay_ms(1). */
++static void bt_current_profile_wait_quiescent(Bt* bt) {
++    while(true) {
++        furi_mutex_acquire(bt->current_profile_mutex, FuriWaitForever);
++        uint32_t readers = bt->current_profile_readers;
++        furi_mutex_release(bt->current_profile_mutex);
++        if(readers == 0) {
++            break;
++        }
++        furi_delay_ms(1);
++    }
++}
++
 +void bt_set_raw_serial_callback(BtRawSerialCallback cb, void* ctx) {
 +    bt_raw_serial_cb = cb;
 +    bt_raw_serial_ctx = ctx;
 +}
 +
 +bool bt_serial_tx(const uint8_t* data, uint16_t len) {
-+    if(!bt_instance || !bt_instance->current_profile) return false;
-+    if(bt_profile_is_airbridge(bt_instance->current_profile)) {
-+        BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
-+        return serial_svc && ble_svc_airbridge_serial_update_tx(serial_svc, (uint8_t*)data, len);
++    if(!bt_instance) return false;
++
++    Bt* bt = bt_instance;
++    bool ret = false;
++    /* Reader ref, never the mutex, across the blocking aci_* TX call; the
++     * snapshot type check is a pure pointer comparison. */
++    FuriHalBleProfileBase* profile = bt_current_profile_acquire(bt);
++    if(profile) {
++        if(bt_profile_is_airbridge(profile)) {
++            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
++            ret = serial_svc && ble_svc_airbridge_serial_update_tx(serial_svc, (uint8_t*)data, len);
++        } else {
++            ret = ble_profile_serial_tx(profile, (uint8_t*)data, len);
++        }
++        bt_current_profile_release(bt);
 +    }
-+    return ble_profile_serial_tx(bt_instance->current_profile, (uint8_t*)data, len);
++    return ret;
 +}
 +
  static void bt_draw_statusbar_callback(Canvas* canvas, void* context) {
      furi_assert(context);
  
-@@ -191,6 +218,13 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
+@@ -150,9 +243,13 @@ static void bt_battery_level_changed_callback(const void* _event, void* context)
+ 
+ Bt* bt_alloc(void) {
+     Bt* bt = malloc(sizeof(Bt));
++    bt->current_profile_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+     // Init default maximum packet size
+     bt->max_packet_size = BLE_PROFILE_SERIAL_PACKET_SIZE_MAX;
+     bt->current_profile = NULL;
++    bt->current_profile_readers = 0;
++    bt->current_profile_is_serial = false;
++    bt->current_profile_is_airbridge = false;
+     // Keys storage
+     bt->keys_storage = bt_keys_storage_alloc(BT_KEYS_STORAGE_PATH);
+     // Alloc queue
+@@ -190,7 +287,19 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
+     Bt* bt = context;
      uint16_t ret = 0;
  
++    /* The DataReceived path runs with the serial service's buff_size_mtx held,
++     * so this callback must NEVER acquire current_profile_mutex (the only
++     * allowed lock order is current_profile_mutex -> buff_size_mtx). It reads
++     * the cached type flags instead; a momentarily stale flag during a profile
++     * change is benign because the BLE link is being torn down in that window. */
      if(event.event == SerialServiceEventTypeDataReceived) {
 +        if(bt_raw_serial_cb) {
 +            ret = bt_raw_serial_cb(event.data.buffer, event.data.size, bt_raw_serial_ctx);
 +            return ret;
 +        }
-+        if(bt_profile_is_airbridge(bt->current_profile)) {
++        if(bt->current_profile_is_airbridge) {
 +            return ret;
 +        }
          size_t bytes_processed =
              rpc_session_feed(bt->rpc_session, event.data.buffer, event.data.size, 1000);
          if(bytes_processed != event.data.size) {
-@@ -199,16 +233,26 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
+@@ -199,16 +308,25 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
          }
          ret = rpc_session_get_available_size(bt->rpc_session);
      } else if(event.event == SerialServiceEventTypeDataSent) {
 -        furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
-+        bool current_profile_is_airbridge = bt_profile_is_airbridge(bt->current_profile);
-+        if(current_profile_is_airbridge && bt_raw_serial_cb) {
++        if(bt->current_profile_is_airbridge && bt_raw_serial_cb) {
 +            ret = bt_raw_serial_cb(NULL, 0, bt_raw_serial_ctx);
 +        } else {
 +            furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
@@ -77,7 +162,7 @@ index 7554d87e..83e8b7cd 100644
 -        };
 -        furi_check(
 -            furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
-+        if(bt_profile_is_airbridge(bt->current_profile)) {
++        if(bt->current_profile_is_airbridge) {
 +            FURI_LOG_W(TAG, "Ignoring reset request for AirBridge profile");
 +        } else {
 +            FURI_LOG_I(TAG, "BLE restart request received");
@@ -93,15 +178,85 @@ index 7554d87e..83e8b7cd 100644
      }
      return ret;
  }
-@@ -260,6 +304,7 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+@@ -226,13 +344,24 @@ static void bt_rpc_send_bytes_callback(void* context, uint8_t* bytes, size_t byt
+     size_t bytes_sent = 0;
+     while(bytes_sent < bytes_len) {
+         size_t bytes_remain = bytes_len - bytes_sent;
+-        if(bytes_remain > bt->max_packet_size) {
+-            ble_profile_serial_tx(bt->current_profile, &bytes[bytes_sent], bt->max_packet_size);
+-            bytes_sent += bt->max_packet_size;
+-        } else {
+-            ble_profile_serial_tx(bt->current_profile, &bytes[bytes_sent], bytes_remain);
+-            bytes_sent += bytes_remain;
++        size_t bytes_to_send =
++            bytes_remain > bt->max_packet_size ? bt->max_packet_size : bytes_remain;
++        /* The serial profile may be replaced mid-send; re-validate each chunk.
++         * Reader ref only: the mutex is never held across ble_profile_serial_tx
++         * (blocking hci_send_req) or the furi_event_flag_wait below. */
++        FuriHalBleProfileBase* profile = bt_current_profile_acquire(bt);
++        bool profile_is_serial = furi_hal_bt_check_profile_type(profile, ble_profile_serial);
++        if(profile_is_serial) {
++            ble_profile_serial_tx(profile, &bytes[bytes_sent], bytes_to_send);
+         }
++        if(profile) {
++            bt_current_profile_release(bt);
++        }
++        if(!profile_is_serial) {
++            FURI_LOG_W(TAG, "Aborting RPC send: serial profile is gone");
++            return;
++        }
++        bytes_sent += bytes_to_send;
+         // We want BT_RPC_EVENT_DISCONNECTED to stick, so don't clear
+         uint32_t event_flag = furi_event_flag_wait(
+             bt->rpc_event, BT_RPC_EVENT_ALL, FuriFlagWaitAny | FuriFlagNoClear, FuriWaitForever);
+@@ -248,8 +377,24 @@ static void bt_rpc_send_bytes_callback(void* context, uint8_t* bytes, size_t byt
+ static void bt_serial_buffer_is_empty_callback(void* context) {
+     furi_assert(context);
+     Bt* bt = context;
+-    furi_check(furi_hal_bt_check_profile_type(bt->current_profile, ble_profile_serial));
+-    ble_profile_serial_notify_buffer_is_empty(bt->current_profile);
++
++    /* An in-flight callback can outlive rpc_session_close: the serial profile may
++     * already be gone, so guard instead of furi_check. Reader ref only - the
++     * mutex is never held across the notify call. */
++    FuriHalBleProfileBase* profile = bt_current_profile_acquire(bt);
++    bool profile_is_serial = furi_hal_bt_check_profile_type(profile, ble_profile_serial);
++    if(profile_is_serial) {
++        ble_profile_serial_notify_buffer_is_empty(profile);
++    }
++    if(profile) {
++        bt_current_profile_release(bt);
++    }
++
++    if(!profile_is_serial) {
++        FURI_LOG_W(TAG, "Serial profile is gone, skipping buffer-empty notify");
++        // Unblock any RPC sender waiting for BT_RPC_EVENT_BUFF_SENT
++        furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
++    }
+ }
+ 
+ // Called from GAP thread
+@@ -258,8 +403,18 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+     Bt* bt = context;
+     bool ret = false;
      bool do_update_status = false;
++    /* Reader ref held from entry to the single exit: the writer publishes NULL
++     * (no new readers can start) and waits for readers to drain before
++     * furi_hal_bt_change_app frees the old profile, so the snapshot stays alive
++     * for the whole callback - including the set_event_callback/set_rpc_active
++     * calls below - while the mutex itself is only touched for microseconds
++     * inside acquire/release. This callback runs on the BleEventWorker thread
++     * (the thread that releases hci_sem), so it must NEVER block on the mutex.
++     * A profile change in progress is seen as NULL/type-guarded bail paths. */
++    FuriHalBleProfileBase* current_profile = bt_current_profile_acquire(bt);
      bool current_profile_is_serial =
-         furi_hal_bt_check_profile_type(bt->current_profile, ble_profile_serial);
-+    bool current_profile_is_airbridge = bt_profile_is_airbridge(bt->current_profile);
+-        furi_hal_bt_check_profile_type(bt->current_profile, ble_profile_serial);
++        furi_hal_bt_check_profile_type(current_profile, ble_profile_serial);
++    bool current_profile_is_airbridge = bt_profile_is_airbridge(current_profile);
  
      if(event.type == GapEventTypeConnected) {
          // Update status bar
-@@ -268,6 +313,16 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+@@ -268,6 +423,16 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
          // Clear BT_RPC_EVENT_DISCONNECTED because it might be set from previous session
          furi_event_flag_clear(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
  
@@ -118,7 +273,19 @@ index 7554d87e..83e8b7cd 100644
          if(current_profile_is_serial) {
              // Open RPC session
              bt->rpc_session = rpc_session_open(bt->rpc, RpcOwnerBle);
-@@ -295,6 +350,12 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+@@ -278,9 +443,9 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+                     bt->rpc_session, bt_serial_buffer_is_empty_callback);
+                 rpc_session_set_context(bt->rpc_session, bt);
+                 ble_profile_serial_set_event_callback(
+-                    bt->current_profile, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
++                    current_profile, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
+                 ble_profile_serial_set_rpc_active(
+-                    bt->current_profile, FuriHalBtSerialRpcStatusActive);
++                    current_profile, FuriHalBtSerialRpcStatusActive);
+             } else {
+                 FURI_LOG_W(TAG, "RPC is busy, failed to open new session");
+             }
+@@ -295,13 +460,19 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
              furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
          ret = true;
      } else if(event.type == GapEventTypeDisconnected) {
@@ -131,7 +298,149 @@ index 7554d87e..83e8b7cd 100644
          if(current_profile_is_serial && bt->rpc_session) {
              FURI_LOG_I(TAG, "Close RPC connection");
              ble_profile_serial_set_rpc_active(
-@@ -519,6 +580,7 @@ static void bt_init_keys_settings(Bt* bt) {
+-                bt->current_profile, FuriHalBtSerialRpcStatusNotActive);
++                current_profile, FuriHalBtSerialRpcStatusNotActive);
+             furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
+             rpc_session_close(bt->rpc_session);
+-            ble_profile_serial_set_event_callback(bt->current_profile, 0, NULL, NULL);
++            ble_profile_serial_set_event_callback(current_profile, 0, NULL, NULL);
+             bt->rpc_session = NULL;
+         }
+         ret = true;
+@@ -339,6 +510,9 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+         furi_check(
+             furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
+     }
++    if(current_profile) {
++        bt_current_profile_release(bt);
++    }
+     return ret;
+ }
+ 
+@@ -382,31 +556,58 @@ static void bt_show_warning(Bt* bt, const char* text) {
+ }
+ 
+ static void bt_close_rpc_connection(Bt* bt) {
+-    if(furi_hal_bt_check_profile_type(bt->current_profile, ble_profile_serial) &&
+-       bt->rpc_session) {
++    /* Runs only on the BtSrv thread (the sole current_profile writer), called
++     * with no mutex held. The reader ref keeps the profile alive across
++     * rpc_session_close (an in-flight RPC callback may still be using it);
++     * it is released before returning. */
++    FuriHalBleProfileBase* profile = bt_current_profile_acquire(bt);
++    bool profile_is_serial = furi_hal_bt_check_profile_type(profile, ble_profile_serial);
++
++    if(profile_is_serial && bt->rpc_session) {
+         FURI_LOG_I(TAG, "Close RPC connection");
+         furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
+         rpc_session_close(bt->rpc_session);
+-        ble_profile_serial_set_event_callback(bt->current_profile, 0, NULL, NULL);
++        ble_profile_serial_set_event_callback(profile, 0, NULL, NULL);
+         bt->rpc_session = NULL;
+     }
++    if(profile) {
++        bt_current_profile_release(bt);
++    }
+ }
+ 
+ static void bt_change_profile(Bt* bt, BtMessage* message) {
+     if(furi_hal_bt_is_gatt_gap_supported()) {
+         bt_settings_load(&bt->bt_settings);
+ 
++        // Close RPC first, with no profile mutex held (see bt_close_rpc_connection)
+         bt_close_rpc_connection(bt);
+ 
+         bt_keys_storage_load(bt->keys_storage);
+ 
+-        bt->current_profile = furi_hal_bt_change_app(
++        /* Publish NULL before reinit: post-publish readers see the
++         * NULL/type-guarded bail path and start no new reader refs, so
++         * wait_quiescent returns as soon as in-flight readers drain; only then
++         * may furi_hal_bt_change_app free the old profile. Never hold the
++         * mutex across the wait or furi_hal_bt_change_app: its GAP stop path
++         * waits for the GAP thread, which invokes bt_on_gap_event_callback. */
++        furi_mutex_acquire(bt->current_profile_mutex, FuriWaitForever);
++        bt_publish_current_profile(bt, NULL);
++        furi_mutex_release(bt->current_profile_mutex);
++
++        bt_current_profile_wait_quiescent(bt);
++
++        FuriHalBleProfileBase* new_profile = furi_hal_bt_change_app(
+             message->data.profile.template,
+             message->data.profile.params,
+             bt_keys_storage_get_root_keys(bt->keys_storage),
+             bt_on_gap_event_callback,
+             bt);
+-        if(bt->current_profile) {
++
++        furi_mutex_acquire(bt->current_profile_mutex, FuriWaitForever);
++        bt_publish_current_profile(bt, new_profile);
++        furi_mutex_release(bt->current_profile_mutex);
++
++        if(new_profile) {
+             FURI_LOG_I(TAG, "Bt App started");
+             if(bt->bt_settings.enabled) {
+                 furi_hal_bt_start_advertising();
+@@ -416,10 +617,10 @@ static void bt_change_profile(Bt* bt, BtMessage* message) {
+             FURI_LOG_E(TAG, "Failed to start Bt App");
+         }
+         if(message->profile_instance) {
+-            *message->profile_instance = bt->current_profile;
++            *message->profile_instance = new_profile;
+         }
+         if(message->result) {
+-            *message->result = bt->current_profile != NULL;
++            *message->result = new_profile != NULL;
+         }
+ 
+     } else {
+@@ -458,22 +659,41 @@ static void bt_load_keys(Bt* bt) {
+         bt_close_rpc_connection(bt);
+         bt_keys_storage_load(bt->keys_storage);
+ 
+-        bt->current_profile = NULL;
++        /* Reachable at runtime via BtMessageTypeReloadKeysSettings (SD card
++         * mount event), so the NULL publish is mutex-protected like any write. */
++        furi_mutex_acquire(bt->current_profile_mutex, FuriWaitForever);
++        bt_publish_current_profile(bt, NULL);
++        furi_mutex_release(bt->current_profile_mutex);
+     } else {
+         FURI_LOG_I(TAG, "Keys unchanged");
+     }
+ }
+ 
+ static void bt_start_application(Bt* bt) {
+-    if(!bt->current_profile) {
+-        bt->current_profile = furi_hal_bt_change_app(
++    furi_mutex_acquire(bt->current_profile_mutex, FuriWaitForever);
++    bool profile_start_needed = bt->current_profile == NULL;
++    furi_mutex_release(bt->current_profile_mutex);
++
++    if(profile_start_needed) {
++        /* Only the BtSrv thread writes current_profile, so the check above
++         * cannot go stale. The pointer is already NULL (new readers bail and
++         * start no new refs), so drain any pre-NULL reader refs before
++         * furi_hal_bt_change_app frees the old profile. The new profile is
++         * published under the mutex. */
++        bt_current_profile_wait_quiescent(bt);
++
++        FuriHalBleProfileBase* profile = furi_hal_bt_change_app(
+             ble_profile_serial,
+             NULL,
+             bt_keys_storage_get_root_keys(bt->keys_storage),
+             bt_on_gap_event_callback,
+             bt);
+ 
+-        if(!bt->current_profile) {
++        furi_mutex_acquire(bt->current_profile_mutex, FuriWaitForever);
++        bt_publish_current_profile(bt, profile);
++        furi_mutex_release(bt->current_profile_mutex);
++
++        if(!profile) {
+             FURI_LOG_E(TAG, "BLE App start failed");
+             bt->status = BtStatusUnavailable;
+         }
+@@ -519,6 +739,7 @@ static void bt_init_keys_settings(Bt* bt) {
  int32_t bt_srv(void* p) {
      UNUSED(p);
      Bt* bt = bt_alloc();
@@ -180,8 +489,29 @@ index 27092254..ac94b7b7 100644
  #ifdef __cplusplus
  }
  #endif
+diff --git a/applications/services/bt/bt_service/bt_api.c b/applications/services/bt/bt_service/bt_api.c
+index 39b9a099..29d55524 100644
+--- a/applications/services/bt/bt_service/bt_api.c
++++ b/applications/services/bt/bt_service/bt_api.c
+@@ -22,13 +22,13 @@ FuriHalBleProfileBase* bt_profile_start(
+     // Wait for unlock
+     api_lock_wait_unlock_and_free(message.lock);
+ 
+-    bt->current_profile = profile_instance;
++    // bt->current_profile is written only by the BtSrv thread (bt_change_profile);
++    // the instance reaches the caller via BtMessage.profile_instance.
+     return profile_instance;
+ }
+ 
+ bool bt_profile_restore_default(Bt* bt) {
+-    bt->current_profile = bt_profile_start(bt, ble_profile_serial, NULL);
+-    return bt->current_profile != NULL;
++    return bt_profile_start(bt, ble_profile_serial, NULL) != NULL;
+ }
+ 
+ void bt_disconnect(Bt* bt) {
 diff --git a/applications/services/bt/bt_service/bt_i.h b/applications/services/bt/bt_service/bt_i.h
-index 192da001..18806c01 100644
+index 192da001..20f1a30f 100644
 --- a/applications/services/bt/bt_service/bt_i.h
 +++ b/applications/services/bt/bt_service/bt_i.h
 @@ -64,6 +64,8 @@ typedef struct {
@@ -193,6 +523,58 @@ index 192da001..18806c01 100644
  struct Bt {
      uint8_t* bt_keys_addr_start;
      uint16_t bt_keys_size;
+@@ -73,6 +75,25 @@ struct Bt {
+     BtStatus status;
+     bool beacon_active;
+     FuriHalBleProfileBase* current_profile;
++    /* Deadlock-freedom invariant: this mutex is only ever held for
++     * pointer/counter manipulation (microseconds) - NEVER across an
++     * aci/hci call (hci_send_req blocks on hci_sem, which is released only
++     * by the BleEventWorker thread, and that thread takes this mutex briefly
++     * in bt_on_gap_event_callback - holding it across an aci call is a
++     * circular wait), an event-flag wait, rpc_session_close, or a delay.
++     * Blocking profile users hold a reader reference instead; the writer
++     * publishes NULL (so no new readers can start), waits for quiescence, and
++     * only then lets furi_hal_bt_change_app free the old profile. */
++    FuriMutex* current_profile_mutex;
++    /* In-flight reader references keeping current_profile (and its serial
++     * service) alive across blocking calls; touched only under
++     * current_profile_mutex. */
++    uint32_t current_profile_readers;
++    /* Cached profile-type flags, written only under current_profile_mutex.
++     * Read without the mutex by bt_serial_event_callback, which runs under a
++     * serial service's buff_size_mtx and therefore must never take it. */
++    bool current_profile_is_serial;
++    bool current_profile_is_airbridge;
+     FuriMessageQueue* message_queue;
+     NotificationApp* notification;
+     Gui* gui;
+diff --git a/applications/services/gui/gui.c b/applications/services/gui/gui.c
+index 24ea57bc..651bd4b7 100644
+--- a/applications/services/gui/gui.c
++++ b/applications/services/gui/gui.c
+@@ -48,7 +48,7 @@ void gui_input_events_callback(const void* value, void* ctx) {
+ 
+     Gui* gui = ctx;
+ 
+-    furi_message_queue_put(gui->input_queue, value, FuriWaitForever);
++    furi_message_queue_put(gui->input_queue, value, 0);
+     furi_thread_flags_set(gui->thread_id, GUI_THREAD_FLAG_INPUT);
+ }
+ 
+diff --git a/applications/services/input/input.c b/applications/services/input/input.c
+index d7e9f3d3..19d5646b 100644
+--- a/applications/services/input/input.c
++++ b/applications/services/input/input.c
+@@ -141,8 +141,6 @@ int32_t input_srv(void* p) {
+                 } else {
+                     event.sequence_counter = pin_states[i].counter;
+                     furi_timer_stop(pin_states[i].press_timer);
+-                    while(furi_timer_is_running(pin_states[i].press_timer))
+-                        furi_delay_tick(1);
+                     if(pin_states[i].press_counter < INPUT_LONG_PRESS_COUNTS) {
+                         event.type = InputTypeShort;
+                         furi_pubsub_publish(event_pubsub, &event);
 diff --git a/lib/ble_profile/SConscript b/lib/ble_profile/SConscript
 index 3b20d38f..0b4fca68 100644
 --- a/lib/ble_profile/SConscript

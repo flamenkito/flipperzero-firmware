@@ -1,11 +1,25 @@
 # Pocket AirBridge — Firmware Files
 
-**Regenerated 2026-07-24:** This bundle captures the firmware tree through
-`8ba53421` (`fix: block BLE identity downgrade via RPC-status char; correct
-fallback mfg data to HP`) plus the bonded advertising working-tree changes,
-relative to pristine upstream `dev` base `c9ab2b68`. The bundle advertises the
-AirBridge serial UUID continuously, advertises HIDS only for the BLE Deploy
-prompt and typing window, and enables persistent numeric-comparison bonding.
+**Regenerated 2026-07-31:** This bundle captures the firmware tree through
+`196f67d9` (`fix: init advertise_hids in gap_init, declare gap_set_adv_hids in
+private gap_int.h`) plus uncommitted working-tree stability fixes (commits are
+permission-blocked in this session), relative to pristine upstream `dev` base
+`c9ab2b68`. The bundle advertises the AirBridge serial UUID continuously,
+advertises HIDS only for the BLE Deploy prompt and typing window, and enables
+persistent numeric-comparison bonding. The stability fixes (no protocol or
+behavior change):
+
+- `bt_service` `current_profile` lifetime serialization with reader
+  refcounting — the mutex is never held across HCI calls (`bt.c`),
+  caller-thread `current_profile` writes removed (`bt_api.c`), and the
+  `current_profile_readers` field plus invariant comments (`bt_i.h`).
+- Non-blocking GUI input-queue put, `FuriWaitForever` -> `0`
+  (`applications/services/gui/gui.c:51`).
+- Input press-timer spin-loop removed (`applications/services/input/input.c`).
+- FAP input/back queues, abort-aware retry loops, and bounded teardown
+  (`pocket_airbridge/pocket_airbridge.c`, shipped as the directory copy).
+- `targets/f7/api_symbols.csv` at version 87.4 with the AirBridge symbol
+  additions (in `api-symbols-additions.patch`).
 
 This directory contains everything needed to reproduce the Flipper Zero side of
 Pocket AirBridge on a fresh checkout of the official firmware
@@ -15,7 +29,7 @@ Pocket AirBridge on a fresh checkout of the official firmware
 
 | Path | What it is |
 |---|---|
-| `airbridge-firmware.patch` | All firmware changes except `api_symbols.csv`: the USB composite profile, AirBridge BLE profile/services, raw serial routing, GATT capacity/error handling, and bonded windowed advertising fixes. |
+| `airbridge-firmware.patch` | All firmware changes except `api_symbols.csv`: the USB composite profile, AirBridge BLE profile/services, raw serial routing, GATT capacity/error handling, bonded windowed advertising fixes, and the input-path stability fixes (`bt_service` profile serialization with reader refcounting, `gui.c`, `input.c`). |
 | `api-symbols-additions.patch` | The matching `targets/f7/api_symbols.csv` changes, including `ble_profile_airbridge`, its keyboard/mouse/consumer-report exports, and the advertising-window API. |
 | `pocket_airbridge/` | The FAP itself (`application.fam`, `pocket_airbridge.c`, `icon.png`). Copy to `applications_user/pocket_airbridge/` in the firmware tree. |
 

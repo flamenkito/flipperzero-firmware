@@ -70,6 +70,8 @@ typedef enum {
 
 typedef struct {
     uint32_t type;
+    uint32_t tick;
+    uint32_t sequence;
     uint8_t data[HID_VENDOR_PACKET_LEN];
     uint16_t len;
     bool to_ble;
@@ -78,6 +80,14 @@ typedef struct {
 
 typedef struct {
     FuriMessageQueue* event_queue;
+    FuriMessageQueue* input_queue;
+    FuriMessageQueue* back_queue;
+    uint32_t next_input_sequence;
+    bool running;
+    bool have_back_head;
+    BridgeEvent back_head;
+    bool have_input_head;
+    BridgeEvent input_head;
     Storage* storage;
     File* io_file;
     File* stream_file;
@@ -105,7 +115,16 @@ typedef struct {
     bool typing_enter_pending;
     bool typing_enter_done;
     uint32_t typing_next_tick;
-    bool ble_connected;
+    /* Bumped by app_start_typing/app_abort_typing; the BLE retry helper
+     * captures it at entry and refuses to send once it no longer matches. */
+    uint32_t typing_generation;
+    /* Deferred BLE release-all (see app_abort_typing): serviced one direct
+     * attempt per main-loop iteration, never through the retry wrapper. */
+    bool release_all_pending;
+    uint8_t release_all_attempts;
+    /* Written on the BtSrv thread via app_ble_status_changed_callback, read on
+     * the main and GUI threads — volatile so no reader caches a stale value. */
+    volatile bool ble_connected;
     uint32_t ble_connected_since;
     uint32_t ble_waiting_last_pump_tick;
     char error[32];
@@ -116,7 +135,8 @@ static uint32_t chunks_ble_to_usb;
 static uint32_t dropped;
 static uint32_t tx_errors;
 static uint32_t vendor_out_requests;
-static bool usb_connected;
+/* Written by the main loop, read by the GUI render thread. */
+static volatile bool usb_connected;
 static bool usb_config_error;
 static uint32_t last_heartbeat;
 
@@ -154,10 +174,25 @@ static void app_stream_close(AirbridgeApp* app) {
     }
 }
 
-static bool app_ble_kb_report_with_retry(FuriHalBleProfileBase* profile, uint8_t* report) {
+static void app_service_input(AirbridgeApp* app);
+
+static bool app_ble_kb_report_with_retry(AirbridgeApp* app, uint8_t* report) {
+    const uint32_t generation = app->typing_generation;
     uint8_t failures = 0;
     for(uint8_t attempt = 0; attempt < BLE_TYPING_RETRY_MAX; attempt++) {
-        bool error = ble_profile_airbridge_kb_report(profile, report, 8);
+        /* Service input at every retry boundary so a queued BACK aborts the
+         * in-flight keystroke promptly instead of waiting out all retries. */
+        app_service_input(app);
+        if(app->screen != AirbridgeScreenTyping || generation != app->typing_generation) {
+            return false;
+        }
+        /* Re-check immediately before the send: a report from an aborted
+         * generation must never reach the host — queued BACK -> DOWN -> OK can
+         * start a NEW typing session that reuses AirbridgeScreenTyping. */
+        if(app->screen != AirbridgeScreenTyping || generation != app->typing_generation) {
+            return false;
+        }
+        bool error = ble_profile_airbridge_kb_report(app->ble_profile, report, 8);
         if(!error) {
             if(failures > 0) {
                 FURI_LOG_W(TAG, "BLE kb report succeeded after %u retries", failures);
@@ -191,22 +226,28 @@ static void app_ble_status_changed_callback(BtStatus status, void* context) {
 }
 
 static void app_abort_typing(AirbridgeApp* app) {
-    if(app->typing_transport == AirbridgeTypingTransportBle) {
-        app_set_hids_adv(app, false);
-    }
-    if(app->typing_key_down) {
-        if(app->typing_transport == AirbridgeTypingTransportBle) {
-            uint8_t report[8] = {0};
-            if(app->ble_profile) {
-                app_ble_kb_report_with_retry(app->ble_profile, report);
-            }
-        } else {
-            furi_hal_hid_airbridge_kb_release_all();
-        }
-    }
+    /* Invalidate any in-flight retry helper from the aborted session: its next
+     * boundary check sees the generation bump and returns without sending. */
+    app->typing_generation++;
+    const bool key_was_down = app->typing_key_down;
     app->typing_key_down = false;
     app->typing_enter_pending = false;
     app->typing_enter_done = false;
+    if(app->typing_transport == AirbridgeTypingTransportBle) {
+        app_set_hids_adv(app, false);
+        /* Release-all is DEFERRED to the main loop: the old synchronous send
+         * through the retry wrapper could block the abort path for ~5 s under
+         * gatt congestion. The flag is latched here, while the aborted
+         * session's transport is known — the loop services it off ble_profile
+         * alone, never the mutable typing_transport. This function must stay
+         * free of report calls so abort latency never depends on gatt. */
+        if(key_was_down) {
+            app->release_all_pending = true;
+        }
+    } else if(key_was_down) {
+        /* USB release-all stays synchronous: ISR-driven, non-blocking. */
+        furi_hal_hid_airbridge_kb_release_all();
+    }
 }
 
 static uint8_t app_find_profile(const char* label) {
@@ -429,18 +470,26 @@ static void app_restore_ble(AirbridgeApp* app) {
         return;
     }
 
-    /* Disconnect any active BLE connection and wait for the HCI
-     * DISCONNECTION_COMPLETE event to be fully processed BEFORE tearing down
-     * the profile. Without this, the async disconnect event fires into
-     * bt_on_gap_event_callback (bt.c:339-344) AFTER
+    /* Disconnect any active BLE connection and wait for the disconnect to
+     * actually land BEFORE tearing down the profile: the bounded wait below
+     * gives BleEventWorker time to finish processing the disconnect event
+     * (500 ms fallback bound). Without it, the async disconnect event fires
+     * into bt_on_gap_event_callback (bt.c:459-475) AFTER
      * ble_svc_airbridge_serial_stop has freed the active service and cleared
      * active_airbridge_serial_service, hitting furi_check(serial_svc) on NULL
      * and furi_crash()-ing the device (looks like a freeze). Additionally,
      * bt->current_profile is a dangling pointer at that point, making
-     * bt_profile_is_airbridge a use-after-free. Mirrors the stock hid_app exit
-     * (hid.c:232-239): bt_disconnect + 200 ms + bt_profile_restore_default. */
+     * bt_profile_is_airbridge a use-after-free. ble_connected is only a proxy
+     * for the disconnect having landed: the GapEventTypeDisconnected branch
+     * (bt.c:459-475) does not itself fire the status callback — the callback
+     * fires via the subsequent StopAdvertising path (bt.c:480-483 ->
+     * bt.c:771-777) — so if the link dropped while GAP was idle, no status
+     * update fires and the full 500 ms elapses, which is safe because the HCI
+     * event has long been processed by then. Zero wait when already
+     * disconnected: no 200 ms floor. */
     bt_disconnect(app->bt);
-    furi_delay_ms(200);
+    uint32_t start = furi_get_tick();
+    while(app->ble_connected && (furi_get_tick() - start < 500)) furi_delay_ms(10);
 
     if(!bt_profile_restore_default(app->bt)) {
         FURI_LOG_E(TAG, "Failed to restore default BLE profile");
@@ -547,6 +596,15 @@ static bool app_load_bootstrap(AirbridgeApp* app) {
 }
 
 static void app_start_typing(AirbridgeApp* app, AirbridgeTypingTransport transport) {
+    /* HID key reports are absolute state: the new session's first report
+     * overwrites any stale host-side key state, so a leftover deferred
+     * release-all is dead weight — drop it BEFORE anything else. */
+    if(app->release_all_pending) {
+        app->release_all_pending = false;
+        app->release_all_attempts = 0;
+        FURI_LOG_W(TAG, "release-all superseded by new typing session");
+    }
+    app->typing_generation++;
     app->typing_transport = transport;
     if(!app_load_bootstrap(app)) return;
     app->typing_position = 0;
@@ -574,7 +632,7 @@ static bool app_typing_press(AirbridgeApp* app, uint16_t key) {
             0,
             0,
         };
-        return app_ble_kb_report_with_retry(app->ble_profile, report);
+        return app_ble_kb_report_with_retry(app, report);
     }
     return furi_hal_hid_airbridge_kb_press(key);
 }
@@ -583,7 +641,7 @@ static bool app_typing_release(AirbridgeApp* app, uint16_t key) {
     if(app->typing_transport == AirbridgeTypingTransportBle) {
         if(app->ble_profile == NULL) return false;
         uint8_t report[8] = {0};
-        return app_ble_kb_report_with_retry(app->ble_profile, report);
+        return app_ble_kb_report_with_retry(app, report);
     }
     return furi_hal_hid_airbridge_kb_release(key);
 }
@@ -599,7 +657,15 @@ static void app_typing_step(AirbridgeApp* app) {
                                        TYPE_RELEASE_DELAY_MS;
 
     if(app->typing_key_down) {
+        const uint32_t step_generation = app->typing_generation;
         if(!app_typing_release(app, app->typing_key)) {
+            /* A false return caused by user abort or by queued input starting a
+             * NEW generation must neither error nor abort the new session — so
+             * this staleness check runs BEFORE app_abort_typing. */
+            if(app->screen != AirbridgeScreenTyping ||
+               app->typing_generation != step_generation) {
+                return;
+            }
             app_abort_typing(app);
             app_show_error(app, "KEYBOARD SEND ERROR");
             return;
@@ -625,7 +691,14 @@ static void app_typing_step(AirbridgeApp* app) {
             app_show_error(app, "bootstrap.js NOT US ASCII");
             return;
         }
+        const uint32_t step_generation = app->typing_generation;
         if(!app_typing_press(app, key)) {
+            /* Stale-step false return (abort / generation change): no error
+             * screen for the session that superseded us. */
+            if(app->screen != AirbridgeScreenTyping ||
+               app->typing_generation != step_generation) {
+                return;
+            }
             app_show_error(app, "KEYBOARD SEND ERROR");
             return;
         }
@@ -636,7 +709,14 @@ static void app_typing_step(AirbridgeApp* app) {
     }
 
     if(!app->typing_enter_done) {
+        const uint32_t step_generation = app->typing_generation;
         if(!app_typing_press(app, HID_KEYBOARD_RETURN)) {
+            /* Stale-step false return (abort / generation change): no error
+             * screen for the session that superseded us. */
+            if(app->screen != AirbridgeScreenTyping ||
+               app->typing_generation != step_generation) {
+                return;
+            }
             app_show_error(app, "KEYBOARD SEND ERROR");
             return;
         }
@@ -781,6 +861,14 @@ static void app_stream_step_ble(AirbridgeApp* app) {
         return;
     }
     while(!bt_serial_tx(buffer, read)) {
+        /* Keep input alive during the spin so BACK aborts the stream within
+         * one bt_serial_tx bound (~100 ms) instead of after all retries. If
+         * BACK ran app_stream_close, bail WITHOUT touching stream_tx_strikes:
+         * the stream file is already closed and the strike book-keeping
+         * belongs to a session that no longer exists. */
+        app_service_input(app);
+        furi_delay_ms(2);
+        if(app->screen != AirbridgeScreenStreaming) return;
         app->stream_tx_strikes++;
         if(app->stream_tx_strikes >= BLE_STREAM_RETRY_MAX) {
             app_stream_close(app);
@@ -1079,7 +1167,7 @@ static void render_callback(Canvas* canvas, void* context) {
 }
 
 static void input_callback(InputEvent* input_event, void* context) {
-    FuriMessageQueue* queue = context;
+    AirbridgeApp* app = context;
     bool is_back_press = (input_event->key == InputKeyBack) &&
                          (input_event->type == InputTypePress);
     bool is_short_non_back = (input_event->key != InputKeyBack) &&
@@ -1088,9 +1176,19 @@ static void input_callback(InputEvent* input_event, void* context) {
 
     BridgeEvent be = {
         .type = EVENT_TYPE_INPUT,
+        .tick = furi_get_tick(),
+        .sequence = app->next_input_sequence++,
         .key = input_event->key,
     };
-    if(furi_message_queue_put(queue, &be, 0) != FuriStatusOk) {
+    if(is_back_press) {
+        FURI_LOG_D(TAG, "BACK enqueued %lu", furi_get_tick());
+        if(furi_message_queue_put(app->back_queue, &be, 0) != FuriStatusOk) {
+            /* BACK is never dropped: a full back_queue already holds pending
+             * BACK presses with the identical screen-leaving effect, so the new
+             * press coalesces into them without eviction and without dropped++. */
+            FURI_LOG_D(TAG, "BACK coalesced");
+        }
+    } else if(furi_message_queue_put(app->input_queue, &be, 0) != FuriStatusOk) {
         dropped++;
     }
 }
@@ -1154,6 +1252,42 @@ static void app_handle_input(AirbridgeApp* app, InputKey key, bool* running) {
     }
 }
 
+/* Drains both input queues in temporal order: heads are merged by
+ * (tick, sequence) captured at enqueue time — lower tick wins, ties broken by
+ * the monotonic sequence, so same-tick presses keep their press order.
+ * furi_message_queue has no peek, so each queue's head is cached in the app
+ * struct between steps. BACK events ride their own queue, so relay flooding
+ * and non-BACK bursts can never evict them. */
+static void app_service_input(AirbridgeApp* app) {
+    while(true) {
+        if(!app->have_back_head) {
+            app->have_back_head =
+                (furi_message_queue_get(app->back_queue, &app->back_head, 0) == FuriStatusOk);
+        }
+        if(!app->have_input_head) {
+            app->have_input_head =
+                (furi_message_queue_get(app->input_queue, &app->input_head, 0) == FuriStatusOk);
+        }
+        if(!app->have_back_head && !app->have_input_head) return;
+
+        bool take_back = app->have_back_head &&
+                         (!app->have_input_head || (app->back_head.tick < app->input_head.tick) ||
+                          (app->back_head.tick == app->input_head.tick &&
+                           app->back_head.sequence < app->input_head.sequence));
+        InputKey key = take_back ? app->back_head.key : app->input_head.key;
+        if(take_back) {
+            app->have_back_head = false;
+        } else {
+            app->have_input_head = false;
+        }
+
+        app_handle_input(app, key, &app->running);
+        if(take_back) {
+            FURI_LOG_D(TAG, "BACK handled %lu", furi_get_tick());
+        }
+    }
+}
+
 static void app_handle_relay(AirbridgeApp* app, BridgeEvent* be) {
     if((app->screen == AirbridgeScreenWaiting) && (be->len > 0) && (be->data[0] == 0x42)) {
         app_start_stream(app);
@@ -1188,13 +1322,21 @@ int32_t pocket_airbridge_app(void* p) {
     usb_config_error = false;
     last_heartbeat = furi_get_tick();
 
+    /* No NULL checks on the allocs below: OOM is unrecoverable by firmware
+     * design — view_port_alloc/storage_file_alloc deref their malloc before
+     * returning and furi_message_queue_alloc furi_checks internally, so a
+     * failed alloc crashes inside the allocator and caller-side checks would
+     * be dead code. The app-struct malloc above keeps its check (plain malloc
+     * returns NULL instead of crashing). */
     app->event_queue = furi_message_queue_alloc(8, sizeof(BridgeEvent));
+    app->input_queue = furi_message_queue_alloc(4, sizeof(BridgeEvent));
+    app->back_queue = furi_message_queue_alloc(4, sizeof(BridgeEvent));
     app->storage = furi_record_open(RECORD_STORAGE);
     app->io_file = storage_file_alloc(app->storage);
     app->stream_file = storage_file_alloc(app->storage);
     ViewPort* view_port = view_port_alloc();
     view_port_draw_callback_set(view_port, render_callback, app);
-    view_port_input_callback_set(view_port, input_callback, app->event_queue);
+    view_port_input_callback_set(view_port, input_callback, app);
 
     Gui* gui = furi_record_open(RECORD_GUI);
     NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
@@ -1204,8 +1346,10 @@ int32_t pocket_airbridge_app(void* p) {
     app->usb_mode_prev = furi_hal_usb_get_config();
 
     bool startup_apply_pending = true;
-    bool running = true;
-    while(running) {
+    app->running = true;
+    while(app->running) {
+        app_service_input(app);
+
         BridgeEvent be;
         FuriStatus status = furi_message_queue_get(app->event_queue, &be, 10);
         if(status == FuriStatusOk) {
@@ -1213,8 +1357,6 @@ int32_t pocket_airbridge_app(void* p) {
                 app_handle_relay(app, &be);
             } else if(be.type == EVENT_TYPE_USB) {
                 usb_connected = be.to_ble;
-            } else if(be.type == EVENT_TYPE_INPUT) {
-                app_handle_input(app, be.key, &running);
             }
         }
 
@@ -1231,10 +1373,30 @@ int32_t pocket_airbridge_app(void* p) {
             }
             if(airbridge_ble_enabled && !app_configure_ble(app)) {
                 app_show_error(app, "BLE CONFIG ERROR");
-                running = false;
+                app->running = false;
             }
             if(app->ble_profile_installed) {
                 app_set_hids_adv(app, false);
+            }
+        }
+
+        /* Deferred BLE release-all from app_abort_typing: ONE direct attempt
+         * per loop iteration, no retry wrapper — the retry path could block
+         * ~1 s per attempt in gatt, which is exactly the abort-latency budget
+         * this design removes from the abort path. Serviced off ble_profile
+         * alone (never the mutable typing_transport) and BEFORE the screen
+         * dispatch so a pending release lands ahead of any new typing step. */
+        if(app->release_all_pending && app->ble_profile != NULL) {
+            uint8_t report[8] = {0};
+            if(!ble_profile_airbridge_kb_report(app->ble_profile, report, 8)) {
+                app->release_all_pending = false;
+                app->release_all_attempts = 0;
+            } else {
+                app->release_all_attempts++;
+                if(app->release_all_attempts >= 3) {
+                    app->release_all_pending = false;
+                    FURI_LOG_E(TAG, "release-all FAILED - tap a key on target");
+                }
             }
         }
 
@@ -1296,6 +1458,18 @@ int32_t pocket_airbridge_app(void* p) {
     app_abort_typing(app);
     app_restore_usb(app);
     app_set_hids_adv(app, false);
+    /* Drain a still-pending release-all BEFORE app_restore_ble NULLs
+     * ble_profile: up to 3 direct attempts 20 ms apart. Worst-case exit stall
+     * under sustained gatt congestion ~3 s (3 x ~1 s gatt retry + delays) —
+     * explicitly accepted; better than leaving a stuck modifier on target. */
+    if(app->release_all_pending && app->ble_profile != NULL) {
+        uint8_t report[8] = {0};
+        for(uint8_t attempt = 0; attempt < 3; attempt++) {
+            if(!ble_profile_airbridge_kb_report(app->ble_profile, report, 8)) break;
+            if(attempt + 1 < 3) furi_delay_ms(20);
+        }
+        app->release_all_pending = false;
+    }
     app_restore_ble(app);
     gui_remove_view_port(gui, view_port);
     furi_record_close(RECORD_GUI);
@@ -1304,6 +1478,8 @@ int32_t pocket_airbridge_app(void* p) {
     storage_file_free(app->stream_file);
     furi_record_close(RECORD_STORAGE);
     view_port_free(view_port);
+    furi_message_queue_free(app->input_queue);
+    furi_message_queue_free(app->back_queue);
     furi_message_queue_free(app->event_queue);
     free(app->bootstrap);
     free(app);
