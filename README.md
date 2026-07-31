@@ -41,7 +41,7 @@ Some corporate PCs are locked down by device-control policy: no mass storage, no
 
 This is BadUSB-shaped by design. Keyboard emulation is the whole point: it is the only delivery channel a HID-only policy cannot block. The guardrails are deliberate:
 
-- Keystrokes are emitted only from an explicit `Deploy app` menu action on the Flipper, and only after you place the cursor and press OK to confirm.
+- Keystrokes are emitted only from an explicit deploy prompt on the Flipper (reached with LEFT/RIGHT from the Bridge screen), and only after you place the cursor and press OK to confirm.
 - The Flipper screen shows `TYPING…` for the entire emission; pressing BACK aborts instantly.
 - No keyboard report is ever sent in Bridge mode or on any data path. Typing exists only inside the Deploy flow.
 - The typed payload is a fixed, reviewable, ASCII-only artifact: [`web/bootstrap.js`](web/bootstrap.js) in this repo (1,104 characters).
@@ -55,7 +55,7 @@ This is BadUSB-shaped by design. Keyboard emulation is the whole point: it is th
    ```
    This inlines the shared JS modules into a single self-contained `dist/app-usb.html`.
 2. **Deploy the bootstrap and the bundle to the Flipper SD card** (exact commands in [docs/firmware-guide.md](docs/firmware-guide.md)).
-3. **Launch Pocket AirBridge** on the Flipper and select **Deploy app**. The screen asks you to place the cursor, then press OK.
+3. **Launch Pocket AirBridge** on the Flipper. The app opens on the Bridge relay screen; press **RIGHT** to reach the USB Deploy prompt. (LEFT/RIGHT cycle Bridge → USB Deploy → BLE Deploy → Bridge; a short BACK returns to Bridge, a long BACK exits the app. The relay keeps running in the background on every screen.) The prompt asks you to place the cursor, then press OK.
 4. **On the target PC**, open a browser tab at `https://blank.org`, open DevTools (F12), and click into the console. Any `https://` page works; `about:blank` is possible but verify first — on some Chrome builds `window.isSecureContext === false` there, which blocks WebHID. Run `console.log(window.isSecureContext)` to confirm before proceeding.
 5. **Press OK on the Flipper.** The bootstrap types itself into the console while the screen shows `TYPING…` (BACK aborts). Once executed, it paints a minimal landing page with a Connect button.
 6. **Click Connect.** Your real click supplies the user activation WebHID needs; pick the device in the browser prompt. The Flipper streams the full app from its SD card and the bootstrap replaces the page with it.

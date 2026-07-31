@@ -115,8 +115,8 @@ For Pocket AirBridge this is expected after launch: the app switches USB away fr
 
 **Redeploying while the app is running:** `storage.py` and `runfap.py` need
 `/dev/cu.usbmodemflip_*`, which only exists when the AirBridge app is **not**
-running. Exit the app first (BACK button on the Flipper) so the serial port
-reappears, then redeploy. If the app is wedged and BACK does not exit, restart
+running. Exit the app first (long BACK on the Flipper) so the serial port
+reappears, then redeploy. If the app is wedged and long BACK does not exit, restart
 the Flipper (hold LEFT + BACK); a restart always brings the port back.
 
 Verify launch with macOS USB enumeration:
@@ -156,8 +156,8 @@ The Deploy flow reads its files from `/ext/apps_data/pocket_airbridge/` on the S
 |---|---|---|
 | `/ext/apps_data/pocket_airbridge/bootstrap.js` | `web/bootstrap.js` | The typed snippet. ASCII-only, 1,104 characters. The snippet carries a WebHID filter list that enumerates every profile VID/PID (Logitech, Dell, MSFT, HP), so it matches whichever impersonation is active; on the target machine only the Flipper is present. |
 | `/ext/apps_data/pocket_airbridge/bootstrap-ble.js` | `web/bootstrap-ble.js` | The BLE twin of `bootstrap.js` (1,701 characters), typed character-by-character through BLE HIDS during a BLE Deploy run. It opens Web Bluetooth, subscribes to the AirBridge serial TX **notify** characteristic, writes the `0x42` request, and boots the streamed app. |
-| `/ext/apps_data/pocket_airbridge/app-usb.html` | `dist/app-usb.html` | The single-file WebHID app bundle streamed by **UP = USB Deploy**. |
-| `/ext/apps_data/pocket_airbridge/app-ble.html` | `dist/app-ble.html` | The single-file Web Bluetooth app bundle streamed by **DOWN = BLE Deploy**. |
+| `/ext/apps_data/pocket_airbridge/app-usb.html` | `dist/app-usb.html` | The single-file WebHID app bundle streamed from the USB Deploy prompt. |
+| `/ext/apps_data/pocket_airbridge/app-ble.html` | `dist/app-ble.html` | The single-file Web Bluetooth app bundle streamed from the BLE Deploy prompt. |
 
 Build both bundles, then send all four deploy artifacts. The AirBridge app must
 NOT be running while you do this (the serial port only exists when the app is
@@ -216,9 +216,19 @@ python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
 
 **There is no runtime profile switching.** The profile line in the FAP menu is display-only. This was removed by design on 2026-07-20 after hardware testing showed that CDC→composite apply works, but composite→composite reconfiguration (switching from one impersonation profile to another) is fatal on this USB stack: the device dies silently and needs a physical reset. Analysis pinned a definite endpoint-number collision (vendor IN `0x82` / OUT `0x02` shared endpoint index 2) plus risky manual endpoint teardown in deinit. The configured profile is applied automatically a short moment after app start and is held until app exit (always-on); the previous USB mode is restored only on app exit.
 
+### On-Device Controls
+
+The app opens on the **Bridge** screen, the default relay view. **LEFT** and
+**RIGHT** rotate a screen carousel: Bridge → USB Deploy prompt → BLE Deploy
+prompt → Bridge. **OK** on a deploy prompt starts that deploy; OK on the Bridge
+screen does nothing. A short **BACK** press on a prompt returns to Bridge; a
+long **BACK** press exits the app. The USB ↔ BLE relay keeps forwarding in the
+background on every screen, so cycling the carousel never interrupts an
+in-flight transfer.
+
 ### The Deploy Flow
 
-1. From the Bridge screen, press **UP** for USB Deploy or **DOWN** for BLE Deploy.
+1. From the Bridge screen, press **RIGHT** (or **LEFT**) to reach the USB Deploy prompt or the BLE Deploy prompt, then press **OK** on the prompt to start that deploy.
 2. For BLE Deploy, the HIDS advertising window opens for the entire prompt and typing interaction. On the target PC, pair `HP 725 K+M` if this is the first use, then open a tab at `https://blank.org` (not `about:blank` — some Chrome builds report `window.isSecureContext === false` there; blank.org loads from browser cache offline).
 3. On OK, the FAP types `bootstrap.js` over USB or `bootstrap-ble.js` over BLE HIDS. The `TYPING via USB/BLE` screen shows a determinate progress bar (chars typed / total, plus %) for the entire emission; BACK aborts instantly. HIDS stops advertising when BLE typing ends or the deploy flow is aborted; the AirBridge serial UUID remains advertised throughout.
 4. The executed bootstrap paints a landing page. While it waits, the FAP shows `Waiting for browser...` with an indeterminate marquee (a block bouncing across the bar frame) and the hint `Click Connect in the browser`. Clicking **Connect** supplies the browser user gesture, opens the matching WebHID or Web Bluetooth transport, and sends `0x42`. During BLE Deploy Waiting, a central that has not requested the bundle is disconnected after 15 seconds and advertising resumes, preventing a bonded macOS HID connection from starving a new browser picker.
@@ -319,10 +329,11 @@ directly.
    digits left-aligned under each icon group (x=0/32/64/96, y=35). Link state
    is encoded in the glyphs: the USB plug is filled when a USB host is
    connected and an outline when down; the BT rune gains a solid pedestal
-   when a BLE central is connected and is the bare rune when down. A deploy
-   hint row (up-arrow `USB deploy`, down-arrow `BLE deploy`, y=47-53) sits
-   above `BACK: exit` (y=63). The green LED blinks every 500 ms as a
-   heartbeat while the app runs.
+    when a BLE central is connected and is the bare rune when down. A hint
+    row (y=47-53) advertises the LEFT/RIGHT carousel to the deploy prompts
+    and sits above the exit hint (long BACK exits, y=63). The green LED
+    blinks every 500 ms as a
+    heartbeat while the app runs.
 7. **Graceful USB failure** — if `furi_hal_usb_set_config` fails at startup,
    the app shows `ERR: CONFIG` on screen instead of crashing (a crash here
    would wedge USB until reboot).
@@ -396,7 +407,7 @@ serial UUID plus HIDS.
 | `storage.py` hangs | Stop stale serial clients, then physically unplug/replug Flipper USB and retry after it returns to the desktop |
 | `runfap.py` ends with `Device not configured` | Expected for Pocket AirBridge after launch because the app switches USB from CDC serial to custom HID |
 | Flipper unresponsive after app launch or a USB mode switch | Probe with `python3 tools/flipper_alive.py --wait 30` (from this repo). A healthy CLI answers `\r` with a `>:` prompt within 5 s. Port present but silent means the firmware is hung (USB CDC still enumerated, firmware dead). Recovery is a physical reset; do not attempt a DTR-toggle reset from software |
-| `storage.py` can't find `/dev/cu.usbmodemflip_*` | The AirBridge app is still running — exit it (BACK) or restart the Flipper so the serial port reappears |
+| `storage.py` can't find `/dev/cu.usbmodemflip_*` | The AirBridge app is still running — exit it (long BACK) or restart the Flipper so the serial port reappears |
 | `TXERR` counter is non-zero | One `TXERR` can occur during a mid-flight cancel race (a frame reaches the main loop after the peer went away); benign if the transfer error is visible on both pages. Persistent `TXERR` growth means the BLE link is down — reconnect PC-B |
 | Pairing code dialog vanishes during deploy Connect before it can be confirmed | Fixed 2026-07-23: the deploy Waiting pump now only restarts advertising from GAP-idle and never disconnects, so a pairing code shown during deploy Connect can be confirmed at leisure. Previously the pump force-disconnected every 2.5 s and killed in-progress pairings — redeploy the current FAP |
 | App is missing an icon | Add `applications_user/pocket_airbridge/icon.png` and `fap_icon="icon.png"` in `application.fam`, then rebuild/redeploy |
