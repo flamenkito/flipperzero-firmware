@@ -22,13 +22,13 @@ FuriHalBleProfileBase* bt_profile_start(
     // Wait for unlock
     api_lock_wait_unlock_and_free(message.lock);
 
-    bt->current_profile = profile_instance;
+    // bt->current_profile is written only by the BtSrv thread (bt_change_profile);
+    // the instance reaches the caller via BtMessage.profile_instance.
     return profile_instance;
 }
 
 bool bt_profile_restore_default(Bt* bt) {
-    bt->current_profile = bt_profile_start(bt, ble_profile_serial, NULL);
-    return bt->current_profile != NULL;
+    return bt_profile_start(bt, ble_profile_serial, NULL) != NULL;
 }
 
 void bt_disconnect(Bt* bt) {

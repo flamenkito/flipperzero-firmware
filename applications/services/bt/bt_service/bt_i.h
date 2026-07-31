@@ -75,6 +75,15 @@ struct Bt {
     BtStatus status;
     bool beacon_active;
     FuriHalBleProfileBase* current_profile;
+    /* Serializes current_profile lifetime: the BtSrv thread is the sole writer,
+     * readers hold it only while copying the pointer / computing type booleans
+     * or around a short immediate profile call. */
+    FuriMutex* current_profile_mutex;
+    /* Cached profile-type flags, written only under current_profile_mutex.
+     * Read without the mutex by bt_serial_event_callback, which runs under a
+     * serial service's buff_size_mtx and therefore must never take it. */
+    bool current_profile_is_serial;
+    bool current_profile_is_airbridge;
     FuriMessageQueue* message_queue;
     NotificationApp* notification;
     Gui* gui;
