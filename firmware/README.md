@@ -1,20 +1,20 @@
 # Pocket AirBridge — Firmware Files
 
 **Regenerated 2026-08-28:** This bundle captures the firmware tree through
-`113d1701` (`feat(fap): carousel navigation for Bridge/USB/BLE prompts`),
-relative to pristine upstream `dev` base `c9ab2b68`. The carousel-UI FAP
-rework and the earlier stability fixes have all landed as commits; the FAP
-itself ships as the `pocket_airbridge/` directory copy — the FAP path is
-excluded from `airbridge-firmware.patch` by design. The FAP copy carries the
-carousel stuck-input fix (idempotent `app_set_hids_adv` — redundant HIDS
-advertising toggles blocked the GAP `state_mutex` and wedged input
-processing) and the removal of the on-screen hint rows; the built artifact
-is 22952 B. The only uncommitted change folded into this regen is the
-HP-descriptor exactness rework of
-`targets/f7/furi_hal/furi_hal_usb_airbridge.c` (shipped inside
-`airbridge-firmware.patch`): the HP profile descriptors are now aligned with
-the real dongle capture (PIXART manufacturer, 100 mA bus-powered, no IAD,
-byte-exact 65 B boot-kbd report descriptor). The carousel behaviour: the app
+`81ef1974` (`perf(usb): poll interrupt endpoints at 1 ms`), relative to
+pristine upstream `dev` base `c9ab2b68`. The carousel-UI FAP rework, earlier
+stability fixes, HP-descriptor exactness rework, and 1 ms AirBridge USB HID
+interrupt interval have all landed as commits. The FAP itself ships as the
+`pocket_airbridge/` directory copy — the FAP path is excluded from
+`airbridge-firmware.patch` by design. The FAP copy carries the carousel
+stuck-input fix (idempotent `app_set_hids_adv` — redundant HIDS advertising
+toggles blocked the GAP `state_mutex` and wedged input processing) and the
+removal of the on-screen hint rows; the built artifact is 22952 B. The HP
+profile descriptors are aligned with the real dongle capture (PIXART
+manufacturer, 100 mA bus-powered, no IAD, byte-exact 65 B boot-kbd report
+descriptor). The AirBridge USB endpoints now advertise `HID_INTERVAL` 1 instead
+of 5, raising the theoretical 64-byte interrupt ceiling from 12.8 KB/s to
+64 KB/s. The carousel behaviour: the app
 opens on the Bridge relay screen, LEFT/RIGHT
 rotate Bridge → USB Deploy prompt → BLE Deploy prompt → Bridge, OK on a
 prompt starts that deploy, a short BACK returns to Bridge, a long BACK exits,

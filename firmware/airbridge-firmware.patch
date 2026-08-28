@@ -2154,7 +2154,7 @@ index f1881f94..4645fdcc 100644
  }
 diff --git a/targets/f7/furi_hal/furi_hal_usb_airbridge.c b/targets/f7/furi_hal/furi_hal_usb_airbridge.c
 new file mode 100644
-index 00000000..808abbaa
+index 00000000..db0e4bd2
 --- /dev/null
 +++ b/targets/f7/furi_hal/furi_hal_usb_airbridge.c
 @@ -0,0 +1,840 @@
@@ -2178,7 +2178,7 @@ index 00000000..808abbaa
 +#define HID_VENDOR_ONLY_EP_IN 0x81
 +#define HID_VENDOR_ONLY_EP_OUT 0x02
 +#define HID_KBD_PACKET_LEN    8
-+#define HID_INTERVAL          5
++#define HID_INTERVAL          1
 +
 +struct HidVendorDescriptor {
 +    struct usb_iad_descriptor hid_iad;
