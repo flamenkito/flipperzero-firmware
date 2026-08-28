@@ -49,6 +49,15 @@ struct HidCompositeConfigDescriptor {
     struct usb_endpoint_descriptor vendor_ep_out;
 } FURI_PACKED;
 
+struct HidCompositeNoIadConfigDescriptor {
+    struct usb_config_descriptor config;
+    struct HidKeyboardDescriptor keyboard;
+    struct usb_interface_descriptor vendor;
+    struct usb_hid_descriptor vendor_hid_desc;
+    struct usb_endpoint_descriptor vendor_ep_in;
+    struct usb_endpoint_descriptor vendor_ep_out;
+} FURI_PACKED;
+
 struct HidKeyboardReport {
     uint8_t mods;
     uint8_t reserved;
@@ -88,23 +97,23 @@ static const uint8_t hid_keyboard_report_desc[] = {
     HID_INPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
     HID_REPORT_COUNT(1),
     HID_REPORT_SIZE(8),
-    HID_INPUT(HID_IOF_CONSTANT | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
-    HID_USAGE_PAGE(HID_PAGE_LED),
+    HID_INPUT(HID_IOF_CONSTANT | HID_IOF_ARRAY | HID_IOF_ABSOLUTE),
     HID_REPORT_COUNT(5),
     HID_REPORT_SIZE(1),
+    HID_USAGE_PAGE(HID_PAGE_LED),
     HID_USAGE_MINIMUM(1),
     HID_USAGE_MAXIMUM(5),
     HID_OUTPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
     HID_REPORT_COUNT(1),
     HID_REPORT_SIZE(3),
-    HID_OUTPUT(HID_IOF_CONSTANT | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
+    HID_OUTPUT(HID_IOF_CONSTANT | HID_IOF_ARRAY | HID_IOF_ABSOLUTE),
     HID_REPORT_COUNT(HID_KB_MAX_KEYS),
     HID_REPORT_SIZE(8),
     HID_LOGICAL_MINIMUM(0),
-    HID_LOGICAL_MAXIMUM(101),
+    HID_RI_LOGICAL_MAXIMUM(16, 0xFF),
     HID_USAGE_PAGE(HID_DESKTOP_KEYPAD),
     HID_USAGE_MINIMUM(0),
-    HID_USAGE_MAXIMUM(101),
+    HID_RI_USAGE_MAXIMUM(16, 0xFF),
     HID_INPUT(HID_IOF_DATA | HID_IOF_ARRAY | HID_IOF_ABSOLUTE),
     HID_END_COLLECTION,
 };
@@ -116,7 +125,7 @@ static const struct usb_string_descriptor dell_prod_desc = USB_STRING_DESC("KB21
 static const struct usb_string_descriptor msft_manuf_desc = USB_STRING_DESC("Microsoft");
 static const struct usb_string_descriptor msft_kbd_prod_desc = USB_STRING_DESC("USB Keyboard");
 static const struct usb_string_descriptor msft_vendor_prod_desc = USB_STRING_DESC("USB Input Device");
-static const struct usb_string_descriptor hp_manuf_desc = USB_STRING_DESC("HP");
+static const struct usb_string_descriptor hp_manuf_desc = USB_STRING_DESC("PIXART");
 static const struct usb_string_descriptor hp_prod_desc = USB_STRING_DESC("HP Wireless Keyboard and Mouse");
 
 #define AIRBRIDGE_DEVICE_DESCRIPTOR_FULL(vid, pid, cls, sub, proto, bcd) \
@@ -318,6 +327,94 @@ static const struct HidCompositeConfigDescriptor hid_composite_cfg_desc = {
         },
 };
 
+static const struct HidCompositeNoIadConfigDescriptor hid_composite_noiad_cfg_desc = {
+    .config =
+        {
+            .bLength = sizeof(struct usb_config_descriptor),
+            .bDescriptorType = USB_DTYPE_CONFIGURATION,
+            .wTotalLength = sizeof(struct HidCompositeNoIadConfigDescriptor),
+            .bNumInterfaces = 2,
+            .bConfigurationValue = 1,
+            .iConfiguration = NO_DESCRIPTOR,
+            .bmAttributes = USB_CFG_ATTR_RESERVED,
+            .bMaxPower = USB_CFG_POWER_MA(100),
+        },
+    .keyboard =
+        {
+            .hid =
+                {
+                    .bLength = sizeof(struct usb_interface_descriptor),
+                    .bDescriptorType = USB_DTYPE_INTERFACE,
+                    .bInterfaceNumber = 0,
+                    .bAlternateSetting = 0,
+                    .bNumEndpoints = 1,
+                    .bInterfaceClass = USB_CLASS_HID,
+                    .bInterfaceSubClass = USB_HID_SUBCLASS_BOOT,
+                    .bInterfaceProtocol = USB_HID_PROTO_KEYBOARD,
+                    .iInterface = NO_DESCRIPTOR,
+                },
+            .hid_desc =
+                {
+                    .bLength = sizeof(struct usb_hid_descriptor),
+                    .bDescriptorType = USB_DTYPE_HID,
+                    .bcdHID = VERSION_BCD(1, 0, 0),
+                    .bCountryCode = USB_HID_COUNTRY_NONE,
+                    .bNumDescriptors = 1,
+                    .bDescriptorType0 = USB_DTYPE_HID_REPORT,
+                    .wDescriptorLength0 = sizeof(hid_keyboard_report_desc),
+                },
+            .hid_ep_in =
+                {
+                    .bLength = sizeof(struct usb_endpoint_descriptor),
+                    .bDescriptorType = USB_DTYPE_ENDPOINT,
+                    .bEndpointAddress = HID_KBD_EP_IN,
+                    .bmAttributes = USB_EPTYPE_INTERRUPT,
+                    .wMaxPacketSize = HID_KBD_PACKET_LEN,
+                    .bInterval = HID_INTERVAL,
+                },
+        },
+    .vendor =
+        {
+            .bLength = sizeof(struct usb_interface_descriptor),
+            .bDescriptorType = USB_DTYPE_INTERFACE,
+            .bInterfaceNumber = 1,
+            .bAlternateSetting = 0,
+            .bNumEndpoints = 2,
+            .bInterfaceClass = USB_CLASS_HID,
+            .bInterfaceSubClass = USB_HID_SUBCLASS_NONBOOT,
+            .bInterfaceProtocol = USB_HID_PROTO_NONBOOT,
+            .iInterface = NO_DESCRIPTOR,
+        },
+    .vendor_hid_desc =
+        {
+            .bLength = sizeof(struct usb_hid_descriptor),
+            .bDescriptorType = USB_DTYPE_HID,
+            .bcdHID = VERSION_BCD(1, 0, 0),
+            .bCountryCode = USB_HID_COUNTRY_NONE,
+            .bNumDescriptors = 1,
+            .bDescriptorType0 = USB_DTYPE_HID_REPORT,
+            .wDescriptorLength0 = sizeof(hid_vendor_report_desc),
+        },
+    .vendor_ep_in =
+        {
+            .bLength = sizeof(struct usb_endpoint_descriptor),
+            .bDescriptorType = USB_DTYPE_ENDPOINT,
+            .bEndpointAddress = HID_VENDOR_EP_IN,
+            .bmAttributes = USB_EPTYPE_INTERRUPT,
+            .wMaxPacketSize = HID_VENDOR_PACKET_LEN,
+            .bInterval = HID_INTERVAL,
+        },
+    .vendor_ep_out =
+        {
+            .bLength = sizeof(struct usb_endpoint_descriptor),
+            .bDescriptorType = USB_DTYPE_ENDPOINT,
+            .bEndpointAddress = HID_VENDOR_EP_OUT,
+            .bmAttributes = USB_EPTYPE_INTERRUPT,
+            .wMaxPacketSize = HID_VENDOR_PACKET_LEN,
+            .bInterval = HID_INTERVAL,
+        },
+};
+
 static void hid_vendor_init(usbd_device* dev, FuriHalUsbInterface* intf, void* ctx);
 static void hid_vendor_deinit(usbd_device* dev);
 static void hid_vendor_on_wakeup(usbd_device* dev);
@@ -383,7 +480,7 @@ static FuriHalUsbInterface usb_airbridge_hp = {
     .str_manuf_descr = (void*)&hp_manuf_desc,
     .str_prod_descr = (void*)&hp_prod_desc,
     .str_serial_descr = NULL,
-    .cfg_descr = (void*)&hid_composite_cfg_desc,
+    .cfg_descr = (void*)&hid_composite_noiad_cfg_desc,
 };
 
 typedef struct {
