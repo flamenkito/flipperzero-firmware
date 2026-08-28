@@ -18,7 +18,7 @@
 #define HID_VENDOR_ONLY_EP_IN 0x81
 #define HID_VENDOR_ONLY_EP_OUT 0x02
 #define HID_KBD_PACKET_LEN    8
-#define HID_INTERVAL          5
+#define HID_INTERVAL          1
 
 struct HidVendorDescriptor {
     struct usb_iad_descriptor hid_iad;
