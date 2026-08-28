@@ -4,69 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="data:,">
+<link rel="stylesheet" href="./airbridge-ui.css">
 <title>Pocket AirBridge — USB Chat</title>
-<style>
-  :root { --bg: #0f0f23; --fg: #e0e0ff; --accent: #00f0ff; --error: #ff3366; --ok: #00ffaa; --muted: #9aa0c3; --panel: rgba(255,255,255,0.045); --line: rgba(0,240,255,0.22); }
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); max-width: 880px; margin: 32px auto; padding: 20px; }
-  h1, h2 { color: var(--accent); margin-top: 0; }
-  h1 { margin-bottom: 8px; }
-  h2 { font-size: 1rem; }
-  p { color: var(--muted); }
-  button, input[type="file"], input[type="text"] { font: inherit; border-radius: 10px; }
-  button { padding: 10px 16px; border: 1px solid var(--accent); background: transparent; color: var(--fg); cursor: pointer; }
-  button:hover:not(:disabled) { background: rgba(0,240,255,0.1); }
-  button:disabled { opacity: 0.45; cursor: not-allowed; border-color: #555; }
-  input[type="text"] { min-width: 0; width: 100%; padding: 12px 14px; border: 1px solid rgba(224,224,255,0.22); background: rgba(255,255,255,0.06); color: var(--fg); }
-  input[type="file"] { width: 100%; padding: 10px; border: 1px dashed var(--line); color: var(--fg); background: rgba(255,255,255,0.03); }
-  .grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
-  .card { background: var(--panel); border: 1px solid rgba(224,224,255,0.1); border-radius: 14px; padding: 16px; box-shadow: 0 12px 36px rgba(0,0,0,0.18); }
-  .connection-row, .composer, .attachment-row { display: flex; gap: 10px; align-items: center; }
-  .connection-row { flex-wrap: wrap; }
-  .status-pill { display: inline-flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 999px; border: 1px solid rgba(224,224,255,0.12); color: var(--muted); }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 16px currentColor; }
-  .status-connecting .dot { background: var(--accent); color: var(--accent); }
-  .status-connected .dot { background: var(--ok); color: var(--ok); }
-  .status-error .dot { background: var(--error); color: var(--error); }
-  #deviceName, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  #transcript { height: 460px; overflow-y: auto; padding: 10px; border-radius: 12px; background: rgba(0,0,0,0.18); border: 1px solid rgba(224,224,255,0.08); }
-  .empty { color: var(--muted); text-align: center; margin: 170px 0 0; }
-  .message { display: flex; margin: 10px 0; }
-  .message.you { justify-content: flex-end; }
-  .bubble { max-width: min(72%, 560px); padding: 10px 12px; border-radius: 14px; background: rgba(255,255,255,0.075); border: 1px solid rgba(224,224,255,0.1); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .you .bubble { background: rgba(0,240,255,0.12); border-color: rgba(0,240,255,0.28); }
-  .peer .bubble { background: rgba(255,255,255,0.07); }
-  .meta-line { display: flex; gap: 8px; justify-content: space-between; color: var(--muted); font-size: 0.78rem; margin-bottom: 6px; }
-  .sender { color: var(--fg); font-weight: 700; }
-  .system { justify-content: center; }
-  .system .bubble { background: rgba(255,255,255,0.04); border-style: dashed; color: var(--muted); }
-  .system .meta-line { justify-content: center; }
-  .attachment-card { display: grid; gap: 7px; min-width: 230px; }
-  .attachment-name { font-weight: 700; color: var(--fg); overflow-wrap: anywhere; }
-  .hash-ok { color: var(--ok); }
-  .hash-error { color: var(--error); }
-  .download-link { color: var(--accent); text-decoration: none; }
-  .download-link:hover { text-decoration: underline; }
-  .progress-container { margin-top: 6px; }
-  .progress-bar-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.1); overflow: hidden; }
-  .progress-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #a0f); transition: width 0.15s ease; }
-  .progress-bar-fill.complete { background: var(--ok); }
-  .progress-bar-fill.cancelled { background: var(--error); }
-  .progress-label { font-size: 0.72rem; color: var(--muted); margin-top: 3px; }
-  #progressWrap { height: 18px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,0.07); margin-top: 10px; }
-  #progressBar { width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent), #a0f); transition: width 0.18s ease; }
-  #progressLabel { margin-top: 8px; color: var(--muted); font-size: 0.9rem; }
-  .transfer-actions { display: flex; gap: 10px; margin-top: 12px; }
-  .transfer-actions button { flex: 1; }
-  #log { height: 180px; overflow-y: auto; margin: 0; padding: 10px; border-radius: 10px; background: rgba(0,0,0,0.2); color: var(--muted); font-size: 0.82rem; white-space: pre-wrap; }
-  .ok { color: var(--ok); }
-  .warn { color: #ffdf91; }
-  .error { color: var(--error); }
-  .mock-banner { display: none; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #ffdf91; border-radius: 10px; color: #ffdf91; background: rgba(255,223,145,0.1); }
-  body.mock .mock-banner { display: block; }
-  .hint { font-size: 0.86rem; color: var(--muted); margin: 8px 0 0; }
-  @media (max-width: 760px) { body { margin: 12px auto; padding: 12px; } .grid { grid-template-columns: 1fr; } #transcript { height: 390px; } .composer, .attachment-row { flex-direction: column; align-items: stretch; } .bubble { max-width: 88%; } }
-</style>
 </head>
 <body>
 <h1>Pocket AirBridge — USB Chat</h1>
@@ -77,21 +16,24 @@
   <h2 id="connectionTitle">Connection</h2>
   <div class="connection-row">
     <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span id="connectionStatus">Disconnected</span></span>
-      <button id="connectBtn" type="button">Connect AirBridge (USB)</button>
+      <button id="connectBtn" type="button">Connect USB</button>
     <button id="disconnectBtn" type="button" disabled>Disconnect</button>
     <span id="deviceName" class="mono">No device</span>
   </div>
 </section>
 
-<main class="grid" style="margin-top:16px;">
+<main class="grid" style="margin-top:12px;">
   <section class="card" aria-labelledby="chatTitle">
-    <h2 id="chatTitle">Chat Transcript</h2>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <h2 id="chatTitle" style="margin:0;">Chat Transcript</h2>
+      <button id="clearTranscriptBtn" type="button" class="clear-btn">Clear</button>
+    </div>
     <div id="transcript" aria-live="polite"><div class="empty">Connect, then send a message or attachment.</div></div>
-    <form id="textForm" class="composer" style="margin-top:12px;">
+    <form id="textForm" class="composer" style="margin-top:8px;">
       <input id="textInput" type="text" placeholder="Type a message…" autocomplete="off" disabled>
       <button id="sendTextBtn" type="submit" disabled>Send</button>
     </form>
-    <div class="attachment-row" style="margin-top:10px;">
+    <div class="attachment-row" style="margin-top:8px;">
       <input id="fileInput" type="file" disabled>
       <button id="sendFileBtn" type="button" disabled>Send Attachment</button>
     </div>
@@ -100,13 +42,15 @@
 
   <aside class="card" aria-labelledby="transferTitle">
     <h2 id="transferTitle">Transfer State</h2>
-    <div id="halfDuplexState" class="mono">idle</div>
-    <div id="progressWrap"><div id="progressBar"></div></div>
-    <div id="progressLabel">No active transfer.</div>
+    <div id="panelState" class="panel-state">idle</div>
+    <div id="throughput" class="throughput">--</div>
     <div class="transfer-actions">
       <button id="cancelBtn" type="button" hidden>Cancel Transfer</button>
     </div>
-    <h2 style="margin-top:18px;">Status Log</h2>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin:12px 0 8px;">
+      <h2 style="margin:0;">Status Log</h2>
+      <button id="clearLogBtn" type="button" class="clear-btn">Clear</button>
+    </div>
     <pre id="log">Waiting…</pre>
   </aside>
 </main>
@@ -114,6 +58,7 @@
 <script type="module">
 import { buildMessage, encodeMeta, ItemReceiver, ItemSender, MAX_PAYLOAD, MSG, parseMessage, sha256 } from './airbridge-protocol.js';
 import { WebHIDAdapter } from './airbridge-transports.js';
+import { addMessage, addSystemMessage, clearTranscript, createLogger, createThroughputMeter, formatBytes, renderAttachmentCard, shortHash, updateCardProgress } from './airbridge-ui.js';
 
 const BUSY_BACKOFF_MS = 900;
 const textEncoder = new TextEncoder();
@@ -137,32 +82,29 @@ let pendingSendRow = null;
 let pendingReceiveRow = null;
 let yieldedItem = null;
 let yieldedRetryScheduled = false;
+let inboundMeter = null;
 
 const $ = id => document.getElementById(id);
 if (isMockMode) document.body.classList.add('mock');
 
-function nowLabel() {
-  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const logger = createLogger($('log'));
+
+function setTransferState(text) {
+  $('panelState').textContent = text;
 }
 
-function log(message, className = '') {
-  const line = `[${nowLabel()}] ${message}`;
-  if ($('log').textContent === 'Waiting…') $('log').textContent = '';
-  const span = document.createElement('span');
-  span.className = className;
-  span.textContent = `${line}\n`;
-  $('log').appendChild(span);
-  $('log').scrollTop = $('log').scrollHeight;
+function setThroughputText(text) {
+  $('throughput').textContent = text;
+}
+
+function resetTransferPanel() {
+  setTransferState('idle');
+  setThroughputText('--');
 }
 
 function setConnectionStatus(status, className = '') {
   $('connectionStatus').textContent = status;
   $('statusPill').className = `status-pill ${className}`.trim();
-}
-
-function setProgress(percent, label) {
-  $('progressBar').style.width = `${Math.max(0, Math.min(100, percent))}%`;
-  $('progressLabel').textContent = label;
 }
 
 function makeAbortError(message = 'Transfer cancelled') {
@@ -206,11 +148,14 @@ function throwIfCancelled(signal = getTransferSignal()) {
 function setSending(value, label = '') {
   isSending = value;
   receiver?.setBusy(value);
-  $('halfDuplexState').textContent = value ? `sending${outboundItemId ? ` item ${outboundItemId}` : ''}` : 'idle';
+  if (value) {
+    setTransferState(`sending: ${label}`);
+  } else if ($('panelState').textContent.startsWith('sending')) {
+    setTransferState('idle');
+  }
   $('cancelBtn').hidden = !value;
   $('cancelBtn').disabled = !value;
   updateControls();
-  if (label) setProgress(value ? 5 : 0, label);
 }
 
 function updateControls() {
@@ -225,114 +170,6 @@ function updateControls() {
   $('sendFileBtn').disabled = !connected || isSending || isReceiving || !$('fileInput').files.length;
   $('cancelBtn').hidden = !canCancel;
   $('cancelBtn').disabled = !canCancel;
-}
-
-function clearEmptyTranscript() {
-  const empty = $('transcript').querySelector('.empty');
-  if (empty) empty.remove();
-}
-
-function addMessage({ side, kind, text, meta, data, hash, pending = false, progress }) {
-  clearEmptyTranscript();
-  const row = document.createElement('article');
-  row.className = `message ${side}`;
-
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble';
-  const metaLine = document.createElement('div');
-  metaLine.className = 'meta-line';
-  const senderLabel = document.createElement('span');
-  senderLabel.className = 'sender';
-  senderLabel.textContent = side === 'you' ? 'You' : side === 'peer' ? 'Peer' : 'System';
-  const time = document.createElement('span');
-  time.textContent = nowLabel();
-  metaLine.append(senderLabel, time);
-  bubble.appendChild(metaLine);
-
-  if (kind === 'text') {
-    const body = document.createElement('div');
-    body.textContent = text;
-    bubble.appendChild(body);
-  } else {
-    bubble.appendChild(renderAttachmentCard(meta, data, hash, pending, progress));
-  }
-
-  row.appendChild(bubble);
-  $('transcript').appendChild(row);
-  $('transcript').scrollTop = $('transcript').scrollHeight;
-  return row;
-}
-
-function addSystemMessage(text) {
-  addMessage({ side: 'system', kind: 'text', text });
-}
-
-function renderAttachmentCard(meta, data, hash, pending, progress) {
-  const card = document.createElement('div');
-  card.className = 'attachment-card';
-  const name = document.createElement('div');
-  name.className = 'attachment-name';
-  name.textContent = meta.name || meta.filename || 'attachment';
-  const size = document.createElement('div');
-  size.textContent = `${formatBytes(meta.size ?? data?.length ?? 0)} · ${meta.mimeType || 'application/octet-stream'}`;
-  const hashLine = document.createElement('div');
-  hashLine.className = pending ? 'warn' : 'hash-ok';
-  hashLine.textContent = pending ? `SHA-256 pending: ${shortHash(meta.hash)}` : `SHA-256 verified: ${shortHash(hash || meta.hash)}`;
-  card.append(name, size, hashLine);
-
-  if (progress != null) {
-    const container = document.createElement('div');
-    container.className = 'progress-container';
-    const track = document.createElement('div');
-    track.className = 'progress-bar-track';
-    track.setAttribute('role', 'progressbar');
-    track.setAttribute('aria-valuenow', Math.round(progress.percent));
-    track.setAttribute('aria-valuemin', '0');
-    track.setAttribute('aria-valuemax', '100');
-    const fill = document.createElement('div');
-    fill.className = `progress-bar-fill${progress.complete ? ' complete' : ''}${progress.cancelled ? ' cancelled' : ''}`;
-    fill.style.width = `${progress.percent}%`;
-    fill.setAttribute('aria-hidden', 'true');
-    track.appendChild(fill);
-    const label = document.createElement('div');
-    label.className = 'progress-label';
-    label.textContent = progress.label;
-    container.append(track, label);
-    card.appendChild(container);
-  }
-
-  if (data) {
-    const blob = new Blob([data], { type: meta.mimeType || 'application/octet-stream' });
-    const link = document.createElement('a');
-    link.className = 'download-link';
-    link.href = URL.createObjectURL(blob);
-    link.download = meta.name || meta.filename || 'airbridge-attachment';
-    link.textContent = 'Download attachment';
-    card.appendChild(link);
-  }
-  return card;
-}
-
-function shortHash(hash) {
-  const normalized = String(hash || '').replace(/^sha256:/, '');
-  return normalized ? `${normalized.slice(0, 12)}…` : 'unknown';
-}
-
-function formatBytes(size) {
-  if (size < 1024) return `${size} B`;
-  return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} KB`;
-}
-
-function updateCardProgress(messageRow, percent, label, state) {
-  const track = messageRow.querySelector('.progress-bar-track');
-  const fill = messageRow.querySelector('.progress-bar-fill');
-  const labelEl = messageRow.querySelector('.progress-label');
-  if (!track || !fill || !labelEl) return;
-  const safe = Math.max(0, Math.min(100, percent));
-  track.setAttribute('aria-valuenow', Math.round(safe));
-  fill.style.width = `${safe}%`;
-  fill.className = `progress-bar-fill${state === 'complete' ? ' complete' : ''}${state === 'cancelled' ? ' cancelled' : ''}`;
-  labelEl.textContent = label;
 }
 
 function nextId() {
@@ -414,24 +251,31 @@ function setupProtocol() {
     return transport.send(frame);
   }, { timeoutMs: 1200, retries: 2 });
   receiver = new ItemReceiver({ sendFn: frame => transport.send(frame), busy: false });
-  sender.onAck(seq => log(`ACK ${seq} received.`, 'ok'));
+  sender.onAck(seq => logger.log(`ACK ${seq} received.`, 'ok'));
   receiver.on('hello', detail => {
     inboundHelloItemId = detail.itemId;
     updateControls();
-    log(`Incoming HELLO${detail.itemId == null ? '' : ` item ${detail.itemId}`}.`);
+    logger.log(`Incoming HELLO${detail.itemId == null ? '' : ` item ${detail.itemId}`}.`);
   });
   receiver.on('meta', meta => {
     inboundMeta = meta;
     updateControls();
-    log(`Receiving ${meta.kind || 'item'} ${meta.name || ''} (${formatBytes(meta.size || 0)}).`);
+    setTransferState(`receiving: ${meta.name || meta.kind || 'item'}`);
+    inboundMeter = createThroughputMeter();
+    inboundMeter.tick(0, meta.chunks || 0, 0);
+    setThroughputText(inboundMeter.text());
+    logger.log(`Receiving ${meta.kind || 'item'} ${meta.name || ''} (${formatBytes(meta.size || 0)}).`);
     if (meta.kind !== 'text') {
-      pendingReceiveRow = addMessage({ side: 'peer', kind: 'attachment', meta, data: null, hash: null, pending: true, progress: { percent: 0, label: 'Receiving…' } });
+      pendingReceiveRow = addMessage($('transcript'), { side: 'peer', kind: 'attachment', meta, data: null, hash: null, pending: true, progress: { percent: 0, label: 'Receiving…' } });
     }
   });
   receiver.on('data', ({ received, meta }) => {
     if (!isSending && meta?.chunks) {
       const pct = (received / meta.chunks) * 100;
-      setProgress(pct, `Receiving ${received}/${meta.chunks} chunks…`);
+      if (inboundMeter) {
+        inboundMeter.tick(received, meta.chunks, Math.min(received * MAX_PAYLOAD, meta.size || received * MAX_PAYLOAD));
+        setThroughputText(inboundMeter.text());
+      }
       if (pendingReceiveRow) {
         updateCardProgress(pendingReceiveRow, pct, `${received}/${meta.chunks} chunks`);
       }
@@ -444,15 +288,15 @@ function setupProtocol() {
     scheduleYieldedRetry();
   });
   receiver.on('busy', detail => handleBusy(detail));
-  receiver.on('rejected', () => log('Rejected peer HELLO while USB chat is busy.', 'warn'));
-  receiver.on('error', error => log(`Protocol error: ${error.message || error}`, 'error'));
-  receiver.on('invalid', error => log(`Invalid frame: ${error.message}`, 'error'));
+  receiver.on('rejected', () => logger.log('Rejected peer HELLO while USB chat is busy.', 'warn'));
+  receiver.on('error', error => logger.log(`Protocol error: ${error.message || error}`, 'error'));
+  receiver.on('invalid', error => logger.log(`Invalid frame: ${error.message}`, 'error'));
 }
 
 async function handleInboundFrame(frame) {
   const msg = parseMessage(frame);
   if (!msg) {
-    log('Malformed frame received.', 'error');
+    logger.log('Malformed frame received.', 'error');
     return;
   }
 
@@ -480,14 +324,14 @@ async function handleInboundFrame(frame) {
       return;
     }
     if (peerItemId != null) {
-      log(`Keeping local item ${outboundItemId} over peer item ${peerItemId}; returning BUSY.`, 'warn');
+      logger.log(`Keeping local item ${outboundItemId} over peer item ${peerItemId}; returning BUSY.`, 'warn');
       await sendBusy(outboundItemId, peerItemId);
       return;
     }
   }
 
   if (isSending && activeTransfer && !activeTransfer.yielded && (msg.type === MSG.ITEM_META || msg.type === MSG.ITEM_DATA || msg.type === MSG.ITEM_DONE)) {
-    log('Peer sent item data while USB chat is sending; returning BUSY.', 'warn');
+    logger.log('Peer sent item data while USB chat is sending; returning BUSY.', 'warn');
     await sendBusy(outboundItemId, null);
     return;
   }
@@ -508,10 +352,10 @@ async function yieldToPeer(msg, peerItemId) {
   transfer.controller.abort(makeAbortError(`Yielded to peer item ${peerItemId}`));
   settleAbortedSend(transfer);
   receiver?.setBusy(false);
-  setProgress(0, `Yielded to peer item ${peerItemId}.`);
+  resetTransferPanel();
   if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Yielded');
-  addSystemMessage(`Yielded to peer item ${peerItemId}`);
-  log(`Yielded local item ${transfer.itemId} to peer item ${peerItemId}.`, 'warn');
+  addSystemMessage($('transcript'), `Yielded to peer item ${peerItemId}`);
+  logger.log(`Yielded local item ${transfer.itemId} to peer item ${peerItemId}.`, 'warn');
   await receiver?.onMessage(msg);
 }
 
@@ -521,7 +365,7 @@ function handleReceivedItem(meta, data, hash) {
   updateControls();
   const kind = meta.kind || 'attachment';
   if (kind === 'text') {
-    addMessage({ side: 'peer', kind: 'text', text: textDecoder.decode(data), meta, hash });
+    addMessage($('transcript'), { side: 'peer', kind: 'text', text: textDecoder.decode(data), meta, hash });
   } else {
     if (pendingReceiveRow) {
       const finalCard = renderAttachmentCard(meta, data, hash, false, { percent: 100, label: 'Verified', complete: true });
@@ -529,12 +373,11 @@ function handleReceivedItem(meta, data, hash) {
       if (placeholder) placeholder.replaceWith(finalCard);
       pendingReceiveRow = null;
     } else {
-      addMessage({ side: 'peer', kind: 'attachment', meta, data, hash });
+      addMessage($('transcript'), { side: 'peer', kind: 'attachment', meta, data, hash });
     }
   }
-  setProgress(100, `Received ${kind}: ${meta.name || 'item'}.`);
-  log(`Received ${kind} ${meta.name || ''}; hash ${shortHash(hash)} verified.`, 'ok');
-  setTimeout(() => { if (!isSending) setProgress(0, 'No active transfer.'); }, 900);
+  logger.log(`Received ${kind} ${meta.name || ''}; hash ${shortHash(hash)} verified.`, 'ok');
+  setTimeout(() => { if (!isSending) resetTransferPanel(); }, 900);
   scheduleYieldedRetry();
 }
 
@@ -550,14 +393,14 @@ function handleBusy(detail) {
     && info.winnerItemId === localItemId
     && info.loserItemId === localItemId;
   if (!isSending || activeTransfer?.yielded || (!peerWins && !equalIds)) {
-    log('Ignoring BUSY that does not lose the active item arbitration.', 'warn');
+    logger.log('Ignoring BUSY that does not lose the active item arbitration.', 'warn');
     return;
   }
   lastBusyAt = Date.now();
   const retryAfterMs = Number.isFinite(info.retryAfterMs) ? info.retryAfterMs : BUSY_BACKOFF_MS;
   busyRetryDelayMs = Math.max(0, retryAfterMs) + Math.floor(Math.random() * 401);
   if (equalIds) activeTransfer.acceptPeerDuringBackoff = true;
-  log(`Peer item ${info.winnerItemId} has priority${equalIds ? ' (equal item IDs)' : ''}; retrying in ${busyRetryDelayMs} ms.`, 'warn');
+  logger.log(`Peer item ${info.winnerItemId} has priority${equalIds ? ' (equal item IDs)' : ''}; retrying in ${busyRetryDelayMs} ms.`, 'warn');
 }
 
 function scheduleYieldedRetry() {
@@ -570,7 +413,6 @@ function scheduleYieldedRetry() {
     yieldedItem = null;
     pendingSendRow = yielded.row;
     if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Retrying…');
-    setProgress(0, `Retrying ${yielded.label}…`);
     await sendItem(yielded.meta, yielded.chunks, yielded.label);
   }, 0);
 }
@@ -586,11 +428,11 @@ async function connect() {
     if (transport.onDisconnect) unsubscribeDisconnect = transport.onDisconnect(handleDisconnected);
     setConnectionStatus('Connected', 'status-connected');
     $('deviceName').textContent = transport.getName();
-    log(`Connected to ${transport.getName()}.`, 'ok');
+    logger.log(`Connected to ${transport.getName()}.`, 'ok');
   } catch (error) {
     setConnectionStatus('Disconnected', 'status-error');
     $('deviceName').textContent = 'No device';
-    log(`Connection failed: ${error.message}`, 'error');
+    logger.log(`Connection failed: ${error.message}`, 'error');
     transport = null;
   } finally {
     updateControls();
@@ -619,10 +461,11 @@ function handleDisconnected() {
   yieldedItem = null;
   pendingSendRow = null;
   pendingReceiveRow = null;
+  inboundMeter = null;
   setConnectionStatus('Disconnected', 'status-disconnected');
   $('deviceName').textContent = 'No device';
-  setProgress(0, 'No active transfer.');
-  log('Disconnected.', 'warn');
+  resetTransferPanel();
+  logger.log('Disconnected.', 'warn');
   updateControls();
 }
 
@@ -636,7 +479,7 @@ async function sendText() {
   const meta = makeMeta({ itemId, kind: 'text', name: `message-${itemId}.txt`, mimeType: 'text/plain;charset=utf-8', size: data.length, chunks: chunks.length, hash });
   $('textInput').value = '';
   updateControls();
-  addMessage({ side: 'you', kind: 'text', text, meta, hash, pending: true });
+  addMessage($('transcript'), { side: 'you', kind: 'text', text, meta, hash, pending: true });
   await sendItem(meta, chunks, 'text message');
 }
 
@@ -648,7 +491,7 @@ async function sendSelectedFile() {
   const itemId = nextId();
   const chunks = makeChunks(data);
   const meta = makeMeta({ itemId, kind: 'attachment', name: file.name, mimeType: file.type || 'application/octet-stream', size: data.length, chunks: chunks.length, hash });
-  pendingSendRow = addMessage({ side: 'you', kind: 'attachment', meta, data, hash, pending: true, progress: { percent: 0, label: 'Sending…' } });
+  pendingSendRow = addMessage($('transcript'), { side: 'you', kind: 'attachment', meta, data, hash, pending: true, progress: { percent: 0, label: 'Sending…' } });
   await sendItem(meta, chunks, `attachment ${file.name}`);
   $('fileInput').value = '';
   updateControls();
@@ -665,7 +508,7 @@ function readFileAsArrayBuffer(file) {
 
 async function sendItem(meta, chunks, label) {
   if (!transport?.isConnected()) {
-    log('Connect before sending.', 'error');
+    logger.log('Connect before sending.', 'error');
     return;
   }
 
@@ -681,7 +524,10 @@ async function sendItem(meta, chunks, label) {
   };
   activeTransfer = transfer;
   outboundItemId = meta.itemId;
-  setSending(true, `Sending ${label}…`);
+  setSending(true, label);
+  const meter = createThroughputMeter();
+  meter.tick(0, chunks.length, 0);
+  setThroughputText(meter.text());
 
   let trackDataAcks = false;
   const acknowledgedDataSeqs = new Set();
@@ -689,7 +535,8 @@ async function sendItem(meta, chunks, label) {
     if (transfer.yielded || type !== MSG.ITEM_DATA || !trackDataAcks || acknowledgedDataSeqs.has(seq) || seq >= chunks.length) return;
     acknowledgedDataSeqs.add(seq);
     const pct = (acknowledgedDataSeqs.size / chunks.length) * 100;
-    setProgress(pct, `Sending ${acknowledgedDataSeqs.size}/${chunks.length} chunks`);
+    meter.tick(acknowledgedDataSeqs.size, chunks.length, Math.min(acknowledgedDataSeqs.size * MAX_PAYLOAD, meta.size));
+    setThroughputText(meter.text());
     if (pendingSendRow) {
       updateCardProgress(pendingSendRow, pct, `${acknowledgedDataSeqs.size}/${chunks.length} chunks`);
     }
@@ -699,28 +546,23 @@ async function sendItem(meta, chunks, label) {
     await sendWithBusyRetry(async () => {
       const signal = transfer.controller.signal;
       throwIfCancelled(signal);
-      setProgress(8, `Sending HELLO for ${label}…`);
       await raceWithAbort(sender.sendHello(meta.itemId), signal);
       throwIfCancelled(signal);
-      setProgress(18, `Sending metadata for ${label}…`);
       await sendItemMetaWithAbort(meta, signal);
       throwIfCancelled(signal);
       trackDataAcks = true;
       await raceWithAbort(sender.sendItemData(abortableChunks(chunks, signal)), signal);
       trackDataAcks = false;
       throwIfCancelled(signal);
-      setProgress(90, `Finishing ${label}…`);
       await raceWithAbort(sender.sendItemDone(), signal);
     });
-    setProgress(100, `Sent ${label}.`);
     if (pendingSendRow) {
       updateCardProgress(pendingSendRow, 100, 'Sent', 'complete');
     }
-    log(`Sent ${label}; hash ${shortHash(meta.hash)}.`, 'ok');
+    logger.log(`Sent ${label}; hash ${shortHash(meta.hash)}.`, 'ok');
   } catch (error) {
     if (!isAbortError(error)) {
-      setProgress(0, `Failed to send ${label}.`);
-      log(`Send failed: ${error.message}`, 'error');
+      logger.log(`Send failed: ${error.message}`, 'error');
     }
     if (isAbortError(error) && !transfer.yielded && pendingSendRow) {
       updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
@@ -732,7 +574,7 @@ async function sendItem(meta, chunks, label) {
     setSending(false);
     if (!transfer.yielded) pendingSendRow = null;
     if (!transfer.controller.signal.aborted) {
-      setTimeout(() => { if (!isSending) setProgress(0, 'No active transfer.'); }, 900);
+      setTimeout(() => { if (!isSending) resetTransferPanel(); }, 900);
     }
   }
 }
@@ -749,7 +591,7 @@ async function sendWithBusyRetry(operation) {
       if (isAbortError(error)) throw error;
       if (!lastBusyAt || attempt === 3) throw error;
       const delay = busyRetryDelayMs;
-      log(`BUSY interrupted send attempt ${attempt}; retrying in ${delay} ms.`, 'warn');
+      logger.log(`BUSY interrupted send attempt ${attempt}; retrying in ${delay} ms.`, 'warn');
       await raceWithAbort(sleep(delay));
     }
   }
@@ -763,7 +605,7 @@ async function sendCancelFrame() {
       return;
     } catch (error) {
       if (attempt === 3) {
-        log(`Failed to send CANCEL: ${error.message}`, 'error');
+        logger.log(`Failed to send CANCEL: ${error.message}`, 'error');
         return;
       }
       await sleep(200);
@@ -776,8 +618,7 @@ async function cancelActiveTransfer(origin) {
   if (transfer && !transfer.controller.signal.aborted) transfer.controller.abort(makeAbortError());
   if (origin === 'user') {
     if (!transfer && !inboundMeta && inboundHelloItemId == null) return;
-    log('Transfer cancelled by user', 'warn');
-    setProgress(0, 'Cancelled');
+    logger.log('Transfer cancelled by user', 'warn');
     if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
     if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled', 'cancelled');
     await sendCancelFrame();
@@ -785,19 +626,20 @@ async function cancelActiveTransfer(origin) {
       receiver?.resetItem();
       inboundMeta = null;
       inboundHelloItemId = null;
-      addSystemMessage('Transfer cancelled by user');
+      addSystemMessage($('transcript'), 'Transfer cancelled by user');
       scheduleYieldedRetry();
     }
   } else if (origin === 'peer') {
     inboundMeta = null;
     updateControls();
-    log('Transfer cancelled by peer', 'warn');
-    addSystemMessage('Transfer cancelled');
-    setProgress(0, 'Transfer cancelled');
+    logger.log('Transfer cancelled by peer', 'warn');
+    addSystemMessage($('transcript'), 'Transfer cancelled');
     if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled by peer', 'cancelled');
     if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled by peer', 'cancelled');
   }
   setSending(false);
+  setTransferState('cancelled');
+  setThroughputText('--');
 }
 
 function sleep(ms) {
@@ -848,7 +690,6 @@ function linkMockAcrossTabs(transport, role) {
   transport.send = async frame => {
     if (!remoteConnected) return originalSend(frame);
     const copy = new Uint8Array(frame);
-    await sleep(8);
     channel.postMessage({ type: 'frame', role, frame: copy });
   };
   return transport;
@@ -914,7 +755,7 @@ async function sendMockReply(peerSender, description) {
     await peerSender.sendItemData(chunks);
     await peerSender.sendItemDone();
   } catch (error) {
-    log(`Mock peer reply failed: ${error.message}`, 'error');
+    logger.log(`Mock peer reply failed: ${error.message}`, 'error');
   }
 }
 
@@ -927,8 +768,10 @@ $('fileInput').addEventListener('change', () => {
 });
 $('sendFileBtn').addEventListener('click', sendSelectedFile);
 $('cancelBtn').addEventListener('click', () => { cancelActiveTransfer('user'); });
+$('clearTranscriptBtn').addEventListener('click', () => clearTranscript($('transcript')));
+$('clearLogBtn').addEventListener('click', () => logger.clear());
 updateControls();
-log(isMockMode ? 'Mock mode ready. Click Connect to start linked USB/BLE transports.' : 'WebHID mode ready. Use Chrome/Edge on localhost or HTTPS.');
+logger.log(isMockMode ? 'Mock mode ready. Click Connect to start linked USB/BLE transports.' : 'WebHID mode ready. Use Chrome/Edge on localhost or HTTPS.');
 </script>
 </body>
 </html>

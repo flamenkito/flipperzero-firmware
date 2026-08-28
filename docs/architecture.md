@@ -29,7 +29,7 @@ Pocket AirBridge is a browser-only, offline chat and attachment exchange system.
 - Sends protocol messages: **HELLO → ITEM_META → ITEM_DATA[0…N] → ITEM_DONE**.
 - Waits for **ACK** after each chunk before sending the next (backpressure).
 - Receives incoming text messages and attachments from PC-B over USB.
-- Displays a chat transcript, progress bar, and status log.
+- Displays a chat transcript, transfer state, throughput, and status log.
 
 ### Flipper Zero — Bridge Firmware
 - Exposes a **vendor-defined USB HID interface** (Usage Page `0xFF00`) for PC-A communication.
@@ -69,7 +69,7 @@ from `web/airbridge-identity.js`, not HIDS. The on-air UUIDs are service
 - Sends **ACK** after each successfully received chunk.
 - Sends text messages and file attachments to PC-A over BLE.
 - Offers reconstructed attachments as a browser download.
-- Displays a chat transcript, progress bar, and status log.
+- Displays a chat transcript, transfer state, throughput, and status log.
 
 ## Data Flow (Streaming Bridge)
 

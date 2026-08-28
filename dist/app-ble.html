@@ -4,110 +4,380 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="data:,">
-<title>Pocket AirBridge — BLE Chat</title>
 <style>
-  :root { --bg: #0f0f23; --fg: #e0e0ff; --accent: #00f0ff; --error: #ff3366; --ok: #00ffaa; --muted: #9aa0c3; --panel: rgba(255,255,255,0.04); --line: rgba(0,240,255,0.24); }
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); max-width: 860px; margin: 32px auto; padding: 20px; }
-  h1 { color: var(--accent); margin-bottom: 8px; }
-  p { color: var(--muted); }
-  button, input[type="file"]::file-selector-button { font-size: 1rem; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--accent); background: transparent; color: var(--fg); cursor: pointer; }
-  button:disabled, input:disabled { opacity: 0.45; cursor: not-allowed; border-color: #555; }
-  button:hover:not(:disabled), input[type="file"]::file-selector-button:hover { background: rgba(0,240,255,0.1); }
-  input[type="text"] { width: 100%; min-width: 0; padding: 12px 14px; border: 1px solid rgba(224,224,255,0.22); border-radius: 10px; background: rgba(255,255,255,0.06); color: var(--fg); font-size: 1rem; }
-  input[type="file"] { color: var(--muted); max-width: 100%; }
-  .card { margin: 16px 0; padding: 16px; border: 1px solid rgba(224,224,255,0.12); border-radius: 14px; background: var(--panel); }
-  .connection-row, .composer-row, .attachment-row, .status-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-  .connection-row { justify-content: space-between; }
-  .status-pill { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 999px; background: rgba(255,255,255,0.06); color: var(--muted); font-size: 0.92rem; }
-  .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--error); box-shadow: 0 0 12px currentColor; }
-  .status-dot.connecting { background: #ffb347; }
-  .status-dot.connected { background: var(--ok); }
-  .device-name { color: var(--fg); font-family: ui-monospace, SFMono-Regular, monospace; }
-  .mock-badge { display: none; color: var(--ok); border: 1px solid rgba(0,255,170,0.35); border-radius: 999px; padding: 5px 9px; font-size: 0.85rem; }
-  .mock .mock-badge { display: inline-block; }
-  #transcript { height: 430px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: 12px; background: rgba(0,0,0,0.18); border: 1px solid rgba(224,224,255,0.1); }
-  .empty { margin: auto; color: var(--muted); text-align: center; }
-  .message { max-width: 78%; display: flex; flex-direction: column; gap: 5px; }
-  .message.you { align-self: flex-end; align-items: flex-end; }
-  .message.peer { align-self: flex-start; align-items: flex-start; }
-  .message.system { align-self: center; align-items: center; max-width: 86%; }
-  .meta-line { color: var(--muted); font-size: 0.78rem; }
-  .bubble, .attachment-card { padding: 11px 13px; border-radius: 13px; overflow-wrap: anywhere; line-height: 1.4; }
-  .you .bubble, .you .attachment-card { background: rgba(0,240,255,0.13); border: 1px solid var(--line); }
-  .peer .bubble, .peer .attachment-card { background: rgba(255,255,255,0.07); border: 1px solid rgba(224,224,255,0.13); }
-  .system .bubble { background: rgba(255,255,255,0.06); border: 1px solid rgba(224,224,255,0.16); color: var(--muted); font-style: italic; text-align: center; }
-  .attachment-card { min-width: 240px; }
-  .attachment-title { font-weight: 700; color: var(--fg); margin-bottom: 6px; }
-  .attachment-detail { color: var(--muted); font-size: 0.88rem; }
-  .attachment-card a { color: var(--accent); display: inline-block; margin-top: 8px; }
-  .progress-container { margin-top: 6px; }
-  .progress-bar-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.1); overflow: hidden; }
-  .progress-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #a0f); transition: width 0.15s ease; }
-  .progress-bar-fill.complete { background: var(--ok); }
-  .progress-bar-fill.cancelled { background: var(--error); }
-  .progress-label { font-size: 0.72rem; color: var(--muted); margin-top: 3px; }
-  .ok { color: var(--ok); }
-  .warn { color: #ffdf91; }
-  .error { color: var(--error); }
-  #progressWrap { height: 20px; flex: 1 1 180px; min-width: 180px; background: rgba(255,255,255,0.06); border-radius: 10px; overflow: hidden; }
-  #progressBar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #a0f); transition: width 0.18s ease; }
-  #progressText, #stateText { color: var(--muted); font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.86rem; }
-  #log { max-height: 150px; overflow-y: auto; margin-top: 12px; padding: 10px; border-radius: 10px; background: rgba(0,0,0,0.18); font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.82rem; white-space: pre-wrap; }
-  .composer-row { flex-wrap: nowrap; }
-  .composer-row input { flex: 1 1 auto; }
-  @media (max-width: 640px) { body { margin: 12px auto; padding: 14px; } .message { max-width: 92%; } .composer-row { flex-wrap: wrap; } .composer-row button { width: 100%; } }
+/* Pocket AirBridge — shared functional stylesheet.
+   Neutral dark palette, one accent, no glow/gradients/shadows.
+   Offline tool: system fonts only, zero external requests. */
+
+:root {
+  --bg: #14161a;
+  --fg: #e6e6e6;
+  --muted: #9a9aa3;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --error: #f85149;
+  --panel: #1b1e24;
+  --panel-inset: #12141a;
+  --line: #2e3238;
+  --line-strong: #3d4249;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  max-width: 880px;
+  margin: 14px auto;
+  padding: 12px;
+  line-height: 1.35;
+}
+
+h1, h2 { margin-top: 0; }
+h1 { font-size: 1.3rem; margin-bottom: 4px; }
+h2 { font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+p { color: var(--muted); margin: 6px 0; }
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ---------- Layout ---------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 12px;
+  align-items: start;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.connection-row, .composer, .attachment-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.connection-row { flex-wrap: wrap; }
+
+.transfer-actions { display: flex; gap: 10px; margin-top: 12px; }
+.transfer-actions button { flex: 1; }
+
+/* ---------- Connection ---------- */
+
+.status-pill {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.status-disconnected .dot { background: var(--muted); }
+.status-connecting .dot { background: var(--warn); }
+.status-connected .dot { background: var(--ok); }
+.status-error .dot { background: var(--error); }
+
+#deviceName {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Mock indicator ---------- */
+
+.mock-banner {
+  display: none;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  color: var(--warn);
+  background: #241d0d;
+  font-size: 0.9rem;
+}
+body.mock .mock-banner { display: block; }
+
+/* ---------- Transcript ---------- */
+
+#transcript {
+  height: 330px;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--panel-inset);
+  border: 1px solid var(--line);
+}
+
+.empty {
+  color: var(--muted);
+  text-align: center;
+  margin: 120px 0 0;
+}
+
+.message { display: flex; margin: 8px 0; }
+.message.you { justify-content: flex-end; }
+.message.system { justify-content: center; }
+
+.bubble {
+  max-width: min(72%, 560px);
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #23262d;
+  border: 1px solid var(--line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.you .bubble {
+  background: #1c2c42;
+  border-color: #33507a;
+}
+.peer .bubble { background: #23262d; }
+
+.system .bubble {
+  background: transparent;
+  border-style: dashed;
+  color: var(--muted);
+  text-align: center;
+}
+.system .meta-line { justify-content: center; }
+
+.meta-line {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-bottom: 6px;
+}
+
+.sender { color: var(--fg); font-weight: 600; }
+
+/* ---------- Attachment ---------- */
+
+.attachment-card { display: grid; gap: 7px; min-width: 230px; }
+
+.attachment-name {
+  font-weight: 600;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.hash-ok { color: var(--ok); }
+.hash-error { color: var(--error); }
+
+.download-link { color: var(--accent); text-decoration: none; }
+.download-link:hover { text-decoration: underline; }
+
+.progress-container { margin-top: 6px; }
+
+.progress-bar-track {
+  height: 6px;
+  border-radius: 999px;
+  background: #0d0f12;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.15s ease;
+}
+.progress-bar-fill.complete { background: var(--ok); }
+.progress-bar-fill.cancelled { background: var(--error); }
+
+.progress-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+/* ---------- Transfer panel ---------- */
+
+.panel-state {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--fg);
+  font-size: 0.95rem;
+}
+
+.throughput {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Log ---------- */
+
+#log {
+  height: 132px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--panel-inset);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+}
+
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.error { color: var(--error); }
+
+.hint {
+  font-size: 0.86rem;
+  color: var(--muted);
+  margin: 8px 0 0;
+}
+
+/* ---------- Buttons / inputs ---------- */
+
+button {
+  font: inherit;
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  background: rgba(88, 166, 255, 0.12);
+  border-color: var(--accent);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+input[type="text"] {
+  font: inherit;
+  min-width: 0;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel-inset);
+  color: var(--fg);
+}
+input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+input[type="text"]:disabled { opacity: 0.45; }
+
+input[type="file"] {
+  font: inherit;
+  width: 100%;
+  min-width: 0;
+  padding: 6px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel-inset);
+  color: var(--muted);
+}
+input[type="file"]:disabled { opacity: 0.45; }
+
+.clear-btn {
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  border-color: var(--line);
+}
+.clear-btn:hover:not(:disabled) {
+  color: var(--fg);
+  background: rgba(88, 166, 255, 0.12);
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 760px) {
+  body { margin: 12px auto; padding: 12px; }
+  .grid { grid-template-columns: 1fr; }
+  #transcript { height: 390px; }
+  .composer, .attachment-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .bubble { max-width: 88%; }
+}
+
 </style>
+<title>Pocket AirBridge — BLE Chat</title>
 </head>
 <body>
 <h1>Pocket AirBridge — BLE Chat</h1>
-<p>PC-B Web Bluetooth chat endpoint for text and attachments. Add <code>?mock=1</code> to test with an in-page paired USB mock.</p>
+<p>PC-B chat endpoint over Web Bluetooth. Send text or attachments through the AirBridge.</p>
+<div class="mock-banner">Mock mode is active from <span class="mono">?mock=1</span>; Web Bluetooth permission prompt is bypassed and a paired mock USB endpoint replies in-page.</div>
 
 <section class="card" aria-labelledby="connectionTitle">
+  <h2 id="connectionTitle">Connection</h2>
   <div class="connection-row">
-    <div>
-      <h2 id="connectionTitle">Connection</h2>
-      <div class="status-row">
-        <span class="status-pill"><span id="statusDot" class="status-dot"></span><span id="connectionStatus">disconnected</span></span>
-        <span id="deviceName" class="device-name">No device</span>
-        <span class="mock-badge">Mock transport</span>
-      </div>
+    <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span id="connectionStatus">disconnected</span></span>
+    <button id="connectBtn" type="button">Connect BLE</button>
+    <button id="disconnectBtn" type="button" disabled>Disconnect</button>
+    <span id="deviceName" class="mono">No device</span>
+  </div>
+  <p class="hint" id="pickerHint">Pick the HP Wireless device in the list.</p>
+</section>
+
+<main class="grid" style="margin-top:12px;">
+  <section class="card" aria-labelledby="chatTitle">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px;">
+      <h2 id="chatTitle" style="margin:0;">Chat Transcript</h2>
+      <button id="clearTranscriptBtn" type="button" class="clear-btn">Clear</button>
     </div>
-    <div class="connection-row">
-      <button type="button" id="connectBtn">Pair</button>
-      <button type="button" id="disconnectBtn" disabled>Disconnect</button>
+    <div id="transcript" aria-live="polite"><div class="empty">No messages yet.</div></div>
+    <form id="textForm" class="composer" style="margin-top:8px;">
+      <input id="textInput" type="text" placeholder="Type a message" autocomplete="off" disabled>
+      <button id="sendTextBtn" type="submit" disabled>Send</button>
+    </form>
+    <div class="attachment-row" style="margin-top:8px;">
+      <input id="fileInput" type="file" disabled>
+      <button id="sendFileBtn" type="button" disabled>Send Attachment</button>
     </div>
-  </div>
-  <p>Pick the HP Wireless device in the list.</p>
-</section>
+    <p class="hint">Attachments are chunked automatically during transfer.</p>
+  </section>
 
-<section class="card" aria-labelledby="chatTitle">
-  <h2 id="chatTitle">Chat Transcript</h2>
-  <div id="transcript" aria-live="polite"><div class="empty">No messages yet.</div></div>
-</section>
-
-<section class="card" aria-labelledby="sendTitle">
-  <h2 id="sendTitle">Send</h2>
-  <div class="composer-row">
-    <input type="text" id="messageInput" placeholder="Type a message" autocomplete="off" disabled>
-    <button type="button" id="sendBtn" disabled>Send</button>
-  </div>
-  <div class="attachment-row" style="margin-top: 12px;">
-    <input type="file" id="fileInput" disabled>
-    <span id="fileHint" class="attachment-detail">Attachments are supported.</span>
-  </div>
-</section>
-
-<section class="card" aria-labelledby="transferTitle">
-  <h2 id="transferTitle">Transfer State</h2>
-  <div class="status-row">
-    <div id="progressWrap" aria-label="Active transfer progress"><div id="progressBar"></div></div>
-    <span id="progressText">Idle</span>
-    <span id="stateText">half-duplex: ready</span>
-    <button type="button" id="cancelBtn" hidden>Cancel</button>
-  </div>
-  <div id="log" aria-live="polite">Waiting...</div>
-</section>
+  <aside class="card" aria-labelledby="transferTitle">
+    <h2 id="transferTitle">Transfer State</h2>
+    <div id="panelState" class="panel-state">idle</div>
+    <div id="throughput" class="throughput">--</div>
+    <div class="transfer-actions">
+      <button id="cancelBtn" type="button" hidden>Cancel Transfer</button>
+    </div>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin:12px 0 8px;">
+      <h2 style="margin:0;">Status Log</h2>
+      <button id="clearLogBtn" type="button" class="clear-btn">Clear</button>
+    </div>
+    <pre id="log">Waiting…</pre>
+  </aside>
+</main>
 
 <script>
 const { buildMessage, encodeMeta, ItemReceiver, ItemSender, MAX_PAYLOAD, MSG, parseMessage, sha256 } = (() => {
@@ -1259,6 +1529,218 @@ class WebBluetoothAdapter {
 
 return { WebBluetoothAdapter };
 })();
+const { addMessage, addSystemMessage, clearTranscript, createLogger, createThroughputMeter, escapeHtml, formatBytes, renderAttachmentCard, shortHash, timeLabel, updateCardProgress } = (() => {
+// airbridge-ui.js — shared UI helpers for chat-usb.html and chat-ble.html.
+// Extracted from chat-usb.html; reproduces its DOM structures and class names
+// exactly. Zero dependencies, no DOM access at module top level, no emoji.
+// build_bundle.py inlines this file: declaration exports only, no import/export lists.
+
+function formatBytes(size) {
+  const n = Number(size) || 0;
+  if (n < 1024) return `${n} B`;
+  return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+}
+
+function shortHash(hash) {
+  const normalized = String(hash || '').replace(/^sha256:/, '');
+  return normalized ? `${normalized.slice(0, 12)}…` : 'unknown';
+}
+
+function timeLabel(date = new Date()) {
+  const pad = value => String(value).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(
+    /[&<>"]/g,
+    char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char],
+  );
+}
+
+// Status log (#log). Works with <pre> and <div> hosts: one block line per entry.
+// The pages seed the log with a placeholder ("Waiting…"); the first real log
+// line clears it.
+function createLogger(logEl, options = {}) {
+  const placeholder = options.placeholder ?? 'Waiting…';
+
+  function log(message, className = '') {
+    if (logEl.textContent === placeholder) logEl.textContent = '';
+    const line = document.createElement('div');
+    line.className = className;
+    line.textContent = `[${timeLabel()}] ${message}`;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+    return line;
+  }
+
+  function clear() {
+    logEl.textContent = '';
+  }
+
+  return { log, clear };
+}
+
+// Removes all transcript rows and restores the empty-state placeholder.
+function clearTranscript(transcriptEl, emptyText = 'Connect, then send a message or attachment.') {
+  transcriptEl.textContent = '';
+  if (!emptyText) return;
+  const empty = document.createElement('div');
+  empty.className = 'empty';
+  empty.textContent = emptyText;
+  transcriptEl.appendChild(empty);
+}
+
+function clearTranscriptEmptyState(transcriptEl) {
+  const empty = transcriptEl.querySelector('.empty');
+  if (empty) empty.remove();
+}
+
+// Transcript row: .message.you|peer|system > .bubble > .meta-line + body/card.
+function addMessage(transcriptEl, { side, kind, text, meta, data, hash, pending = false, progress }) {
+  clearTranscriptEmptyState(transcriptEl);
+  const row = document.createElement('article');
+  row.className = `message ${side}`;
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  const metaLine = document.createElement('div');
+  metaLine.className = 'meta-line';
+  const senderLabel = document.createElement('span');
+  senderLabel.className = 'sender';
+  senderLabel.textContent = side === 'you' ? 'You' : side === 'peer' ? 'Peer' : 'System';
+  const time = document.createElement('span');
+  time.textContent = timeLabel();
+  metaLine.append(senderLabel, time);
+  bubble.appendChild(metaLine);
+
+  if (kind === 'text') {
+    const body = document.createElement('div');
+    body.textContent = text;
+    bubble.appendChild(body);
+  } else {
+    bubble.appendChild(renderAttachmentCard(meta, data, hash, pending, progress));
+  }
+
+  row.appendChild(bubble);
+  transcriptEl.appendChild(row);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  return row;
+}
+
+function addSystemMessage(transcriptEl, text) {
+  return addMessage(transcriptEl, { side: 'system', kind: 'text', text });
+}
+
+// Attachment card. All meta-derived strings go through textContent only —
+// never innerHTML. Creates an object-URL download link when data is present.
+function renderAttachmentCard(meta, data, hash, pending, progress) {
+  const card = document.createElement('div');
+  card.className = 'attachment-card';
+  const name = document.createElement('div');
+  name.className = 'attachment-name';
+  name.textContent = meta.name || meta.filename || 'attachment';
+  const size = document.createElement('div');
+  size.textContent = `${formatBytes(meta.size ?? data?.length ?? 0)} · ${meta.mimeType || 'application/octet-stream'}`;
+  const hashLine = document.createElement('div');
+  hashLine.className = pending ? 'warn' : 'hash-ok';
+  hashLine.textContent = pending
+    ? `SHA-256 pending: ${shortHash(meta.hash)}`
+    : `SHA-256 verified: ${shortHash(hash || meta.hash)}`;
+  card.append(name, size, hashLine);
+
+  if (progress != null) {
+    const container = document.createElement('div');
+    container.className = 'progress-container';
+    const track = document.createElement('div');
+    track.className = 'progress-bar-track';
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-valuenow', Math.round(progress.percent));
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+    const fill = document.createElement('div');
+    fill.className = `progress-bar-fill${progress.complete ? ' complete' : ''}${progress.cancelled ? ' cancelled' : ''}`;
+    fill.style.width = `${progress.percent}%`;
+    fill.setAttribute('aria-hidden', 'true');
+    track.appendChild(fill);
+    const label = document.createElement('div');
+    label.className = 'progress-label';
+    label.textContent = progress.label;
+    container.append(track, label);
+    card.appendChild(container);
+  }
+
+  if (data) {
+    const blob = new Blob([data], { type: meta.mimeType || 'application/octet-stream' });
+    const link = document.createElement('a');
+    link.className = 'download-link';
+    link.href = URL.createObjectURL(blob);
+    link.download = meta.name || meta.filename || 'airbridge-attachment';
+    link.textContent = 'Download attachment';
+    card.appendChild(link);
+  }
+  return card;
+}
+
+function updateCardProgress(messageRow, percent, label, state) {
+  const track = messageRow.querySelector('.progress-bar-track');
+  const fill = messageRow.querySelector('.progress-bar-fill');
+  const labelEl = messageRow.querySelector('.progress-label');
+  if (!track || !fill || !labelEl) return;
+  const safe = Math.max(0, Math.min(100, percent));
+  track.setAttribute('aria-valuenow', Math.round(safe));
+  fill.style.width = `${safe}%`;
+  fill.className = `progress-bar-fill${state === 'complete' ? ' complete' : ''}${state === 'cancelled' ? ' cancelled' : ''}`;
+  labelEl.textContent = label;
+}
+
+// Throughput meter. EMA over inter-chunk byte rates; ETA from remaining bytes
+// (estimated via average bytes/chunk). "--" until at least 2 rate samples.
+// Inject options.now (ms) for deterministic tests.
+function createThroughputMeter(options = {}) {
+  const nowFn = options.now ?? (() => Date.now());
+  const alpha = options.alpha ?? 0.35;
+  let lastTime = null;
+  let lastBytes = 0;
+  let emaBps = 0;
+  let samples = 0;
+  let chunksDone = 0;
+  let totalChunks = 0;
+  let bytesDone = 0;
+
+  function tick(done, total, bytes) {
+    chunksDone = done;
+    totalChunks = total;
+    bytesDone = bytes;
+    const t = nowFn();
+    if (lastTime != null) {
+      const dt = (t - lastTime) / 1000;
+      const db = bytes - lastBytes;
+      if (dt > 0 && db >= 0) {
+        const sample = db / dt;
+        emaBps = samples === 0 ? sample : alpha * sample + (1 - alpha) * emaBps;
+        samples += 1;
+      }
+    }
+    lastTime = t;
+    lastBytes = bytes;
+  }
+
+  function text() {
+    const prefix = `${chunksDone}/${totalChunks} chunks`;
+    if (samples < 2 || emaBps <= 0) return `${prefix} · -- KB/s · -- left`;
+    const kbps = emaBps / 1024;
+    const avgChunkBytes = chunksDone > 0 ? bytesDone / chunksDone : 0;
+    const remainingBytes = avgChunkBytes * Math.max(0, totalChunks - chunksDone);
+    const etaSec = Math.max(0, Math.round(remainingBytes / emaBps));
+    return `${prefix} · ${kbps.toFixed(1)} KB/s · ~${etaSec}s left`;
+  }
+
+  return { tick, text };
+}
+
+return { addMessage, addSystemMessage, clearTranscript, createLogger, createThroughputMeter, escapeHtml, formatBytes, renderAttachmentCard, shortHash, timeLabel, updateCardProgress };
+})();
 
 const BUSY_BACKOFF_MS = 900;
 const encoder = new TextEncoder();
@@ -1285,6 +1767,7 @@ let pendingSendRow = null;
 let pendingReceiveRow = null;
 let yieldedItem = null;
 let yieldedRetryScheduled = false;
+let transferMeter = null;
 
 const $ = id => document.getElementById(id);
 function sleep(ms, signal) {
@@ -1304,37 +1787,37 @@ function sleep(ms, signal) {
 
 if (mockMode) document.body.classList.add('mock');
 
-function now() {
-  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
-function log(text, className = '') {
-  const row = document.createElement('div');
-  row.className = className;
-  row.textContent = `[${now()}] ${text}`;
-  if ($('log').textContent === 'Waiting...') $('log').textContent = '';
-  $('log').appendChild(row);
-  $('log').scrollTop = $('log').scrollHeight;
-}
+const logger = createLogger($('log'));
+const log = logger.log;
 
 function setConnectionStatus(status, deviceName = '') {
   $('connectionStatus').textContent = status;
   $('deviceName').textContent = deviceName || 'No device';
-  $('statusDot').className = `status-dot ${status === 'connected' ? 'connected' : status === 'connecting' ? 'connecting' : ''}`;
+  const pillClass = status === 'connected'
+    ? 'status-connected'
+    : status === 'connecting'
+      ? 'status-connecting'
+      : 'status-disconnected';
+  $('statusPill').className = `status-pill ${pillClass}`;
+  $('pickerHint').hidden = status === 'connected';
   updateControls();
 }
 
-function setProgress(percent, text) {
-  const safe = Math.max(0, Math.min(100, Number(percent) || 0));
-  $('progressBar').style.width = `${safe}%`;
-  $('progressText').textContent = text || (safe ? `${Math.round(safe)}%` : 'Idle');
+function resetTransferPanel() {
+  $('panelState').textContent = 'idle';
+  $('throughput').textContent = '--';
+  transferMeter = null;
 }
 
-function setSending(value, itemId = null, statusText = null) {
+function setSending(value, itemId = null, panelText = null) {
   isSending = value;
   activeItemId = value ? itemId : null;
   receiver?.setBusy(value);
-  $('stateText').textContent = statusText || (value ? `half-duplex: sending item ${itemId}` : 'half-duplex: ready');
+  if (panelText != null) {
+    $('panelState').textContent = panelText;
+  } else if (!value && inboundMeta == null && inboundHelloItemId == null) {
+    $('panelState').textContent = 'idle';
+  }
   updateControls();
 }
 
@@ -1344,113 +1827,12 @@ function updateControls() {
   const canCancel = isSending || isReceiving || Boolean(inboundMeta);
   $('connectBtn').disabled = connected || isConnecting;
   $('disconnectBtn').disabled = !connected || isConnecting;
-  $('messageInput').disabled = !connected || isSending || isReceiving;
-  $('sendBtn').disabled = !connected || isSending || isReceiving || !$('messageInput').value.trim();
+  $('textInput').disabled = !connected || isSending || isReceiving;
+  $('sendTextBtn').disabled = !connected || isSending || isReceiving || !$('textInput').value.trim();
   $('fileInput').disabled = !connected || isSending || isReceiving;
+  $('sendFileBtn').disabled = !connected || isSending || isReceiving || !$('fileInput').files?.length;
   $('cancelBtn').hidden = !connected || !canCancel;
   $('cancelBtn').disabled = !connected || !canCancel;
-}
-
-function clearTranscriptEmptyState() {
-  const empty = $('transcript').querySelector('.empty');
-  if (empty) empty.remove();
-}
-
-function addTextMessage(side, text, timestamp = new Date()) {
-  clearTranscriptEmptyState();
-  const row = document.createElement('div');
-  row.className = `message ${side}`;
-  row.innerHTML = `<div class="meta-line">${side === 'you' ? 'You' : 'Peer'} · ${timestamp.toLocaleTimeString()}</div>`;
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble';
-  bubble.textContent = text;
-  row.appendChild(bubble);
-  $('transcript').appendChild(row);
-  $('transcript').scrollTop = $('transcript').scrollHeight;
-}
-
-function addSystemMessage(text, timestamp = new Date()) {
-  clearTranscriptEmptyState();
-  const row = document.createElement('div');
-  row.className = 'message system';
-  row.innerHTML = `<div class="meta-line">System · ${timestamp.toLocaleTimeString()}</div>`;
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble';
-  bubble.textContent = text;
-  row.appendChild(bubble);
-  $('transcript').appendChild(row);
-  $('transcript').scrollTop = $('transcript').scrollHeight;
-}
-
-function addAttachmentMessage(side, meta, data, hash, timestamp = new Date(), progress) {
-  clearTranscriptEmptyState();
-  const row = document.createElement('div');
-  row.className = `message ${side}`;
-  row.innerHTML = `<div class="meta-line">${side === 'you' ? 'You' : 'Peer'} · ${timestamp.toLocaleTimeString()}</div>`;
-  const card = document.createElement('div');
-  card.className = 'attachment-card';
-  const hashText = hash ? `verified ${shortHash(hash)}` : `hash ${shortHash(meta.hash || '')}`;
-  card.innerHTML = `<div class="attachment-title">📎 ${escapeHtml(meta.name || 'attachment')}</div><div class="attachment-detail">${formatBytes(meta.size || 0)} · ${escapeHtml(meta.mimeType || 'application/octet-stream')}</div><div class="attachment-detail ${hash ? 'ok' : 'warn'}">SHA-256 ${escapeHtml(hashText)}</div>`;
-
-  if (progress != null) {
-    const container = document.createElement('div');
-    container.className = 'progress-container';
-    const track = document.createElement('div');
-    track.className = 'progress-bar-track';
-    track.setAttribute('role', 'progressbar');
-    track.setAttribute('aria-valuenow', Math.round(progress.percent));
-    track.setAttribute('aria-valuemin', '0');
-    track.setAttribute('aria-valuemax', '100');
-    const fill = document.createElement('div');
-    fill.className = `progress-bar-fill${progress.complete ? ' complete' : ''}${progress.cancelled ? ' cancelled' : ''}`;
-    fill.style.width = `${progress.percent}%`;
-    fill.setAttribute('aria-hidden', 'true');
-    track.appendChild(fill);
-    const label = document.createElement('div');
-    label.className = 'progress-label';
-    label.textContent = progress.label;
-    container.append(track, label);
-    card.appendChild(container);
-  }
-
-  if (data) {
-    const blob = new Blob([data], { type: meta.mimeType || 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = meta.name || 'airbridge-attachment';
-    link.textContent = 'Download attachment';
-    card.appendChild(link);
-  }
-  row.appendChild(card);
-  $('transcript').appendChild(row);
-  $('transcript').scrollTop = $('transcript').scrollHeight;
-  return row;
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
-}
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / 1024).toFixed(1)} KB`;
-}
-
-function shortHash(hash) {
-  return `${String(hash).replace(/^sha256:/, '').slice(0, 16)}…`;
-}
-
-function updateCardProgress(messageRow, percent, label, state) {
-  const track = messageRow.querySelector('.progress-bar-track');
-  const fill = messageRow.querySelector('.progress-bar-fill');
-  const labelEl = messageRow.querySelector('.progress-label');
-  if (!track || !fill || !labelEl) return;
-  const safe = Math.max(0, Math.min(100, percent));
-  track.setAttribute('aria-valuenow', Math.round(safe));
-  fill.style.width = `${safe}%`;
-  fill.className = `progress-bar-fill${state === 'complete' ? ' complete' : ''}${state === 'cancelled' ? ' cancelled' : ''}`;
-  labelEl.textContent = label;
 }
 
 function abortError(message = 'Transfer cancelled') {
@@ -1557,7 +1939,7 @@ async function connect() {
       ? createMockBleTransport()
       : new WebBluetoothAdapter({ onDisconnect: handleDisconnected });
     await transport.connect();
-    sender = new ItemSender(sendFrameWithBusyBackoff, { timeoutMs: mockMode ? 800 : 5000, retries: 4 });
+    sender = new ItemSender(sendFrameWithBusyBackoff, { timeoutMs: mockMode ? 1200 : 5000, retries: 4 });
     receiver = new ItemReceiver({ sendFn: frame => transport.send(frame), busy: false });
     wireProtocolEvents();
     unsubscribeReceive = transport.onReceive(handleFrame);
@@ -1603,7 +1985,7 @@ function handleDisconnected() {
   pendingReceiveRow = null;
   yieldedItem = null;
   setSending(false);
-  setProgress(0, 'Idle');
+  resetTransferPanel();
   setConnectionStatus('disconnected');
   log('Disconnected.', 'warn');
 }
@@ -1616,24 +1998,41 @@ function wireProtocolEvents() {
   receiver.on('cancel', handlePeerCancel);
   receiver.on('hello', detail => {
     inboundHelloItemId = detail.itemId;
+    $('panelState').textContent = `receiving: item ${detail.itemId ?? 'unknown'}`;
+    $('throughput').textContent = '0/? chunks · -- KB/s · -- left';
     updateControls();
     log(`Peer HELLO item=${detail.itemId ?? 'unknown'}`);
   });
   receiver.on('meta', meta => {
     inboundMeta = meta;
     inboundChunks = 0;
+    transferMeter = createThroughputMeter();
+    transferMeter.tick(0, meta.chunks || 0, 0);
     updateControls();
-    setProgress(0, `Receiving ${meta.kind || 'item'}...`);
+    $('panelState').textContent = `receiving: ${meta.name || 'item'}`;
+    $('throughput').textContent = transferMeter.text();
     log(`Receiving ${meta.kind || 'item'}: ${meta.name || '(unnamed)'} (${formatBytes(meta.size || 0)})`);
     if (meta.kind !== 'text') {
-      pendingReceiveRow = addAttachmentMessage('peer', meta, null, null, new Date(), { percent: 0, label: 'Receiving…' });
+      pendingReceiveRow = addMessage($('transcript'), {
+        side: 'peer',
+        kind: 'attachment',
+        meta,
+        pending: true,
+        progress: { percent: 0, label: 'Receiving…' },
+      });
     }
   });
   receiver.on('data', detail => {
     inboundChunks = detail.received;
     if (detail.meta?.chunks) {
       const pct = (detail.received / detail.meta.chunks) * 100;
-      setProgress(pct, `Receiving ${detail.received}/${detail.meta.chunks}`);
+      if (!isSending) $('panelState').textContent = `receiving: ${detail.meta.name || 'item'}`;
+      transferMeter?.tick(
+        detail.received,
+        detail.meta.chunks,
+        Math.min(detail.received * MAX_PAYLOAD, detail.meta.size || detail.received * MAX_PAYLOAD),
+      );
+      if (transferMeter) $('throughput').textContent = transferMeter.text();
       if (pendingReceiveRow) {
         updateCardProgress(pendingReceiveRow, pct, `${detail.received}/${detail.meta.chunks} chunks`);
       }
@@ -1646,7 +2045,16 @@ function wireProtocolEvents() {
 
 async function handleFrame(frame) {
   const parsed = parseMessage(frame);
-  if (parsed?.type === MSG.ERROR) sender?.receiveError(parsed);
+  if (parsed?.type === MSG.ACK) {
+    sender?.receiveAck(parsed);
+    return;
+  }
+
+  if (parsed?.type === MSG.ERROR) {
+    sender?.receiveError(parsed);
+    await receiver?.onMessage(parsed);
+    return;
+  }
 
   if (parsed?.type === MSG.HELLO && isSending && activeTransfer && !activeTransfer.yielded && activeItemId != null) {
     const peerItemId = readHelloItemId(parsed);
@@ -1700,9 +2108,8 @@ async function yieldToPeer(msg, peerItemId) {
   transfer.controller.abort(abortError(`Yielded to peer item ${peerItemId}`));
   settleAbortedSend(transfer);
   receiver?.setBusy(false);
-  setProgress(0, `Yielded to peer item ${peerItemId}`);
   if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Yielded');
-  addSystemMessage(`Yielded to peer item ${peerItemId}`);
+  addSystemMessage($('transcript'), `Yielded to peer item ${peerItemId}`);
   log(`Yielded local item ${transfer.itemId} to peer item ${peerItemId}.`, 'warn');
   await receiver?.onMessage(msg);
 }
@@ -1717,7 +2124,6 @@ function scheduleYieldedRetry() {
     yieldedItem = null;
     pendingSendRow = yielded.row;
     if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Retrying…');
-    setProgress(0, `Retrying ${yielded.meta.kind}...`);
     await sendItem(yielded.meta, yielded.chunks, yielded.onRendered);
   }, 0);
 }
@@ -1732,9 +2138,10 @@ function handlePeerCancel() {
   inboundMeta = null;
   inboundHelloItemId = null;
   inboundChunks = 0;
-  setProgress(0, 'Transfer cancelled');
-  setSending(false, null, 'half-duplex: cancelled');
-  addSystemMessage('Transfer cancelled by peer');
+  $('throughput').textContent = '--';
+  transferMeter = null;
+  setSending(false, null, 'cancelled');
+  addSystemMessage($('transcript'), 'Transfer cancelled by peer');
   log('Transfer cancelled by peer', 'warn');
   if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled by peer', 'cancelled');
   if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled by peer', 'cancelled');
@@ -1774,41 +2181,36 @@ async function sendFrameWithBusyBackoff(frame) {
 }
 
 async function handleIncomingItem({ meta, data, hash }) {
-  setProgress(100, 'Receive complete');
   inboundMeta = null;
   inboundHelloItemId = null;
   updateControls();
+  $('panelState').textContent = 'idle';
   if (meta.kind === 'text') {
-    addTextMessage('peer', decoder.decode(data));
+    addMessage($('transcript'), { side: 'peer', kind: 'text', text: decoder.decode(data) });
     log(`Received text message (${formatBytes(data.length)}).`, 'ok');
   } else {
     if (pendingReceiveRow) {
-      const finalCard = document.createElement('div');
-      finalCard.className = 'attachment-card';
-      const hashText = hash ? `verified ${shortHash(hash)}` : `hash ${shortHash(meta.hash || '')}`;
-      finalCard.innerHTML = `<div class="attachment-title">📎 ${escapeHtml(meta.name || 'attachment')}</div><div class="attachment-detail">${formatBytes(meta.size || 0)} · ${escapeHtml(meta.mimeType || 'application/octet-stream')}</div><div class="attachment-detail ok">SHA-256 ${escapeHtml(hashText)}</div>`;
-      const blob = new Blob([data], { type: meta.mimeType || 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = meta.name || 'airbridge-attachment';
-      link.textContent = 'Download attachment';
-      finalCard.appendChild(link);
+      const finalCard = renderAttachmentCard(meta, data, hash, false);
       const placeholder = pendingReceiveRow.querySelector('.attachment-card');
       if (placeholder) placeholder.replaceWith(finalCard);
       pendingReceiveRow = null;
     } else {
-      addAttachmentMessage('peer', meta, data, hash);
+      addMessage($('transcript'), { side: 'peer', kind: 'attachment', meta, data, hash });
     }
     log(`Received attachment ${meta.name || '(unnamed)'}; SHA-256 verified.`, 'ok');
   }
   inboundChunks = 0;
-  setTimeout(() => setProgress(0, 'Idle'), 700);
+  setTimeout(() => {
+    if (!isSending && inboundMeta == null) {
+      $('throughput').textContent = '--';
+      transferMeter = null;
+    }
+  }, 700);
   scheduleYieldedRetry();
 }
 
 async function sendText() {
-  const text = $('messageInput').value.trim();
+  const text = $('textInput').value.trim();
   if (!text) return;
   const data = encoder.encode(text);
   const itemId = makeItemId();
@@ -1823,9 +2225,9 @@ async function sendText() {
     chunks: chunks.length,
     hash: `sha256:${hash}`,
   };
-  $('messageInput').value = '';
+  $('textInput').value = '';
   updateControls();
-  await sendItem(meta, chunks, () => addTextMessage('you', text));
+  await sendItem(meta, chunks, () => addMessage($('transcript'), { side: 'you', kind: 'text', text }));
 }
 
 async function sendSelectedFile() {
@@ -1846,7 +2248,15 @@ async function sendSelectedFile() {
     hash: `sha256:${hash}`,
   };
   $('fileInput').value = '';
-  pendingSendRow = addAttachmentMessage('you', meta, data, hash, new Date(), { percent: 0, label: 'Sending…' });
+  updateControls();
+  pendingSendRow = addMessage($('transcript'), {
+    side: 'you',
+    kind: 'attachment',
+    meta,
+    data,
+    hash,
+    progress: { percent: 0, label: 'Sending…' },
+  });
   await sendItem(meta, chunks, () => {});
 }
 
@@ -1880,18 +2290,22 @@ async function sendItem(meta, chunks, onRendered) {
   transferCancelSource = null;
   const { signal } = transfer.controller;
   let outcome = 'sent';
-  setSending(true, meta.itemId);
-  setProgress(0, `Sending ${meta.kind}...`);
+  transferMeter = createThroughputMeter();
+  transferMeter.tick(0, chunks.length, 0);
+  $('throughput').textContent = transferMeter.text();
+  setSending(true, meta.itemId, `sending: ${meta.name}`);
   log(`Sending ${meta.kind} item ${meta.itemId} (${chunks.length} chunks).`);
   const acknowledgedDataSeqs = new Set();
   let trackDataAcks = false;
   const unsubscribeAck = sender.onAck((seq, _message, type) => {
     if (transfer.yielded || type !== MSG.ITEM_DATA || !trackDataAcks || acknowledgedDataSeqs.has(seq) || seq >= chunks.length) return;
     acknowledgedDataSeqs.add(seq);
-    const pct = (acknowledgedDataSeqs.size / chunks.length) * 100;
-    setProgress(pct, `Sending ${acknowledgedDataSeqs.size}/${chunks.length}`);
+    const acked = acknowledgedDataSeqs.size;
+    const pct = (acked / chunks.length) * 100;
+    transferMeter?.tick(acked, chunks.length, Math.min(acked * MAX_PAYLOAD, meta.size));
+    if (transferMeter) $('throughput').textContent = transferMeter.text();
     if (pendingSendRow) {
-      updateCardProgress(pendingSendRow, pct, `${acknowledgedDataSeqs.size}/${chunks.length} chunks`);
+      updateCardProgress(pendingSendRow, pct, `${acked}/${chunks.length} chunks`);
     }
   });
   try {
@@ -1907,7 +2321,6 @@ async function sendItem(meta, chunks, onRendered) {
     await raceWithAbort(sender.sendItemDone(), signal);
     onRendered();
     log(`Sent ${meta.kind} item ${meta.itemId}; SHA-256 ${shortHash(meta.hash)}.`, 'ok');
-    setProgress(100, 'Send complete');
     if (pendingSendRow) {
       updateCardProgress(pendingSendRow, 100, 'Sent', 'complete');
     }
@@ -1916,14 +2329,15 @@ async function sendItem(meta, chunks, onRendered) {
       outcome = 'yielded';
     } else if (signal.aborted || error?.name === 'AbortError') {
       outcome = 'cancelled';
-      setProgress(0, 'Cancelled');
+      $('throughput').textContent = '--';
+      transferMeter = null;
       if (pendingSendRow) {
         updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
       }
     } else {
       outcome = 'failed';
       log(`Send failed: ${error.message}`, 'error');
-      setProgress(0, 'Send failed');
+      resetTransferPanel();
     }
   } finally {
     unsubscribeAck();
@@ -1932,9 +2346,14 @@ async function sendItem(meta, chunks, onRendered) {
     if (transferAbortController === transfer.controller) transferAbortController = null;
     transferCancelSource = null;
     if (!transfer.yielded) pendingSendRow = null;
-    setSending(false, null, outcome === 'yielded' ? 'half-duplex: receiving peer item' : outcome === 'cancelled' ? 'half-duplex: cancelled' : 'half-duplex: ready');
+    setSending(false, null, outcome === 'yielded' ? null : outcome === 'cancelled' ? 'cancelled' : 'idle');
     if (outcome === 'sent') {
-      setTimeout(() => { if (!isSending) setProgress(0, 'Idle'); }, 900);
+      setTimeout(() => {
+        if (!isSending && inboundMeta == null) {
+          $('throughput').textContent = '--';
+          transferMeter = null;
+        }
+      }, 900);
     }
   }
 }
@@ -1987,7 +2406,6 @@ function linkMockAcrossTabs(transport, role) {
   transport.send = async frame => {
     if (!remoteConnected) return originalSend(frame);
     const copy = new Uint8Array(frame);
-    await sleep(8);
     channel.postMessage({ type: 'frame', role, frame: copy });
   };
   return transport;
@@ -2017,7 +2435,7 @@ function createEndpoint(name) {
 }
 
 function installMockPeer(endpoint) {
-  const mockSender = new ItemSender(frame => endpoint.send(frame), { timeoutMs: 800, retries: 3 });
+  const mockSender = new ItemSender(frame => endpoint.send(frame), { timeoutMs: 1200, retries: 3 });
   const mockReceiver = new ItemReceiver({ sendFn: frame => endpoint.send(frame) });
   let replyQueued = false;
 
@@ -2065,7 +2483,11 @@ async function sendCancelFrame() {
 
 $('connectBtn').addEventListener('click', connect);
 $('disconnectBtn').addEventListener('click', disconnect);
-$('sendBtn').addEventListener('click', sendText);
+$('textForm').addEventListener('submit', event => {
+  event.preventDefault();
+  if (!$('sendTextBtn').disabled) sendText();
+});
+$('sendFileBtn').addEventListener('click', sendSelectedFile);
 $('cancelBtn').addEventListener('click', async () => {
   if (!isSending && (inboundMeta || inboundHelloItemId != null)) {
     await sendCancelFrame();
@@ -2073,9 +2495,10 @@ $('cancelBtn').addEventListener('click', async () => {
     inboundMeta = null;
     inboundHelloItemId = null;
     inboundChunks = 0;
-    setProgress(0, 'Cancelled');
-    setSending(false, null, 'half-duplex: cancelled');
-    addSystemMessage('Transfer cancelled by user');
+    $('throughput').textContent = '--';
+    transferMeter = null;
+    setSending(false, null, 'cancelled');
+    addSystemMessage($('transcript'), 'Transfer cancelled by user');
     log('Receiving transfer cancelled by user', 'warn');
     if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled', 'cancelled');
     pendingReceiveRow = null;
@@ -2089,20 +2512,17 @@ $('cancelBtn').addEventListener('click', async () => {
   if (transferPendingAckSeq != null && sender) {
     sender.receiveAck(createAckFrame(transferPendingAckSeq.type, transferPendingAckSeq.seq));
   }
-  setProgress(0, 'Cancelled');
-  setSending(false, null, 'half-duplex: cancelled');
+  $('throughput').textContent = '--';
+  transferMeter = null;
+  setSending(false, null, 'cancelled');
   log('Transfer cancelled by user', 'warn');
   if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
   pendingSendRow = null;
 });
-$('messageInput').addEventListener('input', updateControls);
-$('messageInput').addEventListener('keydown', event => {
-  if (event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault();
-    if (!$('sendBtn').disabled) sendText();
-  }
-});
-$('fileInput').addEventListener('change', sendSelectedFile);
+$('textInput').addEventListener('input', updateControls);
+$('fileInput').addEventListener('change', updateControls);
+$('clearTranscriptBtn').addEventListener('click', () => clearTranscript($('transcript'), 'No messages yet.'));
+$('clearLogBtn').addEventListener('click', () => logger.clear());
 
 setConnectionStatus('disconnected');
 if (mockMode) log('Mock mode enabled via ?mock=1; Web Bluetooth permission prompt will be bypassed.', 'ok');
