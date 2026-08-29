@@ -1,28 +1,23 @@
 # Pocket AirBridge — Firmware Files
 
-**Regenerated 2026-08-28:** This bundle captures the firmware tree through
-`81ef1974` (`perf(usb): poll interrupt endpoints at 1 ms`), relative to
-pristine upstream `dev` base `c9ab2b68`. The carousel-UI FAP rework, earlier
-stability fixes, HP-descriptor exactness rework, and 1 ms AirBridge USB HID
-interrupt interval have all landed as commits. The FAP itself ships as the
-`pocket_airbridge/` directory copy — the FAP path is excluded from
-`airbridge-firmware.patch` by design. The FAP copy carries the carousel
-stuck-input fix (idempotent `app_set_hids_adv` — redundant HIDS advertising
-toggles blocked the GAP `state_mutex` and wedged input processing) and the
-removal of the on-screen hint rows; the built artifact is 22952 B. The HP
-profile descriptors are aligned with the real dongle capture (PIXART
-manufacturer, 100 mA bus-powered, no IAD, byte-exact 65 B boot-kbd report
-descriptor). The AirBridge USB endpoints now advertise `HID_INTERVAL` 1 instead
-of 5, raising the theoretical 64-byte interrupt ceiling from 12.8 KB/s to
-64 KB/s. The carousel behaviour: the app
-opens on the Bridge relay screen, LEFT/RIGHT
-rotate Bridge → USB Deploy prompt → BLE Deploy prompt → Bridge, OK on a
-prompt starts that deploy, a short BACK returns to Bridge, a long BACK exits,
-and the relay keeps forwarding in the background on every screen (see
-"FAP behaviour" below). The bundle advertises the AirBridge serial UUID
-continuously, advertises HIDS only for the BLE Deploy prompt and typing
-window, and enables persistent numeric-comparison bonding. The stability
-fixes (no protocol or behavior change):
+**Regenerated 2026-08-29:** This bundle captures the firmware tree through
+`81ef1974` (`perf(usb): poll interrupt endpoints at 1 ms`), plus the Task 8 live
+FAP working-tree changes, relative to pristine upstream `dev` base `c9ab2b68`.
+The FAP itself ships as the `pocket_airbridge/` directory copy; the FAP path is
+excluded from `airbridge-firmware.patch` by design. The live source of truth is
+`/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c`,
+and the mirrored source is `firmware/pocket_airbridge/pocket_airbridge.c`.
+
+The mirrored FAP includes compressed Deploy asset selection (`app-usb.html.gz`
+and `app-ble.html.gz`), deploy typing jitter scoped to the explicit typing
+state, a per-device default BLE DIS serial (`HP` plus eight hex digits derived
+from a hash of the firmware UID), the carousel/input stability fixes, and the
+Bridge BLE advertising watchdog. The firmware patch includes the USB composite
+impersonation framework, AirBridge BLE profile/services, raw serial routing,
+GATT capacity/error handling, bonded advertising-window fixes, and input-path
+stability fixes. The bundle still advertises the AirBridge serial UUID
+continuously. BLE service UUID hiding and Windows USB tree comparison remain
+deferred until hardware evidence exists. The stability fixes:
 
 - `bt_service` `current_profile` lifetime serialization with reader
   refcounting — the mutex is never held across HCI calls (`bt.c`),
@@ -84,14 +79,17 @@ reports are emitted in Bridge mode.
 The **always-on identity** model means the selected profile is applied once at
 app start and held until the app exits. There is **no runtime switching**:
 composite-to-composite reconfiguration is fatal on this USB stack (the device
-disappears silently and requires a physical reset. The profile is selected from
+disappears silently and requires a physical reset). The profile is selected from
 `/ext/apps_data/pocket_airbridge/config` (default: `hp_kbd_vendor`).
 
 The USB Deploy flow uses the keyboard collection to type `web/bootstrap.js`
 into the target PC's browser DevTools console. The payload is ASCII-only, typed
-with US scancodes, and requires a US keyboard layout on the target. The full
+with US scancodes, and requires a US keyboard layout on the target. A small
+bounded timing jitter is applied only during the explicit typing state. The full
 emission shows `TYPING...` on the Flipper screen; pressing BACK aborts
-instantly.
+instantly. The bootstrap then fetches `app-usb.html.gz`, verifies the streamed
+compressed bytes, inflates them with `DecompressionStream("gzip")`, and boots
+the WebHID app. Unsupported browsers show `Transfer unsupported - retry`.
 
 ### AirBridge BLE impersonation profile
 
@@ -123,7 +121,9 @@ OUI; invalid identity input falls back atomically to compiled HP defaults and
 the FAP displays `WARN: BLE ID DEFAULT`. The profile has `bonding_mode = true`:
 the first pairing uses numeric comparison and persists the bond for silent later
 reconnects. HIDS (`0x1812`) stays in the GATT table but is advertised only in
-the BLE Deploy prompt and typing window.
+the BLE Deploy prompt and typing window. If `ble_dis_serial` is not configured,
+the FAP derives a stable HP-shaped serial from the local firmware UID hash
+without copying the raw UID into DIS.
 
 The browser-facing serial UUIDs are generated into
 `web/airbridge-identity.js` in on-air byte order. The service is
@@ -165,7 +165,12 @@ main loop forwards USB→BLE via `bt_serial_tx` and BLE→USB via zero-padded
 500 ms LED heartbeat. The app opens on the Bridge relay screen; **LEFT** and
 **RIGHT** rotate a carousel of Bridge → USB Deploy prompt → BLE Deploy prompt →
 Bridge, and the relay keeps forwarding in the background on every screen.
-**OK** on the USB prompt starts USB Deploy (`bootstrap.js` → `app-usb.html`);
-**OK** on the BLE prompt starts BLE Deploy (`bootstrap-ble.js` → `app-ble.html`),
+**OK** on the USB prompt starts USB Deploy (`bootstrap.js` to `app-usb.html.gz`);
+**OK** on the BLE prompt starts BLE Deploy (`bootstrap-ble.js` to `app-ble.html.gz`),
 opening the HIDS advertising window for the prompt and typing flow only. A
 short **BACK** returns to Bridge; a long **BACK** exits the app.
+
+The Flipper remains a blind relay for chat. Browser-only E2E crypto, SAS
+unlock, AES-GCM item encryption, and NACK exact-frame retry live in the web
+endpoints and deploy assets, not in the FAP. NACK does not implement byte-range
+or cross-session resume.
