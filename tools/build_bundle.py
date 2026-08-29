@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import gzip
+import hashlib
 import re
 
 
@@ -11,11 +13,14 @@ BUNDLES = (
     ("chat-ble.html", "app-ble.html", "WebBluetoothAdapter"),
 )
 PROTOCOL_IMPORT = (
-    "import { buildMessage, encodeMeta, ItemReceiver, ItemSender, MAX_PAYLOAD, MSG, "
+    "import { AirBridgeCryptoSession, buildMessage, CRYPTO_ROLE, CRYPTO_STATE, encodeMeta, ItemReceiver, ItemSender, MAX_PAYLOAD, MSG, "
     "parseMessage, sha256 } from './airbridge-protocol.js';"
 )
 PROTOCOL_BINDINGS = [
+    "AirBridgeCryptoSession",
     "buildMessage",
+    "CRYPTO_ROLE",
+    "CRYPTO_STATE",
     "encodeMeta",
     "ItemReceiver",
     "ItemSender",
@@ -23,6 +28,14 @@ PROTOCOL_BINDINGS = [
     "MSG",
     "parseMessage",
     "sha256",
+]
+EVIDENCE_IMPORT = (
+    "import { createTimingRecorder, recordCancel, recordFlipperCounters } from './airbridge-evidence.js';"
+)
+EVIDENCE_BINDINGS = [
+    "createTimingRecorder",
+    "recordCancel",
+    "recordFlipperCounters",
 ]
 UI_CSS_LINK = '<link rel="stylesheet" href="./airbridge-ui.css">'
 UI_IMPORT_RE = re.compile(
@@ -61,6 +74,10 @@ def inline_ui_module(page: str) -> str:
     return page[: matches[0].start()] + inline_module(WEB / "airbridge-ui.js", bindings) + page[matches[0].end() :]
 
 
+def gzip_deterministic(data: bytes) -> bytes:
+    return gzip.compress(data, compresslevel=9, mtime=0)
+
+
 def main() -> None:
     output_dir = ROOT / "dist"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -72,6 +89,11 @@ def main() -> None:
             page,
             PROTOCOL_IMPORT,
             inline_module(WEB / "airbridge-protocol.js", PROTOCOL_BINDINGS),
+        )
+        page = replace_once(
+            page,
+            EVIDENCE_IMPORT,
+            inline_module(WEB / "airbridge-evidence.js", EVIDENCE_BINDINGS),
         )
         page = replace_once(
             page,
@@ -92,8 +114,23 @@ def main() -> None:
             raise ValueError("bundle still contains module syntax")
 
         output = output_dir / output_name
-        _ = output.write_text(page, encoding="utf-8")
-        print(f"{output.relative_to(ROOT)}: {len(page.encode('utf-8'))} bytes")
+        raw = page.encode("utf-8")
+        _ = output.write_bytes(raw)
+        compressed = gzip_deterministic(raw)
+        compressed_output = output.with_suffix(output.suffix + ".gz")
+        _ = compressed_output.write_bytes(compressed)
+        if len(compressed) >= len(raw):
+            raise ValueError(f"{compressed_output.relative_to(ROOT)} is not smaller than {output.relative_to(ROOT)}")
+        print(
+            "".join(
+                (
+                    f"{output.relative_to(ROOT)}: {len(raw)} bytes, ",
+                    f"{compressed_output.relative_to(ROOT)}: {len(compressed)} bytes, ",
+                    f"sha256={hashlib.sha256(raw).hexdigest()}, ",
+                    f"gzip_sha256={hashlib.sha256(compressed).hexdigest()}",
+                )
+            )
+        )
 
     bootstrap = BOOTSTRAP.read_text(encoding="ascii")
     if len(bootstrap) > 1200:
