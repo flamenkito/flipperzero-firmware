@@ -31,15 +31,22 @@
 
 <script type="module">
 import { identity } from './airbridge-identity.js';
+import { createTimingRecorder, recordCancel, recordFlipperCounters } from './airbridge-evidence.js';
 import {
+  AirBridgeCryptoSession,
+  CRYPTO_ROLE,
+  CRYPTO_STATE,
   ItemReceiver,
   ItemSender,
   MAX_PAYLOAD as PROTOCOL_MAX_PAYLOAD,
   MSG as PROTOCOL_MSG,
+  NACK_REASON as PROTOCOL_NACK_REASON,
   buildMessage as protocolBuildMessage,
   decodeMeta as protocolDecodeMeta,
   encodeMeta as protocolEncodeMeta,
+  makeNackPayload as protocolMakeNackPayload,
   parseMessage as protocolParseMessage,
+  readNackSeq as protocolReadNackSeq,
   sha256 as protocolSha256,
 } from './airbridge-protocol.js';
 
@@ -67,7 +74,13 @@ const MSG = {
   ERROR: PROTOCOL_MSG.ERROR,
   BUSY: PROTOCOL_MSG.BUSY,
   CANCEL: PROTOCOL_MSG.CANCEL,
+  KEY_OFFER: PROTOCOL_MSG.KEY_OFFER,
+  KEY_REPLY: PROTOCOL_MSG.KEY_REPLY,
+  KEY_CONFIRM: PROTOCOL_MSG.KEY_CONFIRM,
+  KEY_ABORT: PROTOCOL_MSG.KEY_ABORT,
 };
+
+const NACK_REASON = PROTOCOL_NACK_REASON;
 
 const tests = [
   ['Frame roundtrip', testFrameRoundtrip],
@@ -83,11 +96,32 @@ const tests = [
   ['Busy versus rejected split', testBusyVersusRejectedSplit],
   ['Cancel handling', testCancel],
   ['bootstrap stream reassembly', testBootstrapStreamReassembly],
+  ['bootstrap compressed stream reassembly', testBootstrapCompressedStreamReassembly],
+  ['bootstrap compressed stream unsupported', testBootstrapCompressedStreamUnsupported],
+  ['bootstrap stream timeout', testBootstrapStreamTimeout],
+  ['deploy request state gate', testDeployRequestStateGate],
   ['simultaneous hello arbitration', testSimultaneousHelloArbitration],
   ['bootstrap.js eval in browser context', testBootstrapJsEval],
   ['broken bootstrap.js syntax is detected', testBootstrapSyntaxCatch],
+  ['bootstrap.js unsupported DecompressionStream error path', testBootstrapUnsupportedDecompression],
   ['bootstrap.js picker-cancel error path', testBootstrapPickerCancel],
+  ['bootstrap.js transfer-timeout error path', testBootstrapTransferTimeout],
+  ['crypto encrypted text', testCryptoEncryptedText],
+  ['crypto encrypted attachment', testCryptoEncryptedAttachment],
+  ['crypto SAS match unlock', testCryptoSasMatchUnlock],
+  ['crypto SAS mismatch abort', testCryptoSasMismatchAbort],
+  ['crypto AES-GCM tamper failure', testCryptoTamperFailure],
+  ['crypto plaintext pre-unlock fails closed', testCryptoPlaintextPreUnlockFailure],
+  ['crypto reconnect clears keys', testCryptoReconnectClearsKeys],
+  ['NACK recovers one dropped chunk', testNackRecoversDroppedChunk],
+  ['NACK repeated drops exhaust retries', testNackRepeatedDropsExhaustRetries],
+  ['NACK wrong frame is ignored safely', testWrongNackIgnoredSafely],
+  ['NACK encrypted recovery preserves plaintext integrity', testNackEncryptedRecoveryIntegrity],
+  ['NACK cancel returns receiver idle', testNackCancelReturnsIdle],
 ];
+
+const harnessEvidenceRecords = [];
+window.__airbridgeHarnessEvidence = harnessEvidenceRecords;
 
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -158,9 +192,20 @@ function ackPayload(type, seq) {
   return new Uint8Array([type, (seq >> 8) & 0xff, seq & 0xff]);
 }
 
+function nackPayload(type, seq, reason = NACK_REASON.MISSING) {
+  return protocolMakeNackPayload(type, seq, reason);
+}
+
 function readAck(payload) {
   assert(payload.length === 3, 'ACK payload must be exactly three bytes');
   return { type: payload[0], seq: (payload[1] << 8) | payload[2] };
+}
+
+function readNack(messageOrPayload) {
+  const message = messageOrPayload?.payload ? messageOrPayload : buildMessage(MSG.NACK, 0, messageOrPayload);
+  const nack = protocolReadNackSeq(message);
+  assert(nack, 'NACK payload must be exactly four bytes with a known reason');
+  return nack;
 }
 
 function localEncodeMeta(meta) {
@@ -229,9 +274,9 @@ function createMockTransport(name) {
       const data = maybeData ?? reportIdOrData;
       const report = toReport(data);
       this.sentReports.push(report);
-      await sleep(0);
+      await Promise.resolve();
       if (this.peer?.onInputReport) {
-        this.peer.onInputReport({
+        await this.peer.onInputReport({
           reportId: REPORT_ID,
           data: new DataView(report.buffer),
           target: this.peer,
@@ -249,7 +294,7 @@ function linkTransports(left, right) {
 
 function waitForAck(transport, type, seq) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`ACK timeout for ${seq}`)), 250);
+    const timer = setTimeout(() => reject(new Error(`ACK timeout for ${seq}`)), 1000);
     const previous = transport.onInputReport;
     transport.onInputReport = event => {
       previous?.(event);
@@ -271,11 +316,20 @@ async function sendWithAck(sender, type, seq, message) {
 }
 
 async function simulateTextTransfer(direction) {
+  const timing = createTimingRecorder({
+    operation: 'chat-text',
+    bundleBytes: 0,
+    mock: true,
+    hardware: false,
+    details: { direction },
+    sink: record => harnessEvidenceRecords.push(record),
+  });
   const sender = createMockTransport(`${direction} sender`);
   const receiver = createMockTransport(`${direction} receiver`);
   linkTransports(sender, receiver);
 
   const data = encoder.encode(`hello from ${direction}`);
+  timing.setBytes(data.length);
   const meta = {
     kind: 'text',
     itemId: direction === 'usb-to-ble' ? 1001 : 1002,
@@ -312,6 +366,7 @@ async function simulateTextTransfer(direction) {
     }
   };
 
+  timing.markFirstReport();
   await sendWithAck(sender, MSG.HELLO, 0, buildMessage(MSG.HELLO, 0, new Uint8Array([
     (meta.itemId >>> 24) & 0xff,
     (meta.itemId >>> 16) & 0xff,
@@ -330,6 +385,9 @@ async function simulateTextTransfer(direction) {
   equalBytes(received.chunks.get(0), data, `${direction} text payload`);
   assert(sender.sentReports.every(report => report.length === FRAME_SIZE), `${direction} sender did not use 64-byte reports`);
   assert(receiver.sentReports.every(report => report.length === FRAME_SIZE), `${direction} receiver did not use 64-byte reports`);
+  const record = timing.complete({ bundleBytes: data.length, transferBytes: data.length });
+  assert(record.operation === 'chat-text' && record.details.direction === direction, `${direction} chat timing did not record direction`);
+  assert(record.bundleBytes === data.length && Number.isFinite(record.completeTimeMs), `${direction} chat timing missing bytes or completion`);
 }
 
 function setStatus(text, className = '') {
@@ -392,9 +450,14 @@ async function testTextItemBleToUsb() {
 }
 
 async function testAttachmentSha256() {
+  const timing = createTimingRecorder({ operation: 'attachment', mock: true, hardware: false, sink: record => harnessEvidenceRecords.push(record) });
   const data = encoder.encode('abc');
+  timing.setBytes(data.length);
+  timing.markFirstReport();
   const actual = await sha256Hex(data.buffer);
   assert(actual === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', `unexpected SHA-256 ${actual}`);
+  const record = timing.complete({ bundleBytes: data.length, transferBytes: data.length });
+  assert(record.operation === 'attachment' && record.bundleBytes === data.length, 'attachment timing did not record bytes');
 }
 
 async function testBusyCollision() {
@@ -725,6 +788,7 @@ async function testBusyVersusRejectedSplit() {
 }
 
 async function testCancel() {
+  const timing = createTimingRecorder({ operation: 'cancel', mock: true, hardware: false, sink: record => harnessEvidenceRecords.push(record) });
   const sentMessages = [];
   const receiver = new ItemReceiver({
     sendFn: async frame => {
@@ -737,6 +801,7 @@ async function testCancel() {
     cancelMessage = message;
   });
 
+  timing.markFirstReport();
   await receiver.onMessage(buildMessage(MSG.HELLO, 0, new Uint8Array([0, 0, 0, 1])));
   const [metaFrame] = encodeMeta({ kind: 'text', itemId: 88, name: 'cancel.txt', mimeType: 'text/plain', size: 1, chunks: 1 });
   await receiver.onMessage(metaFrame);
@@ -748,6 +813,371 @@ async function testCancel() {
   const lastMessage = parseMessage(sentMessages.at(-1));
   const ack = readAck(lastMessage.payload);
   assert(lastMessage.type === MSG.ACK && ack.type === MSG.CANCEL && ack.seq === 0, 'CANCEL did not ACK type and sequence');
+  timing.fail('cancelled', { bundleBytes: 1, transferBytes: 0, details: { cancelAcked: true } });
+  const record = recordCancel({ origin: 'mock-user', direction: 'mock-loopback', itemId: 88, mock: true, hardware: false, details: { cancelAcked: true } }, { sink: entry => harnessEvidenceRecords.push(entry) });
+  assert(record.operation === 'cancel' && record.errorState === 'cancelled' && record.details.cancelAcked === true, 'cancel timing was not recorded');
+}
+
+function requireCrypto() {
+  assert(globalThis.crypto?.subtle, 'WebCrypto SubtleCrypto unavailable; crypto v1 tests require ECDH/HKDF/AES-GCM');
+}
+
+function concatTestChunks(chunks) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+function bytesContain(haystack, needle) {
+  if (needle.length === 0) return true;
+  for (let offset = 0; offset <= haystack.length - needle.length; offset++) {
+    let found = true;
+    for (let index = 0; index < needle.length; index++) {
+      if (haystack[offset + index] !== needle[index]) {
+        found = false;
+        break;
+      }
+    }
+    if (found) return true;
+  }
+  return false;
+}
+
+function createCryptoEndpoint(role) {
+  const endpoint = { peer: null, sent: [], errors: [], states: [], received: [] };
+  endpoint.itemSender = new ItemSender(frame => endpoint.send(frame), { timeoutMs: 300, retries: 2 });
+  endpoint.itemReceiver = new ItemReceiver({ sendFn: frame => endpoint.send(frame), nackDelayMs: 25 });
+  endpoint.session = new AirBridgeCryptoSession({
+    role,
+    sendFn: frame => endpoint.send(frame),
+    timeoutMs: 300,
+    retries: 2,
+    onStateChange: status => endpoint.states.push(status),
+  });
+  endpoint.send = async frame => {
+    const copy = new Uint8Array(frame);
+    endpoint.sent.push(parseMessage(copy));
+    await Promise.resolve();
+    await endpoint.peer.receive(copy);
+  };
+  endpoint.receive = async frame => {
+    const msg = parseMessage(frame);
+    try {
+      if (msg.type === MSG.ACK) {
+        if (!endpoint.itemSender.receiveAck(msg)) endpoint.session.receiveAck(msg);
+        return;
+      }
+      if (msg.type === MSG.NACK) {
+        if (!endpoint.itemSender.receiveNack(msg)) endpoint.session.receiveNack(msg);
+        return;
+      }
+      if (endpoint.session.isCryptoFrame(msg)) {
+        await endpoint.session.onMessage(msg);
+        return;
+      }
+      if (msg.type === MSG.ERROR) {
+        endpoint.errors.push(decoder.decode(msg.payload));
+        endpoint.itemSender.receiveError(msg);
+        endpoint.session.clearKeys(CRYPTO_STATE.ABORTED);
+        return;
+      }
+      if (msg.type === MSG.HELLO || msg.type === MSG.META || msg.type === MSG.DATA || msg.type === MSG.DONE) {
+        if (!endpoint.session.isUnlocked()) {
+          await endpoint.send(buildMessage(MSG.ERROR, 0, encoder.encode('crypto locked')));
+          endpoint.session.clearKeys(CRYPTO_STATE.ABORTED);
+          endpoint.errors.push('crypto locked');
+          return;
+        }
+      }
+      await endpoint.itemReceiver.onMessage(msg);
+    } catch (error) {
+      endpoint.errors.push(error.message || String(error));
+    }
+  };
+  endpoint.itemReceiver.on('item', async ({ meta, data }) => {
+    try {
+      endpoint.received.push(await endpoint.session.decryptItem(meta, data));
+    } catch (error) {
+      endpoint.errors.push(error.message || String(error));
+    }
+  });
+  endpoint.itemReceiver.on('error', error => endpoint.errors.push(error.message || String(error)));
+  return endpoint;
+}
+
+async function createUnlockedCryptoPair() {
+  requireCrypto();
+  const usb = createCryptoEndpoint(CRYPTO_ROLE.USB);
+  const ble = createCryptoEndpoint(CRYPTO_ROLE.BLE);
+  usb.peer = ble;
+  ble.peer = usb;
+  await ble.session.start();
+  await usb.session.start();
+  assert(usb.session.getStatus().state === CRYPTO_STATE.SAS_PENDING, 'USB did not enter SAS pending');
+  assert(ble.session.getStatus().state === CRYPTO_STATE.SAS_PENDING, 'BLE did not enter SAS pending');
+  return { usb, ble };
+}
+
+async function unlockCryptoPair() {
+  const pair = await createUnlockedCryptoPair();
+  assert(pair.usb.session.getStatus().sas === pair.ble.session.getStatus().sas, 'SAS codes do not match');
+  await pair.usb.session.acceptSas();
+  assert(!pair.usb.session.isUnlocked(), 'USB unlocked before peer KEY_CONFIRM');
+  await pair.ble.session.acceptSas();
+  assert(pair.usb.session.isUnlocked(), 'USB did not unlock after mutual SAS confirm');
+  assert(pair.ble.session.isUnlocked(), 'BLE did not unlock after mutual SAS confirm');
+  return pair;
+}
+
+function chunkBytes(bytes) {
+  const chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += MAX_PAYLOAD) chunks.push(bytes.slice(offset, offset + MAX_PAYLOAD));
+  return chunks.length ? chunks : [new Uint8Array(0)];
+}
+
+async function sendEncryptedHarnessItem(from, to, plainMeta, plainBytes) {
+  const encrypted = await from.session.encryptItem(plainMeta, plainBytes);
+  const chunks = chunkBytes(encrypted.data);
+  await from.itemSender.sendHello(plainMeta.itemId);
+  await from.itemSender.sendItemMeta(encrypted.meta);
+  await from.itemSender.sendItemData(chunks);
+  await from.itemSender.sendItemDone();
+  for (let attempt = 0; attempt < 30 && to.received.length === 0; attempt++) await sleep(10);
+  assert(to.received.length === 1, 'encrypted item was not received');
+  return encrypted;
+}
+
+async function testNackRecoversDroppedChunk() {
+  const receiverMessages = [];
+  const senderMessages = [];
+  const receivedItems = [];
+  let sender;
+  let dropped = false;
+  const receiver = new ItemReceiver({
+    nackDelayMs: 15,
+    sendFn: async frame => {
+      const msg = parseMessage(frame);
+      receiverMessages.push(msg);
+      if (msg.type === MSG.ACK) sender.receiveAck(msg);
+      if (msg.type === MSG.NACK) sender.receiveNack(msg);
+    },
+  });
+  sender = new ItemSender(async frame => {
+    const msg = parseMessage(frame);
+    senderMessages.push(msg);
+    if (msg.type === MSG.DATA && msg.seq === 1 && !dropped) {
+      dropped = true;
+      await receiver.onMessage(buildMessage(MSG.DATA, 2, encoder.encode('gap-observed')));
+      return;
+    }
+    await receiver.onMessage(frame);
+  }, { timeoutMs: 80, retries: 3 });
+  receiver.on('item', item => receivedItems.push(item));
+
+  const data = encoder.encode('first chunk'.padEnd(MAX_PAYLOAD, '.') + 'second chunk after one drop');
+  const chunks = chunkBytes(data);
+  const hash = await sha256Hex(data);
+  const meta = { kind: 'text', itemId: 8101, name: 'nack-recovery.txt', mimeType: 'text/plain', size: data.length, chunks: chunks.length, hash: `sha256:${hash}` };
+
+  await sender.sendHello(meta.itemId);
+  await sender.sendItemMeta(meta);
+  await sender.sendItemData(chunks);
+  await sender.sendItemDone();
+
+  const nack = receiverMessages.find(message => message.type === MSG.NACK);
+  assert(nack, 'receiver did not send NACK for the dropped chunk');
+  const nacked = readNack(nack.payload);
+  assert(nacked.type === MSG.DATA && nacked.seq === 1 && nacked.reason === NACK_REASON.MISSING, 'NACK did not reference the missing DATA seq 1');
+  assert(senderMessages.filter(message => message.type === MSG.DATA && message.seq === 1).length === 2, 'sender did not retransmit exactly the NACKed frame once');
+  assert(senderMessages.filter(message => message.type === MSG.DATA && message.seq === 0).length === 1, 'sender retransmitted an unrelated DATA frame');
+  assert(sender.sentFrames.size === 0, 'sender retained frames after ITEM_DONE ACK');
+  assert(receivedItems.length === 1, 'recovered transfer did not complete exactly once');
+  equalBytes(receivedItems[0].data, data, 'recovered plaintext data');
+}
+
+async function testNackRepeatedDropsExhaustRetries() {
+  const receiverMessages = [];
+  const senderMessages = [];
+  let sender;
+  const receiver = new ItemReceiver({
+    nackDelayMs: 10,
+    sendFn: async frame => {
+      const msg = parseMessage(frame);
+      receiverMessages.push(msg);
+      if (msg.type === MSG.ACK) sender.receiveAck(msg);
+      if (msg.type === MSG.NACK) sender.receiveNack(msg);
+    },
+  });
+  sender = new ItemSender(async frame => {
+    const msg = parseMessage(frame);
+    senderMessages.push(msg);
+    if (msg.type === MSG.DATA && msg.seq === 0) {
+      await receiver.onMessage(buildMessage(MSG.DATA, 1, encoder.encode('gap-observed')));
+      return;
+    }
+    await receiver.onMessage(frame);
+  }, { timeoutMs: 30, retries: 2 });
+
+  const data = encoder.encode('dropped forever');
+  const hash = await sha256Hex(data);
+  const meta = { kind: 'text', itemId: 8102, name: 'nack-exhaustion.txt', mimeType: 'text/plain', size: data.length, chunks: 1, hash: `sha256:${hash}` };
+
+  await sender.sendHello(meta.itemId);
+  await sender.sendItemMeta(meta);
+  let failure = null;
+  try {
+    await sender.sendItemData([data]);
+  } catch (error) {
+    failure = error;
+  }
+
+  assert(failure?.name === 'RetryExhaustedError', 'repeated dropped DATA did not exhaust retry budget');
+  assert(receiverMessages.some(message => message.type === MSG.NACK && readNack(message.payload).seq === 0), 'receiver did not NACK the missing DATA seq 0');
+  assert(senderMessages.filter(message => message.type === MSG.DATA && message.seq === 0).length === 3, 'sender did not honor the configured retry budget');
+  assert(senderMessages.some(message => message.type === MSG.ERROR), 'sender did not surface retry exhaustion as ERROR');
+}
+
+async function testWrongNackIgnoredSafely() {
+  const sent = [];
+  const sender = new ItemSender(async frame => {
+    sent.push(parseMessage(frame));
+  }, { timeoutMs: 80, retries: 1 });
+  const pending = sender.sendWithAck(buildMessage(MSG.DATA, 2, encoder.encode('pending')), 2);
+  await sleep(0);
+
+  const accepted = sender.receiveNack(buildMessage(MSG.NACK, 0, nackPayload(MSG.DATA, 1, NACK_REASON.MISSING)));
+  assert(!accepted, 'wrong NACK matched an unrelated in-flight frame');
+  assert(sent.length === 1, 'wrong NACK triggered a retransmission');
+  assert(sender.receiveAck(buildMessage(MSG.ACK, 0, ackPayload(MSG.DATA, 2))), 'correct ACK after wrong NACK was rejected');
+  await pending;
+}
+
+async function testNackEncryptedRecoveryIntegrity() {
+  const { usb, ble } = await unlockCryptoPair();
+  const originalSend = usb.send;
+  let dropped = false;
+  usb.send = async frame => {
+    const msg = parseMessage(frame);
+    if (msg.type === MSG.DATA && msg.seq === 1 && !dropped) {
+      dropped = true;
+      await ble.receive(buildMessage(MSG.DATA, 2, encoder.encode('gap-observed')));
+      return;
+    }
+    await originalSend(frame);
+  };
+
+  const data = crypto.getRandomValues(new Uint8Array(180));
+  const hash = await sha256Hex(data);
+  const meta = { kind: 'attachment', itemId: 8103, name: 'encrypted-recovered.bin', mimeType: 'application/octet-stream', size: data.length, chunks: chunkBytes(data).length, hash: `sha256:${hash}` };
+  const encrypted = await sendEncryptedHarnessItem(usb, ble, meta, data);
+  const received = ble.received[0];
+
+  assert(encrypted.meta.chunks === chunkBytes(encrypted.data).length, 'encrypted outer metadata did not carry transport chunk count');
+  equalBytes(received.data, data, 'recovered encrypted plaintext');
+  assert(received.hash === hash && received.meta.hash === `sha256:${hash}`, 'plaintext hash was not enforced after NACK recovery');
+}
+
+async function testNackCancelReturnsIdle() {
+  const sent = [];
+  const receiver = new ItemReceiver({
+    nackDelayMs: 15,
+    sendFn: async frame => sent.push(parseMessage(frame)),
+  });
+
+  await receiver.onMessage(buildMessage(MSG.HELLO, 0, new Uint8Array([0, 0, 0x1f, 0xa4])));
+  const [metaFrame] = encodeMeta({ kind: 'text', itemId: 8104, name: 'cancel-idle.txt', mimeType: 'text/plain', size: 1, chunks: 1, hash: `sha256:${'1'.repeat(64)}` });
+  await receiver.onMessage(metaFrame);
+  await receiver.onMessage(buildMessage(MSG.CANCEL, 0));
+  await sleep(30);
+
+  assert(receiver.meta === null && receiver.chunks.size === 0, 'CANCEL did not clear receiver item state');
+  assert(receiver.expectedFrame === null, 'CANCEL left a NACK expectation armed');
+  assert(!sent.some(message => message.type === MSG.NACK), 'receiver sent a late NACK after CANCEL');
+}
+
+async function testCryptoEncryptedText() {
+  const { usb, ble } = await unlockCryptoPair();
+  const data = encoder.encode('crypto text plaintext sentinel');
+  const hash = await sha256Hex(data);
+  const meta = { kind: 'text', itemId: 7001, name: 'secret.txt', mimeType: 'text/plain', size: data.length, chunks: 1, hash: `sha256:${hash}` };
+  const encrypted = await sendEncryptedHarnessItem(usb, ble, meta, data);
+  assert(!Object.hasOwn(encrypted.meta, 'itemCounter') && encrypted.meta.chunks === chunkBytes(encrypted.data).length, 'outer metadata did not keep only transport chunk count');
+  assert(!Object.hasOwn(encrypted.meta, 'name') && !Object.hasOwn(encrypted.meta, 'mimeType') && !Object.hasOwn(encrypted.meta, 'size') && !Object.hasOwn(encrypted.meta, 'hash'), 'outer metadata leaked plaintext fields');
+  const received = ble.received[0];
+  equalBytes(received.data, data, 'decrypted text');
+  assert(received.meta.hash === `sha256:${hash}`, 'plaintext hash was not preserved after decrypt');
+  const ciphertext = concatTestChunks(usb.sent.filter(message => message.type === MSG.DATA).map(message => message.payload));
+  assert(!bytesContain(ciphertext, data), 'plaintext appeared in bridged ITEM_DATA ciphertext');
+}
+
+async function testCryptoEncryptedAttachment() {
+  const { usb, ble } = await unlockCryptoPair();
+  const data = crypto.getRandomValues(new Uint8Array(180));
+  const hash = await sha256Hex(data);
+  const meta = { kind: 'attachment', itemId: 7002, name: 'secret.bin', mimeType: 'application/octet-stream', size: data.length, chunks: Math.ceil(data.length / MAX_PAYLOAD), hash: `sha256:${hash}` };
+  await sendEncryptedHarnessItem(ble, usb, meta, data);
+  const received = usb.received[0];
+  equalBytes(received.data, data, 'decrypted attachment');
+  assert(received.meta.name === 'secret.bin' && received.hash === hash, 'attachment metadata/hash did not survive decrypt');
+}
+
+async function testCryptoSasMatchUnlock() {
+  const { usb, ble } = await createUnlockedCryptoPair();
+  const sas = usb.session.getStatus().sas;
+  assert(/^\d{6}$/.test(sas), 'SAS is not exactly six decimal digits');
+  assert(sas === ble.session.getStatus().sas, 'SAS differs between endpoints');
+  await usb.session.acceptSas();
+  assert(!usb.session.isUnlocked(), 'USB unlocked before peer KEY_CONFIRM');
+  await ble.session.acceptSas();
+  assert(usb.session.isUnlocked() && ble.session.isUnlocked(), 'mutual KEY_CONFIRM did not unlock both endpoints');
+}
+
+async function testCryptoSasMismatchAbort() {
+  const { usb, ble } = await createUnlockedCryptoPair();
+  await usb.session.rejectSas();
+  await sleep(20);
+  assert(usb.session.getStatus().state === CRYPTO_STATE.ABORTED, 'local SAS mismatch did not abort');
+  assert(ble.session.getStatus().state === CRYPTO_STATE.ABORTED, 'peer SAS mismatch did not abort');
+}
+
+async function testCryptoTamperFailure() {
+  const { usb, ble } = await unlockCryptoPair();
+  const data = encoder.encode('tamper target');
+  const hash = await sha256Hex(data);
+  const meta = { kind: 'text', itemId: 7003, name: 'tamper.txt', mimeType: 'text/plain', size: data.length, chunks: 1, hash: `sha256:${hash}` };
+  const encrypted = await usb.session.encryptItem(meta, data);
+  const tampered = encrypted.data.slice();
+  tampered[0] ^= 0x80;
+  const tamperedMeta = { ...encrypted.meta, encryptedSha256: await sha256Hex(tampered) };
+  let failed = false;
+  try {
+    await ble.session.decryptItem(tamperedMeta, tampered);
+  } catch (error) {
+    failed = /AES-GCM authentication failed/.test(error.message);
+  }
+  assert(failed, 'AES-GCM tamper did not fail closed');
+}
+
+async function testCryptoPlaintextPreUnlockFailure() {
+  const { usb, ble } = await createUnlockedCryptoPair();
+  await usb.receive(buildMessage(MSG.HELLO, 0, new Uint8Array([0, 0, 0x1b, 0x5f])));
+  await sleep(20);
+  assert(!usb.session.isUnlocked() && !ble.session.isUnlocked(), 'plaintext pre-unlock path unlocked a session');
+  assert(usb.errors.includes('crypto locked'), 'plaintext pre-unlock item was not rejected');
+}
+
+async function testCryptoReconnectClearsKeys() {
+  const { usb } = await unlockCryptoPair();
+  const oldKeyId = usb.session.getStatus().keyId;
+  usb.session.clearKeys();
+  assert(usb.session.getStatus().state === CRYPTO_STATE.REQUIRED, 'clearKeys did not return to crypto-required');
+  assert(!usb.session.getStatus().keyId && !usb.session.getStatus().sas, 'clearKeys retained key material identifiers');
+  assert(oldKeyId, 'unlocked session did not have a keyId before clear');
 }
 
 function createBootstrapStreamReports(bytes, checksum) {
@@ -762,6 +1192,12 @@ function createBootstrapStreamReports(bytes, checksum) {
     reports.push(report);
   }
   return reports;
+}
+
+async function gzipBytes(bytes) {
+  assert('CompressionStream' in globalThis, 'CompressionStream unavailable for gzip fixture');
+  const compressed = new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(compressed).arrayBuffer());
 }
 
 function createBootstrapMockHid(reports) {
@@ -780,33 +1216,67 @@ function createBootstrapMockHid(reports) {
   };
 }
 
-async function runBootstrapStreamClient(device, bootDocument, setStatus) {
+async function runBootstrapStreamClient(device, bootDocument, options = {}) {
+  const setStatus = options.setStatus ?? (() => {});
+  const timeoutMs = options.timeoutMs ?? 8000;
+  const timing = createTimingRecorder({
+    operation: 'deploy-stream',
+    bundleBytes: 0,
+    mock: true,
+    hardware: false,
+    sink: record => harnessEvidenceRecords.push(record),
+  });
   let total;
   let expectedChecksum;
   let received = 0;
   let checksum = 0;
   const bytes = [];
   let resolve;
+  let timer;
+  let settled = false;
+  const Decompressor = Object.hasOwn(options, 'decompressionStream') ? options.decompressionStream : globalThis.DecompressionStream;
   const done = new Promise(value => { resolve = value; });
-  const finish = () => {
+  const finish = async () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
     device.removeEventListener('inputreport', onReport);
     if (checksum !== expectedChecksum) {
       setStatus('Transfer corrupt — retry');
+      timing.fail('checksum mismatch', { bundleBytes: total ?? received, transferBytes: received });
+      resolve(false);
+      return;
+    }
+    if (!Decompressor) {
+      setStatus('Transfer unsupported - retry');
+      timing.fail('gzip unsupported', { bundleBytes: total ?? received, transferBytes: received });
+      resolve(false);
+      return;
+    }
+    let html;
+    try {
+      html = await new Response(new Blob([new Uint8Array(bytes)]).stream().pipeThrough(new Decompressor('gzip'))).text();
+    } catch (error) {
+      setStatus('Transfer corrupt — retry');
+      timing.fail('gzip decode failed', { bundleBytes: total ?? received, transferBytes: received });
       resolve(false);
       return;
     }
     bootDocument.open();
-    bootDocument.write(decoder.decode(new Uint8Array(bytes)));
+    bootDocument.write(html);
     bootDocument.close();
+    timing.complete({ bundleBytes: total ?? received, transferBytes: received });
     resolve(true);
   };
   const onReport = event => {
     const report = new Uint8Array(event.data.buffer, event.data.byteOffset, event.data.byteLength);
+    timing.markFirstReport();
     if (total === undefined) {
       const header = new DataView(report.buffer, report.byteOffset, report.byteLength);
       total = header.getUint32(0, true);
       expectedChecksum = header.getUint32(4, true);
-      if (total === 0) finish();
+      timing.setBytes(total);
+      if (total === 0) void finish();
       return;
     }
     const count = Math.min(report.length, total - received);
@@ -816,18 +1286,66 @@ async function runBootstrapStreamClient(device, bootDocument, setStatus) {
       checksum = (checksum + byte) >>> 0;
     }
     received += count;
-    if (received === total) finish();
+    if (received === total) void finish();
   };
   device.addEventListener('inputreport', onReport);
+  timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    device.removeEventListener('inputreport', onReport);
+    setStatus('Transfer timed out - retry');
+    timing.fail('timeout', { bundleBytes: total ?? received, transferBytes: received });
+    resolve(false);
+  }, timeoutMs);
   const request = new Uint8Array(FRAME_SIZE);
   request[0] = 0x42;
   await device.sendReport(0, request);
   return done;
 }
 
+function classifyDeployRequest(screen, report) {
+  const isBundleRequest = report.length > 0 && report[0] === 0x42;
+  if (!isBundleRequest) return 'relay';
+  switch (screen) {
+    case 'Waiting': return 'stream';
+    case 'Bridge': return 'relay';
+    case 'DeployPrompt':
+    case 'Typing':
+    case 'Streaming':
+    case 'Done':
+    case 'Error':
+      return 'fail-visible';
+    default:
+      throw new Error(`unknown AirbridgeScreen ${screen}`);
+  }
+}
+
+async function testBootstrapStreamTimeout() {
+  const quietDevice = createBootstrapMockHid([]);
+  const bootDocument = { open() { throw new Error('timed out stream booted'); }, write() {}, close() {} };
+  let status = 'Ready';
+  const result = await Promise.race([
+    runBootstrapStreamClient(quietDevice, bootDocument, { setStatus: text => { status = text; }, timeoutMs: 10 }),
+    sleep(100).then(() => 'harness-timeout'),
+  ]);
+  assert(result === false, 'bootstrap stream timeout did not resolve as visible failure');
+  assert(status === 'Transfer timed out - retry', 'bootstrap stream timeout did not set retry status');
+}
+
+async function testDeployRequestStateGate() {
+  const request = new Uint8Array([0x42]);
+  assert(classifyDeployRequest('Waiting', request) === 'stream', 'Waiting state did not arm deploy stream');
+  assert(classifyDeployRequest('Bridge', request) === 'relay', 'Bridge 0x42 was not relay-only data');
+  for (const screen of ['DeployPrompt', 'Typing', 'Streaming', 'Done', 'Error']) {
+    assert(classifyDeployRequest(screen, request) === 'fail-visible', `${screen} 0x42 did not fail visibly`);
+  }
+  assert(classifyDeployRequest('Bridge', new Uint8Array([0x03, 0x42])) === 'relay', 'normal Bridge frame was not relayed');
+}
+
 async function testBootstrapStreamReassembly() {
   const bundle = encoder.encode('<!doctype html><title>Mock bundle</title><p>loaded</p>');
-  const checksum = bundle.reduce((sum, byte) => (sum + byte) >>> 0, 0);
+  const compressedBundle = await gzipBytes(bundle);
+  const checksum = compressedBundle.reduce((sum, byte) => (sum + byte) >>> 0, 0);
   const bootDocument = {
     calls: [],
     text: '',
@@ -835,23 +1353,66 @@ async function testBootstrapStreamReassembly() {
     write(text) { this.calls.push('write'); this.text = text; },
     close() { this.calls.push('close'); },
   };
-  const device = createBootstrapMockHid(createBootstrapStreamReports(bundle, checksum));
+  const device = createBootstrapMockHid(createBootstrapStreamReports(compressedBundle, checksum));
   let status = 'Ready';
-  const booted = await runBootstrapStreamClient(device, bootDocument, text => { status = text; });
+  const booted = await runBootstrapStreamClient(device, bootDocument, { setStatus: text => { status = text; } });
 
   assert(booted, 'correct bootstrap stream did not boot');
   assert(bootDocument.text === decoder.decode(bundle), 'bundle text was not reassembled');
   assert(bootDocument.calls.join(',') === 'open,write,close', 'bundle did not boot through document.open/write/close');
   assert(device.sentReports.length === 1 && device.sentReports[0].reportId === 0 && device.sentReports[0].data.length === 64 && device.sentReports[0].data[0] === 0x42, 'bundle request was not one 64-byte 0x42 report');
   assert(status === 'Ready', 'valid bootstrap stream changed retry status');
+  const validTiming = harnessEvidenceRecords.at(-1);
+  assert(validTiming?.operation === 'deploy-stream', 'deploy stream timing was not recorded');
+  assert(validTiming.bundleBytes === compressedBundle.length, 'deploy stream timing did not record compressed bundle bytes');
+  assert(Number.isFinite(validTiming.firstReportTimestampMs), 'deploy stream timing did not record first report timestamp');
+  assert(Number.isFinite(validTiming.firstReportLatencyMs), 'deploy stream timing did not record first report latency');
+  assert(Number.isFinite(validTiming.completeTimeMs), 'deploy stream timing did not record completion time');
+  assert(Number.isFinite(validTiming.transferKbps), 'deploy stream timing did not record transfer KB/s');
+  assert(validTiming.errorState === null, 'valid deploy stream recorded an error');
+  assert(validTiming.mock === true && validTiming.hardware === false, 'deploy stream timing did not mark mock run');
 
-  const corrupt = bundle.slice();
+  const corrupt = compressedBundle.slice();
   corrupt[0] ^= 0xff;
   const corruptDevice = createBootstrapMockHid(createBootstrapStreamReports(corrupt, checksum));
   const corruptDocument = { open() {}, write() {}, close() {} };
-  const corruptBooted = await runBootstrapStreamClient(corruptDevice, corruptDocument, text => { status = text; });
+  const corruptBooted = await runBootstrapStreamClient(corruptDevice, corruptDocument, { setStatus: text => { status = text; } });
   assert(!corruptBooted, 'corrupt bootstrap stream booted');
   assert(status === 'Transfer corrupt — retry', 'corrupt bootstrap stream did not show retry state');
+  const corruptTiming = harnessEvidenceRecords.at(-1);
+  assert(corruptTiming?.errorState === 'checksum mismatch', 'corrupt deploy stream timing did not record checksum error');
+  const counterRecord = recordFlipperCounters({ usbToBle: 1, bleToUsb: 2, drop: 0, txerr: 0 }, { mock: true, hardware: false, sink: entry => harnessEvidenceRecords.push(entry) });
+  assert(counterRecord.flipperCounters.drop === 0 && counterRecord.flipperCounters.txerr === 0, 'Flipper counter evidence did not preserve zero DROP/TXERR');
+}
+
+async function testBootstrapCompressedStreamReassembly() {
+  const raw = encoder.encode('<!doctype html><title>Compressed deploy</title><main>gzip</main>');
+  const compressed = await gzipBytes(raw);
+  assert(compressed.length < raw.length + 64, 'gzip fixture unexpectedly large for compressed-stream test');
+  const checksum = compressed.reduce((sum, byte) => (sum + byte) >>> 0, 0);
+  const bootDocument = { text: '', open() {}, write(text) { this.text = text; }, close() {} };
+
+  const ok = await runBootstrapStreamClient(createBootstrapMockHid(createBootstrapStreamReports(compressed, checksum)), bootDocument);
+
+  assert(ok, 'compressed bootstrap stream did not boot');
+  assert(bootDocument.text === decoder.decode(raw), 'compressed stream did not inflate to original app HTML');
+}
+
+async function testBootstrapCompressedStreamUnsupported() {
+  const raw = encoder.encode('<!doctype html><title>Unsupported gzip</title>');
+  const compressed = await gzipBytes(raw);
+  const checksum = compressed.reduce((sum, byte) => (sum + byte) >>> 0, 0);
+  const bootDocument = { open() { throw new Error('unsupported browser should not boot'); }, write() {}, close() {} };
+  let status = 'Ready';
+
+  const ok = await runBootstrapStreamClient(
+    createBootstrapMockHid(createBootstrapStreamReports(compressed, checksum)),
+    bootDocument,
+    { setStatus: text => { status = text; }, decompressionStream: undefined },
+  );
+
+  assert(!ok, 'unsupported DecompressionStream path booted');
+  assert(status === 'Transfer unsupported - retry', 'unsupported DecompressionStream path did not fail clearly');
 }
 
 // ─── bootstrap.js eval test ─────────────────────────────────────────────────
@@ -878,6 +1439,7 @@ function createHidDeviceMock(reports) {
       // lets close() run after removeEventListener.
       for (const report of reports) {
         const u8 = new Uint8Array(report);
+        if (this.oninputreport) this.oninputreport({ data: new DataView(u8.buffer, u8.byteOffset, u8.byteLength) });
         for (const listener of listeners) {
           listener({ data: new DataView(u8.buffer, u8.byteOffset, u8.byteLength) });
         }
@@ -892,7 +1454,7 @@ function createHidDeviceMock(reports) {
 
 async function testBootstrapJsEval() {
   // 1. Fetch the real bootstrap.js source (not a copy-paste).
-  const res = await fetch('/bootstrap.js');
+  const res = await fetch(`./bootstrap.js?cache=${Date.now()}`);
   assert(res.ok, 'could not fetch bootstrap.js');
   const source = await res.text();
   assert(source.includes('navigator.hid'), 'fetched source does not reference navigator.hid');
@@ -912,8 +1474,9 @@ async function testBootstrapJsEval() {
 
   // Tiny test payload: '<b>ok</b>' (7 bytes).
   const payloadBytes = encoder.encode('<b>ok</b>');
-  const totalLen = payloadBytes.length;
-  const checksum = payloadBytes.reduce((s, b) => (s + b) >>> 0, 0);
+  const compressedPayload = await gzipBytes(payloadBytes);
+  const totalLen = compressedPayload.length;
+  const checksum = compressedPayload.reduce((s, b) => (s + b) >>> 0, 0);
 
   // Build 64-byte HID reports: report 0 = header (LE total, LE checksum),
   // subsequent reports = payload bytes (up to 64 bytes each, no framing).
@@ -921,7 +1484,7 @@ async function testBootstrapJsEval() {
   new DataView(headerReport.buffer).setUint32(0, totalLen, true);
   new DataView(headerReport.buffer).setUint32(4, checksum, true);
   const payloadReport = new Uint8Array(FRAME_SIZE);
-  payloadReport.set(payloadBytes, 0);
+  payloadReport.set(compressedPayload, 0);
   const mockDevice = createHidDeviceMock([headerReport, payloadReport]);
 
   // Flags for detecting which landing-page path bootstrap takes.
@@ -957,7 +1520,7 @@ async function testBootstrapJsEval() {
   // 4. Evaluate the real bootstrap.js source in the iframe context.
   // The IIFE runs immediately and appends button + <p> to document.body.
   try {
-    win.eval(source);
+    win.Function(source)();
   } catch(e) {
     assert(false, `bootstrap.js eval failed: ${e.message}`);
   }
@@ -1034,10 +1597,56 @@ async function testBootstrapSyntaxCatch() {
   assert(syntaxErrorThrown, 'broken bootstrap (catch()) should throw SyntaxError in new Function');
 }
 
+async function testBootstrapUnsupportedDecompression() {
+  const res = await fetch(`./bootstrap.js?cache=${Date.now()}`);
+  assert(res.ok, 'could not fetch bootstrap.js');
+  const source = await res.text();
+
+  const iframe = document.createElement('iframe');
+  iframe.srcdoc = '<!DOCTYPE html><html><head></head><body></body></html>';
+  document.body.appendChild(iframe);
+  await sleep(50);
+
+  const win = iframe.contentWindow;
+  const doc = win.document;
+  let requestDeviceCalled = false;
+  Object.defineProperty(win, 'DecompressionStream', { value: undefined, configurable: true });
+  Object.defineProperty(win, 'navigator', {
+    value: Object.assign({}, win.navigator, {
+      get hid() {
+        return {
+          requestDevice: async () => {
+            requestDeviceCalled = true;
+            return [createHidDeviceMock([])];
+          },
+        };
+      },
+    }),
+    writable: true,
+    configurable: true,
+  });
+
+  win.Function(source)();
+  await sleep(50);
+  const button = doc.querySelector('button');
+  const statusEl = doc.querySelector('p');
+  assert(button, 'bootstrap did not create a button');
+  assert(statusEl, 'bootstrap did not create a status <p>');
+
+  button.click();
+  await sleep(50);
+
+  assert(!requestDeviceCalled, 'unsupported browser still opened WebHID picker');
+  assert(!button.disabled, 'button was not re-enabled after unsupported browser failure');
+  assert(statusEl.textContent === 'Transfer unsupported - retry', 'unsupported browser did not show a clear retry status');
+
+  document.body.removeChild(iframe);
+}
+
 async function testBootstrapPickerCancel() {
   // Regression: cancelled WebHID picker must not throw
   // "Cannot read properties of undefined (reading 'removeEventListener')"
-  const res = await fetch('/bootstrap.js');
+  const res = await fetch(`./bootstrap.js?cache=${Date.now()}`);
   assert(res.ok, 'could not fetch bootstrap.js');
   const source = await res.text();
 
@@ -1067,7 +1676,7 @@ async function testBootstrapPickerCancel() {
   });
 
   // Evaluate bootstrap — it appends button + <p> synchronously.
-  win.eval(source);
+  win.Function(source)();
   await sleep(50);
 
   const button = doc.querySelector('button');
@@ -1091,6 +1700,56 @@ async function testBootstrapPickerCancel() {
     `status text is "${statusEl.textContent}", expected "Transfer failed - retry"`);
   assert(!uncaughtRejection,
     `there was an uncaught rejection: ${uncaughtRejection?.message ?? uncaughtRejection}`);
+
+  document.body.removeChild(iframe);
+}
+
+async function testBootstrapTransferTimeout() {
+  const res = await fetch(`./bootstrap.js?cache=${Date.now()}`);
+  assert(res.ok, 'could not fetch bootstrap.js');
+  const source = await res.text();
+
+  const iframe = document.createElement('iframe');
+  iframe.srcdoc = '<!DOCTYPE html><html><head></head><body></body></html>';
+  document.body.appendChild(iframe);
+  await sleep(50);
+
+  const win = iframe.contentWindow;
+  const doc = win.document;
+  const mockDevice = createHidDeviceMock([]);
+  let requestDeviceCalled = false;
+  win.ABT = 10;
+
+  Object.defineProperty(win, 'navigator', {
+    value: Object.assign({}, win.navigator, {
+      get hid() {
+        return {
+          requestDevice: async () => {
+            requestDeviceCalled = true;
+            return [mockDevice];
+          },
+        };
+      },
+    }),
+    writable: true,
+    configurable: true,
+  });
+
+  win.Function(source)();
+  await sleep(50);
+  const button = doc.querySelector('button');
+  const statusEl = doc.querySelector('p');
+  assert(button, 'bootstrap did not create a button');
+  assert(statusEl, 'bootstrap did not create a status <p>');
+
+  button.click();
+  await sleep(80);
+
+  assert(requestDeviceCalled, 'requestDevice was not called for timeout test');
+  assert(mockDevice.sentReports.some(r => r.data[0] === 0x42), 'timeout test did not send bundle request');
+  assert(!button.disabled, 'button was not re-enabled after transfer timeout');
+  assert(statusEl.textContent === 'Transfer timed out - retry', 'timeout did not show retry status');
+  assert(mockDevice.closeCallOrder.length > 0, 'HID device close() was not called after timeout');
 
   document.body.removeChild(iframe);
 }
