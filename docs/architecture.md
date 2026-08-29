@@ -2,12 +2,12 @@
 
 ## Overview
 
-Pocket AirBridge is a browser-only, offline chat and attachment exchange system. It uses a **Flipper Zero** as a physical bridge between two computers, with no network infrastructure required.
+Pocket AirBridge is a browser-only, offline, end-to-end encrypted chat and attachment exchange system. It uses a **Flipper Zero** as a physical bridge between two computers, with no network infrastructure required.
 
 - **PC-A** (USB Chat) connects to Flipper Zero over **USB HID** (vendor-defined interface).
 - **PC-B** (BLE Chat) connects to Flipper Zero over **Bluetooth Low Energy** (the AirBridge serial GATT service).
 - Both PCs run **browser-based web apps** using WebHID and Web Bluetooth APIs.
-- The Flipper Zero acts as a **stateless byte pipe**: it forwards frames between the two transports and never stores the full message or attachment.
+- The Flipper Zero acts as a **blind stateless byte pipe**: it forwards frames between the two transports and never stores plaintext, session keys, decrypted metadata, or a full message or attachment.
 
 ## Component Diagram
 
@@ -24,18 +24,19 @@ Pocket AirBridge is a browser-only, offline chat and attachment exchange system.
 ### PC-A — USB Chat Web App (WebHID)
 - Discovers and connects to Flipper Zero via `navigator.hid`.
 - Sends text messages and file attachments to PC-B.
-- Splits attachments into fixed-size chunks.
-- Computes SHA-256 hash of the entire attachment before transfer.
+- Encrypts each complete item with AES-GCM before chunking. User-visible metadata and plaintext SHA-256 live inside the encrypted envelope.
 - Sends protocol messages: **HELLO → ITEM_META → ITEM_DATA[0…N] → ITEM_DONE**.
 - Waits for **ACK** after each chunk before sending the next (backpressure).
 - Receives incoming text messages and attachments from PC-B over USB.
 - Displays a chat transcript, transfer state, throughput, and status log.
+- Starts the browser-only crypto handshake, shows the six-digit SAS, and keeps sending disabled until both browsers accept the same SAS.
 
 ### Flipper Zero — Bridge Firmware
 - Exposes a **vendor-defined USB HID interface** (Usage Page `0xFF00`) for PC-A communication.
 - Advertises the config-driven **AirBridge BLE impersonation profile** for PC-B: Battery, DIS, HIDS, and the AirBridge serial service.
-- Is a **stateless byte pipe**: frames arriving on one transport are forwarded verbatim to the other. The bridge does not parse protocol messages, track items, or wait for ACKs.
-- Buffers only a small in-flight event queue (8 slots of one 64-byte frame each); it never stores a full message or attachment.
+- Is a **blind stateless byte pipe**: frames arriving on one transport are forwarded verbatim to the other. The bridge does not parse protocol messages, track items, decrypt data, or wait for ACKs.
+- Buffers only a small in-flight event queue (8 slots of one 64-byte frame each); it never stores plaintext, session keys, decrypted files, or a full message or attachment.
+- Never decrypts chat data. E2E keys and plaintext exist only in the two browser endpoints.
 - Does **not** enforce half-duplex: the one-item-in-flight discipline is enforced entirely by the browser endpoints (lower `itemId` wins a collision).
 - Renders a status screen: USB connection state, BLE connection state, and the forwarding counters `U->B` / `B->U` / `DROP` / `TXERR`. A green LED heartbeat blinks every 500 ms while the app runs.
 
@@ -46,14 +47,16 @@ The FAP reads the BLE identity from `/ext/apps_data/pocket_airbridge/config`:
 `ble_dis_mfr`, `ble_dis_model`, `ble_dis_serial`, and `ble_dis_pnp`. The
 configured HP identity supplies the advertised name and public MAC, GAP
 appearance and manufacturer data, and DIS manufacturer/model/serial/PnP values.
-Invalid identity input falls back atomically to compiled HP defaults.
+Invalid identity input falls back atomically to compiled HP defaults, with the
+DIS serial derived from a stable hash of the Flipper hardware UID unless
+`ble_dis_serial` is explicitly configured.
 
-The AirBridge profile advertises HIDS (`0x1812`) and includes HIDS alongside
-Battery, DIS, and the AirBridge serial service. HIDS is present for the explicit
-BLE Deploy typing flow only; no keyboard reports are emitted while bridging chat
-traffic. The profile uses numeric-comparison pairing with authenticated GATT
-characteristics but disables persistent bonding. This avoids macOS retaining a
-bonded keyboard connection and starving the browser's Web Bluetooth connection.
+The AirBridge profile includes HIDS alongside Battery, DIS, and the AirBridge
+serial service. HIDS is present for the explicit BLE Deploy typing flow only; no
+keyboard reports are emitted while bridging chat traffic. HIDS is advertised only
+for the BLE Deploy prompt and typing window. The profile uses numeric-comparison
+pairing with persistent bonding, so first pairing needs a code check and later
+reconnects can be silent.
 
 Browser discovery and data use only the generated AirBridge serial UUID family
 from `web/airbridge-identity.js`, not HIDS. The on-air UUIDs are service
@@ -61,15 +64,21 @@ from `web/airbridge-identity.js`, not HIDS. The on-air UUIDs are service
 `87825ec0-7398-8cb7-3242-b083eaa34f27`, and RX write
 `152f7eeb-e3b7-5898-ba41-7ff66121c98d`.
 
+Current evidence for BLE tuning is static unless a hardware run says otherwise:
+configured ATT MTU 414, DLE enabled, 2M PHY preference, requested 7.5 to 45 ms
+connection interval, and 244-byte serial value capacity. Runtime negotiated
+values and BLE throughput require physical evidence.
+
 ### PC-B — BLE Chat Web App (Web Bluetooth)
 - Discovers and connects to Flipper Zero via `navigator.bluetooth`.
 - Subscribes to the AirBridge serial TX notify characteristic for incoming data.
-- Receives protocol messages, reassembles attachment chunks into a local `Blob`.
-- Verifies the final SHA-256 hash against the received metadata.
+- Completes SAS-gated crypto unlock with PC-A before sending or accepting items.
+- Receives encrypted protocol messages, reassembles ciphertext, decrypts to a local `Blob`, and verifies inner SHA-256.
 - Sends **ACK** after each successfully received chunk.
 - Sends text messages and file attachments to PC-A over BLE.
 - Offers reconstructed attachments as a browser download.
 - Displays a chat transcript, transfer state, throughput, and status log.
+- Starts the browser-only crypto handshake, shows the six-digit SAS, and keeps sending disabled until both browsers accept the same SAS.
 
 ## Data Flow (Streaming Bridge)
 
@@ -77,7 +86,7 @@ from `web/airbridge-identity.js`, not HIDS. The on-air UUIDs are service
 
 1. PC-A sends **HELLO** to Flipper Zero over USB HID.
 2. Flipper Zero forwards **HELLO** to PC-B over BLE.
-3. PC-A sends **ITEM_META** (item type, name, MIME type, size, SHA-256).
+3. PC-A encrypts the item and sends **ITEM_META** with only encrypted transport metadata.
 4. Flipper Zero forwards **ITEM_META** to PC-B.
 5. **Loop for each chunk:**
    a. PC-A sends **ITEM_DATA** (chunk index + payload).
@@ -86,7 +95,7 @@ from `web/airbridge-identity.js`, not HIDS. The on-air UUIDs are service
    d. Flipper Zero forwards **ACK** to PC-A.
    e. PC-A advances to the next chunk.
 6. PC-A sends **ITEM_DONE**.
-7. PC-B verifies the SHA-256 hash and displays the message or enables the download button.
+7. PC-B verifies ciphertext hash, decrypts, verifies plaintext SHA-256, and displays the message or enables the download button.
 
 ### PC-B sends a text message or attachment to PC-A
 
@@ -98,13 +107,13 @@ The Bridge screen provides two distinct, user-confirmed deployment paths:
 
 | FAP control | Typing transport | Bootstrap | Streamed bundle |
 |---|---|---|---|
-| **UP** | USB HID keyboard | `bootstrap.js` | `app-usb.html` |
-| **DOWN** | BLE HIDS keyboard | `bootstrap-ble.js` | `app-ble.html` |
+| **UP** | USB HID keyboard | `bootstrap.js` | `app-usb.html.gz` |
+| **DOWN** | BLE HIDS keyboard | `bootstrap-ble.js` | `app-ble.html.gz` |
 
-Both bootstraps request the bundle with `0x42` only after a user clicks their
+Both bootstraps require `DecompressionStream("gzip")`, then request the compressed bundle with `0x42` only after a user clicks their
 landing-page Connect button. USB streams fixed 64-byte vendor-HID reports;
 BLE streams the same length/checksum format over the AirBridge serial notify
-characteristic. The bundle itself matches the bootstrap transport, so the
+characteristic. The bundle is deterministic gzip; unsupported browsers fail before the picker. The bundle itself matches the bootstrap transport, so the
 deployed app opens WebHID for USB Deploy and Web Bluetooth for BLE Deploy.
 
 ## Design Decisions
@@ -115,10 +124,12 @@ deployed app opens WebHID for USB Deploy and Web Bluetooth for BLE Deploy.
 | **AirBridge BLE notifications** | The custom serial TX characteristic uses GATT notify, which Chromium exposes through `characteristicvaluechanged`; low overhead suits small data. |
 | **Small chunks (~60 bytes payload)** | Fits within a single 64-byte HID report, avoiding report-fragmentation complexity for the MVP. |
 | **ACK-per-chunk backpressure** | Ensures Flipper Zero never buffers more than a couple of frames. Simple, reliable for demo. |
-| **SHA-256 end-to-end verification** | Guarantees attachment integrity without relying on BLE or HID transport correctness. The receiver verifies the hash before ACKing `ITEM_DONE` and reports mismatches with an `ERROR` frame. |
+| **Browser E2E encryption and SHA-256 verification** | The browsers use SAS-verified P-256/HKDF/AES-GCM before any item transfer. SHA-256 still verifies ciphertext and the decrypted inner item. The receiver verifies before ACKing `ITEM_DONE` and reports mismatches with an `ERROR` frame. |
 | **Half-duplex, one item in flight** | Prevents collisions when both sides try to send simultaneously. Lower `itemId` wins. Enforced by the browser endpoints; the bridge stays a dumb pipe. |
 | **Stateless bridge** | The Flipper only copies bytes between transports. Keeping all protocol state in the endpoints means the firmware cannot desync from either side, and a bridge restart never corrupts protocol state. |
-| **No application-layer encryption or persistent bond** | The authenticated BLE link is encrypted for each numeric-comparison session, but data has no end-to-end application encryption and no bonding is retained. |
+| **Fail-closed SAS unlock** | Sending stays disabled until both browser endpoints accept the same six-digit SAS and receive a matching peer confirmation. Plaintext item frames before unlock are terminal protocol errors. |
+| **Exact-frame NACK only** | NACK retries current-item outer frames by type and sequence. It is not byte-range resume and it does not survive a new session. |
+| **Evidence-gated stealth work** | Typing jitter and per-device DIS serials are implemented. BLE service UUID hiding and Windows USB tree comparison remain deferred until hardware and Windows evidence exist. |
 
 ## Half-Duplex Rules
 
