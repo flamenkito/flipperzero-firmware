@@ -88,6 +88,27 @@ p { color: var(--muted); margin: 6px 0; }
 .status-connected .dot { background: var(--ok); }
 .status-error .dot { background: var(--error); }
 
+/* ---------- Crypto status pill ---------- */
+
+.crypto-pill .crypto-lock {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.crypto-pill.crypto-locked,
+.crypto-pill.crypto-aborted {
+  border-color: var(--error);
+  color: var(--error);
+}
+.crypto-pill.crypto-pending {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.crypto-pill.crypto-unlocked {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
 #deviceName {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--muted);
