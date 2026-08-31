@@ -95,6 +95,27 @@ p { color: var(--muted); margin: 6px 0; }
 .status-connected .dot { background: var(--ok); }
 .status-error .dot { background: var(--error); }
 
+/* ---------- Crypto status pill ---------- */
+
+.crypto-pill .crypto-lock {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.crypto-pill.crypto-locked,
+.crypto-pill.crypto-aborted {
+  border-color: var(--error);
+  color: var(--error);
+}
+.crypto-pill.crypto-pending {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.crypto-pill.crypto-unlocked {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
 #deviceName {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--muted);
@@ -344,7 +365,7 @@ input[type="file"]:disabled { opacity: 0.45; }
     <span id="deviceName" class="mono">No device</span>
   </div>
   <div class="connection-row" style="margin-top:10px;">
-    <span class="mono">E2E <span id="cryptoState">locked</span></span>
+    <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">&#x1F513;</span><span id="cryptoState" class="mono">E2E locked</span></span>
     <span class="mono">SAS <strong id="sasCode">------</strong></span>
     <button id="acceptSasBtn" type="button" disabled>Accept SAS</button>
     <button id="abortCryptoBtn" type="button" disabled>Abort Crypto</button>
@@ -2871,7 +2892,10 @@ function updateCryptoPanel(status = cryptoSession?.getStatus()) {
   const state = status?.state ?? CRYPTO_STATE.REQUIRED;
   const unlocked = state === CRYPTO_STATE.UNLOCKED;
   const pending = state === CRYPTO_STATE.SAS_PENDING;
-  $('cryptoState').textContent = unlocked ? 'unlocked' : pending ? (status.localAccepted ? 'waiting peer' : 'verify SAS') : state === CRYPTO_STATE.ABORTED ? 'aborted' : 'locked';
+  const aborted = state === CRYPTO_STATE.ABORTED;
+  $('cryptoState').textContent = `E2E ${unlocked ? 'unlocked' : pending ? (status.localAccepted ? 'waiting peer' : 'verify SAS') : aborted ? 'aborted' : 'locked'}`;
+  $('cryptoPill').className = `status-pill crypto-pill ${unlocked ? 'crypto-unlocked' : pending ? 'crypto-pending' : aborted ? 'crypto-aborted' : 'crypto-locked'}`;
+  $('cryptoLock').textContent = unlocked ? '\u{1F512}' : '\u{1F513}';
   $('sasCode').textContent = status?.sas ?? '------';
   $('acceptSasBtn').disabled = !pending || status.localAccepted;
   $('abortCryptoBtn').disabled = !cryptoSession || state === CRYPTO_STATE.REQUIRED;
