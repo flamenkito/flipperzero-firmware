@@ -39,13 +39,16 @@ static const bool airbridge_ble_enabled = true; // flip to false to skip BLE ins
 #define BLE_TYPE_PRESS_DELAY_MS     12
 #define BLE_TYPE_RELEASE_DELAY_MS   18
 #define BLE_TYPE_MODIFIED_SETTLE_MS 10
+#define BLE_TYPE_LINK_SETTLE_MS     2500
 
-#define BLE_TYPING_RETRY_MAX      5
-#define BLE_TYPING_RETRY_DELAY_MS 20
-#define BLE_WAITING_PUMP_MS          2500
-#define BLE_BRIDGE_ADV_WATCHDOG_MS   BLE_WAITING_PUMP_MS
-#define BLE_WAITING_SQUATTER_KICK_MS 15000
-#define BLE_STREAM_RETRY_MAX      20
+#define BLE_TYPING_RETRY_MAX       5
+#define BLE_TYPING_RETRY_DELAY_MS  20
+#define BLE_WAITING_PUMP_MS        2500
+#define BLE_BRIDGE_ADV_WATCHDOG_MS BLE_WAITING_PUMP_MS
+#define BLE_SQUATTER_KICK_MS       15000
+#define BLE_WAITING_ZOMBIE_KICK_MS 90000
+#define BLE_DONE_ZOMBIE_GRACE_MS   4000
+#define BLE_STREAM_RETRY_MAX       20
 
 #define BLE_DEFAULT_NAME           "HP 725 K+M"
 #define BLE_DEFAULT_APPEARANCE     0x03C1
@@ -125,6 +128,12 @@ typedef struct {
     bool typing_enter_done;
     uint32_t typing_next_tick;
     uint32_t typing_jitter_state;
+    /* First tick at which the BLE HID link was bonded AND up. Typing emission
+     * holds until BLE_TYPE_LINK_SETTLE_MS past this stamp: the macOS HID
+     * daemon subscribes the report CCCDs a beat after pairing completes, and
+     * keystrokes emitted into that window are silently dropped (hardware:
+     * first ~24 bootstrap chars lost on a fresh pairing). */
+    uint32_t typing_link_ready_tick;
     /* Bumped by app_start_typing/app_abort_typing; the BLE retry helper
      * captures it at entry and refuses to send once it no longer matches. */
     uint32_t typing_generation;
@@ -136,6 +145,21 @@ typedef struct {
      * the main and GUI threads — volatile so no reader caches a stale value. */
     volatile bool ble_connected;
     uint32_t ble_connected_since;
+    uint32_t ble_desync_since;
+    /* Last accepted RX write on the current link; zeroed on each new
+     * connection. The squatter kick window restarts from this stamp. */
+    uint32_t ble_last_rx_tick;
+    /* Stamp of the last real 0x42 deploy stream start; zero means no stream
+     * this session. Used by the Done-screen zombie-kick. */
+    uint32_t stream_started_tick;
+    /* Tick of the last Done-screen entry. The zombie-kick waits
+     * BLE_DONE_ZOMBIE_GRACE_MS past it: Done is entered when the final chunk
+     * is QUEUED in the BLE stack, and an immediate bt_disconnect drops the
+     * unsent tail (hardware: bootstrap saw [gattserverdisconnected] +
+     * 'Transfer failed' right after a fully-sent stream). The grace lets
+     * in-flight notifications flush; the bootstrap's own confirmed
+     * disconnect (2500 ms) usually lands first anyway. */
+    uint32_t done_since;
     uint32_t ble_waiting_last_pump_tick;
     uint32_t ble_bridge_last_watchdog_tick;
     char error[32];
@@ -154,6 +178,12 @@ static uint32_t last_heartbeat;
 static void usb_event_callback(HidVendorEvent ev, void* context);
 static uint16_t ble_raw_serial_callback(const uint8_t* data, uint16_t len, void* context);
 static void app_ble_status_changed_callback(BtStatus status, void* context);
+
+/* Exported firmware symbols (api_symbols.csv); the service header is not in
+ * the FAP SDK include path, so declare the two entry points used here. */
+typedef struct BleServiceAirbridgeSerial BleServiceAirbridgeSerial;
+extern BleServiceAirbridgeSerial* ble_svc_airbridge_serial_get_active(void);
+extern bool ble_svc_airbridge_serial_client_subscribed(BleServiceAirbridgeSerial* service);
 
 static void app_set_hids_adv(AirbridgeApp* app, bool enable) {
     /* Idempotent: every state change enqueues a GAP advertising refresh, and
@@ -188,11 +218,6 @@ static void app_set_hids_adv(AirbridgeApp* app, bool enable) {
 }
 
 static void app_show_error(AirbridgeApp* app, const char* message) {
-    if((app->screen == AirbridgeScreenTyping ||
-        app->screen == AirbridgeScreenDeployPrompt) &&
-       app->typing_transport == AirbridgeTypingTransportBle) {
-        app_set_hids_adv(app, false);
-    }
     snprintf(app->error, sizeof(app->error), "%s", message);
     app->screen = AirbridgeScreenError;
 }
@@ -245,6 +270,8 @@ static void app_ble_status_changed_callback(BtStatus status, void* context) {
     app->ble_connected = connected;
     if(connected) {
         app->ble_connected_since = furi_get_tick();
+        /* A previous link's RX activity must never extend a fresh link. */
+        app->ble_last_rx_tick = 0;
         FURI_LOG_D(TAG, "BLE central connected");
     } else {
         // Restart advertising after any client disconnect so Bridge mode does not go silent.
@@ -256,11 +283,21 @@ static void app_ble_status_changed_callback(BtStatus status, void* context) {
 }
 
 static void app_bridge_adv_watchdog(AirbridgeApp* app) {
-    if(!app->ble_profile_installed || app->ble_connected) return;
+    /* GAP state via furi_hal_bt_is_active() is the ground truth;
+     * furi_hal_bt_start_advertising() is Idle-gated, and with the bt.c
+     * disconnect-status fix the stale-ble_connected wedge class is closed —
+     * the watchdog must not depend on FAP bookkeeping. */
+    if(!app->ble_profile_installed) return;
 
     uint32_t now = furi_get_tick();
     if(now - app->ble_bridge_last_watchdog_tick < BLE_BRIDGE_ADV_WATCHDOG_MS) return;
     app->ble_bridge_last_watchdog_tick = now;
+
+    /* HIDS must stay in the adv data for the app's whole lifetime (host BT
+     * settings discoverability without prompt navigation). Re-arm every tick:
+     * gap_set_adv_hids early-outs when the flag is unchanged, so this is free
+     * unless something reset the flag. */
+    furi_hal_bt_set_adv_hids(true);
 
     if(furi_hal_bt_is_active()) return;
 
@@ -272,6 +309,57 @@ static void app_bridge_adv_watchdog(AirbridgeApp* app) {
     furi_hal_bt_start_advertising();
 }
 
+static void app_ble_squatter_watchdog(AirbridgeApp* app) {
+    uint32_t now = furi_get_tick();
+    /* A 4 s fast kick for bonded squatters (round 6, keyed on
+     * bt_pairing_in_progress) was tried and REJECTED on hardware: it evicted
+     * clients mid-discovery before they could subscribe (two connect attempts
+     * died at ~4 s). 15 s is the proven window, pairing ceremonies included;
+     * the bt_pairing_in_progress machinery stays in firmware for future use
+     * but is deliberately not consulted here. */
+    if(app->ble_connected) {
+        /* A central that reached the data phase (any RX write, e.g. the 0x42
+         * deploy request or chat frames) is progressing — its window restarts
+         * from the last write, so a client attaching through a squatter's
+         * shared link is never evicted mid-bring-up by the squatter's stale
+         * deadline. */
+        uint32_t active_since = app->ble_connected_since;
+        if(app->ble_last_rx_tick > active_since) active_since = app->ble_last_rx_tick;
+        if(now - active_since < BLE_SQUATTER_KICK_MS) return;
+        BleServiceAirbridgeSerial* svc = ble_svc_airbridge_serial_get_active();
+        if(svc != NULL && ble_svc_airbridge_serial_client_subscribed(svc)) return;
+        FURI_LOG_W(
+            TAG,
+            "BLE squatter kick: unsubscribed link held %lu ms",
+            (unsigned long)(now - app->ble_connected_since));
+    } else {
+        /* Path B (desync self-heal): GAP says Connected but the FAP never saw
+         * the connect (stale disconnect-complete raced a handle reuse). Held
+         * for the kick window, force a disconnect to resync. */
+        if(!furi_hal_bt_is_connected()) {
+            app->ble_desync_since = 0;
+            return;
+        }
+        if(app->ble_desync_since == 0) {
+            app->ble_desync_since = now;
+            return;
+        }
+        if(now - app->ble_desync_since < BLE_SQUATTER_KICK_MS) return;
+        FURI_LOG_W(
+            TAG,
+            "BLE desync kick: ghost link held %lu ms",
+            (unsigned long)(now - app->ble_desync_since));
+    }
+    /* With honest GAP state, bt_disconnect blocks until the link is truly down,
+     * so the follow-up start_advertising always starts clean advertising; a
+     * re-grab by the daemon afterwards is a fresh, correctly-signaled
+     * connection. */
+    bt_disconnect(app->bt);
+    furi_hal_bt_start_advertising();
+    app->ble_connected_since = now;
+    app->ble_desync_since = 0;
+}
+
 static void app_abort_typing(AirbridgeApp* app) {
     /* Invalidate any in-flight retry helper from the aborted session: its next
      * boundary check sees the generation bump and returns without sending. */
@@ -281,7 +369,6 @@ static void app_abort_typing(AirbridgeApp* app) {
     app->typing_enter_pending = false;
     app->typing_enter_done = false;
     if(app->typing_transport == AirbridgeTypingTransportBle) {
-        app_set_hids_adv(app, false);
         /* Release-all is DEFERRED to the main loop: the old synchronous send
          * through the retry wrapper could block the abort path for ~5 s under
          * gatt congestion. The flag is latched here, while the aborted
@@ -540,6 +627,11 @@ static bool app_configure_ble(AirbridgeApp* app) {
     app->ble_profile_installed = app->ble_profile != NULL;
     if(app->ble_profile_installed) {
         bt_set_status_changed_callback(app->bt, app_ble_status_changed_callback, app);
+        /* HIDS stays in the advertising data for the whole app lifetime: the
+         * keyboard must be discoverable/pairable from the host's Bluetooth
+         * settings at any moment, without navigating to the Deploy prompt
+         * first. */
+        app_set_hids_adv(app, true);
     }
     return app->ble_profile_installed;
 }
@@ -569,7 +661,8 @@ static void app_restore_ble(AirbridgeApp* app) {
      * disconnected: no 200 ms floor. */
     bt_disconnect(app->bt);
     uint32_t start = furi_get_tick();
-    while(app->ble_connected && (furi_get_tick() - start < 500)) furi_delay_ms(10);
+    while(app->ble_connected && (furi_get_tick() - start < 500))
+        furi_delay_ms(10);
 
     if(!bt_profile_restore_default(app->bt)) {
         FURI_LOG_E(TAG, "Failed to restore default BLE profile");
@@ -698,9 +791,11 @@ static void app_start_typing(AirbridgeApp* app, AirbridgeTypingTransport transpo
         app->typing_jitter_state = 0xA53C5A5AU;
     }
     app->typing_next_tick = furi_get_tick();
-    if(transport == AirbridgeTypingTransportBle) {
-        app_set_hids_adv(app, true);
-    }
+    app->typing_link_ready_tick = 0;
+    /* New deploy session: invalidate any stale stream stamp so a later Done
+     * screen never zombie-kicks against a previous session's timeline. */
+    app->stream_started_tick = 0;
+    app->done_since = 0;
     app->screen = AirbridgeScreenTyping;
 }
 
@@ -732,6 +827,24 @@ static bool app_typing_release(AirbridgeApp* app, uint16_t key) {
 }
 
 static void app_typing_step(AirbridgeApp* app) {
+    /* BLE typing holds until the host link is up AND the pairing ceremony has
+     * completed. Burning keystrokes into the retry budget before the bonded
+     * link exists would error out the session. Input stays serviced in the
+     * main loop, so BACK still aborts instantly. */
+    if(app->typing_transport == AirbridgeTypingTransportBle) {
+        if(!app->ble_connected || bt_pairing_in_progress(app->bt)) {
+            app->typing_link_ready_tick = 0;
+            app->typing_next_tick = furi_get_tick();
+            return;
+        }
+        if(app->typing_link_ready_tick == 0) {
+            app->typing_link_ready_tick = furi_get_tick();
+        }
+        if(furi_get_tick() - app->typing_link_ready_tick < BLE_TYPE_LINK_SETTLE_MS) {
+            app->typing_next_tick = furi_get_tick();
+            return;
+        }
+    }
     if(furi_get_tick() < app->typing_next_tick) return;
 
     const uint32_t press_delay = app->typing_transport == AirbridgeTypingTransportBle ?
@@ -747,8 +860,7 @@ static void app_typing_step(AirbridgeApp* app) {
             /* A false return caused by user abort or by queued input starting a
              * NEW generation must neither error nor abort the new session — so
              * this staleness check runs BEFORE app_abort_typing. */
-            if(app->screen != AirbridgeScreenTyping ||
-               app->typing_generation != step_generation) {
+            if(app->screen != AirbridgeScreenTyping || app->typing_generation != step_generation) {
                 return;
             }
             app_abort_typing(app);
@@ -781,8 +893,7 @@ static void app_typing_step(AirbridgeApp* app) {
         if(!app_typing_press(app, key)) {
             /* Stale-step false return (abort / generation change): no error
              * screen for the session that superseded us. */
-            if(app->screen != AirbridgeScreenTyping ||
-               app->typing_generation != step_generation) {
+            if(app->screen != AirbridgeScreenTyping || app->typing_generation != step_generation) {
                 return;
             }
             app_show_error(app, "KEYBOARD SEND ERROR");
@@ -799,8 +910,7 @@ static void app_typing_step(AirbridgeApp* app) {
         if(!app_typing_press(app, HID_KEYBOARD_RETURN)) {
             /* Stale-step false return (abort / generation change): no error
              * screen for the session that superseded us. */
-            if(app->screen != AirbridgeScreenTyping ||
-               app->typing_generation != step_generation) {
+            if(app->screen != AirbridgeScreenTyping || app->typing_generation != step_generation) {
                 return;
             }
             app_show_error(app, "KEYBOARD SEND ERROR");
@@ -815,9 +925,14 @@ static void app_typing_step(AirbridgeApp* app) {
 
     app->screen = AirbridgeScreenWaiting;
     if(app->typing_transport == AirbridgeTypingTransportBle) {
-        app_set_hids_adv(app, false);
         app->ble_waiting_last_pump_tick = furi_get_tick();
         bt_disconnect(app->bt);
+        /* NO bond wipe here (round-8 wiped; reverted): with ONE identity the
+         * typing bond doubles as the browser's data bond — wiping the
+         * Flipper-side keys leaves the Mac's bond record pointing at dead
+         * keys, and every subsequent connect fails with "Connection attempt
+         * failed" (hardware-proven). The daemon's squatting is handled by the
+         * squatter watchdog instead. */
         furi_hal_bt_start_advertising();
     }
 }
@@ -827,10 +942,8 @@ static bool app_start_stream(AirbridgeApp* app) {
     const char* bundle_path = use_ble_bundle ? APP_DATA_PATH("app-ble.html.gz") :
                                                APP_DATA_PATH("app-usb.html.gz");
     const char* missing_error = use_ble_bundle ? "NO app-ble.gz ON SD" : "NO app-usb.gz ON SD";
-    const char* too_large_error = use_ble_bundle ? "app-ble.gz TOO LARGE" :
-                                                   "app-usb.gz TOO LARGE";
-    const char* read_error = use_ble_bundle ? "app-ble.gz READ ERROR" :
-                                              "app-usb.gz READ ERROR";
+    const char* too_large_error = use_ble_bundle ? "app-ble.gz TOO LARGE" : "app-usb.gz TOO LARGE";
+    const char* read_error = use_ble_bundle ? "app-ble.gz READ ERROR" : "app-usb.gz READ ERROR";
     if(!storage_file_open(app->stream_file, bundle_path, FSAM_READ, FSOM_OPEN_EXISTING)) {
         app_show_error(app, missing_error);
         return false;
@@ -863,6 +976,7 @@ static bool app_start_stream(AirbridgeApp* app) {
     app->stream_sent = 0;
     app->stream_header_pending = true;
     app->stream_tx_strikes = 0;
+    app->stream_started_tick = furi_get_tick();
     app->screen = AirbridgeScreenStreaming;
     return true;
 }
@@ -891,6 +1005,7 @@ static void app_stream_step(AirbridgeApp* app) {
     if(app->stream_sent == app->stream_total_len) {
         app_stream_close(app);
         app->screen = AirbridgeScreenDone;
+        app->done_since = furi_get_tick();
         return;
     }
 
@@ -934,6 +1049,7 @@ static void app_stream_step_ble(AirbridgeApp* app) {
     if(app->stream_sent == app->stream_total_len) {
         app_stream_close(app);
         app->screen = AirbridgeScreenDone;
+        app->done_since = furi_get_tick();
         return;
     }
 
@@ -998,6 +1114,7 @@ static void usb_event_callback(HidVendorEvent ev, void* context) {
 static uint16_t ble_raw_serial_callback(const uint8_t* data, uint16_t len, void* context) {
     AirbridgeApp* app = context;
     if(len > 0 && len <= HID_VENDOR_PACKET_LEN) {
+        app->ble_last_rx_tick = furi_get_tick();
         BridgeEvent be = {
             .type = EVENT_TYPE_RELAY,
             .len = len,
@@ -1014,28 +1131,74 @@ static uint16_t ble_raw_serial_callback(const uint8_t* data, uint16_t len, void*
 
 // USB plug outline 7x8 (link down)
 static const uint8_t icon_usb_outline[] = {
-    0x3E, 0x55, 0x41, 0x3E, 0x04, 0x04, 0x04, 0x1C,
+    0x3E,
+    0x55,
+    0x41,
+    0x3E,
+    0x04,
+    0x04,
+    0x04,
+    0x1C,
 };
 // USB plug filled 7x8 (link up; body solid, contact slits stay holes)
 static const uint8_t icon_usb_filled[] = {
-    0x3E, 0x6B, 0x7F, 0x3E, 0x04, 0x04, 0x04, 0x1C,
+    0x3E,
+    0x6B,
+    0x7F,
+    0x3E,
+    0x04,
+    0x04,
+    0x04,
+    0x1C,
 };
 // BT rune 5x8 (from stock Bluetooth_Idle_5x8)
 static const uint8_t icon_bt_rune[] = {
-    0x04, 0x0D, 0x16, 0x0C, 0x0C, 0x16, 0x0D, 0x04,
+    0x04,
+    0x0D,
+    0x16,
+    0x0C,
+    0x0C,
+    0x16,
+    0x0D,
+    0x04,
 };
 // Right arrow 5x5
 static const uint8_t icon_arrow_r[] = {
-    0x04, 0x08, 0x1F, 0x08, 0x04,
+    0x04,
+    0x08,
+    0x1F,
+    0x08,
+    0x04,
 };
 // Trash can 8x8 (DROP)
 static const uint8_t icon_trash[] = {
-    0x7E, 0x81, 0x55, 0x55, 0x55, 0x55, 0x81, 0x7E,
+    0x7E,
+    0x81,
+    0x55,
+    0x55,
+    0x55,
+    0x55,
+    0x81,
+    0x7E,
 };
 // Alert triangle 9x8 (TXERR, from stock Alert_9x8)
 static const uint8_t icon_alert[] = {
-    0x10, 0x00, 0x38, 0x00, 0x28, 0x00, 0x6C, 0x00,
-    0x6C, 0x00, 0xFE, 0x00, 0xEE, 0x00, 0xFF, 0x01,
+    0x10,
+    0x00,
+    0x38,
+    0x00,
+    0x28,
+    0x00,
+    0x6C,
+    0x00,
+    0x6C,
+    0x00,
+    0xFE,
+    0x00,
+    0xEE,
+    0x00,
+    0xFF,
+    0x01,
 };
 
 static void draw_usb_glyph(Canvas* canvas, uint8_t x, uint8_t y, bool connected) {
@@ -1169,8 +1332,7 @@ static void render_streaming(Canvas* canvas, AirbridgeApp* app) {
         total_t / 10,
         total_t % 10);
     canvas_draw_str_aligned(canvas, 0, 45, AlignLeft, AlignTop, line);
-    uint32_t pct =
-        app->stream_total_len > 0 ? 100 * app->stream_sent / app->stream_total_len : 0;
+    uint32_t pct = app->stream_total_len > 0 ? 100 * app->stream_sent / app->stream_total_len : 0;
     snprintf(line, sizeof(line), "%lu%%", pct);
     canvas_draw_str_aligned(canvas, 124, 45, AlignRight, AlignTop, line);
 
@@ -1188,8 +1350,7 @@ static void render_waiting(Canvas* canvas, AirbridgeApp* app) {
     uint32_t offset = phase < 32 ? phase : 63 - phase;
     canvas_draw_box(canvas, 5 + offset * (118 - 12) / 31, 29, 12, 6);
 
-    canvas_draw_str_aligned(
-        canvas, 0, 45, AlignLeft, AlignTop, "Click Connect in the browser");
+    canvas_draw_str_aligned(canvas, 0, 45, AlignLeft, AlignTop, "Click Connect in the browser");
     canvas_draw_str(canvas, 0, 63, "BACK: abort");
 }
 
@@ -1289,16 +1450,6 @@ static void app_carousel_next(AirbridgeApp* app, int dir) {
         return;
     }
 
-    const bool leaving_ble_prompt = (app->screen == AirbridgeScreenDeployPrompt) &&
-                                    (app->typing_transport == AirbridgeTypingTransportBle);
-    const bool entering_ble_prompt = (next_screen == AirbridgeScreenDeployPrompt) &&
-                                     (next_transport == AirbridgeTypingTransportBle);
-    if(entering_ble_prompt) {
-        app_set_hids_adv(app, true);
-    } else if(leaving_ble_prompt) {
-        app_set_hids_adv(app, false);
-    }
-
     app->screen = next_screen;
     app->typing_transport = next_transport;
 }
@@ -1317,6 +1468,14 @@ static void app_handle_input(AirbridgeApp* app, InputKey key, InputType type, bo
             app_carousel_next(app, -1);
         } else if(key == InputKeyRight) {
             app_carousel_next(app, +1);
+        } else if(key == InputKeyDown && app->ble_profile_installed) {
+            /* Manual BLE reset (demo escape hatch): force-drop any held link
+             * (squatter, zombie, desync) and re-advertise immediately. */
+            FURI_LOG_W(TAG, "Manual BLE reset");
+            bt_disconnect(app->bt);
+            furi_hal_bt_start_advertising();
+            app->ble_connected_since = furi_get_tick();
+            app->ble_desync_since = 0;
         }
         /* Short BACK is a no-op on Bridge so carousel browsing can never
          * exit by accident. */
@@ -1325,9 +1484,6 @@ static void app_handle_input(AirbridgeApp* app, InputKey key, InputType type, bo
 
     if(app->screen == AirbridgeScreenDeployPrompt) {
         if(key == InputKeyBack) {
-            if(app->typing_transport == AirbridgeTypingTransportBle) {
-                app_set_hids_adv(app, false);
-            }
             app->typing_transport = AirbridgeTypingTransportNone;
             app->screen = AirbridgeScreenBridge;
         } else if(key == InputKeyOk) {
@@ -1526,9 +1682,17 @@ int32_t pocket_airbridge_app(void* p) {
 
         if(app->screen == AirbridgeScreenBridge) {
             app_bridge_adv_watchdog(app);
+            /* Squatter watchdog runs on Bridge: the picker window matters here
+             * and a bonded macOS HID daemon otherwise holds the link forever. */
+            app_ble_squatter_watchdog(app);
         } else if(app->screen == AirbridgeScreenTyping) {
+            /* NO squatter kick on Typing: the HID host link is legitimate AND
+             * never subscribes the AirBridge TX CCCD, and typing runs 60-90 s —
+             * a 15 s kick would corrupt the typed stream mid-bootstrap. */
             app_typing_step(app);
         } else if(app->screen == AirbridgeScreenStreaming) {
+            /* NO squatter kick on Streaming: an active bundle/file transfer is
+             * definitionally a subscribed, legitimate client. */
             if(app->typing_transport == AirbridgeTypingTransportBle) {
                 app_stream_step_ble(app);
             } else {
@@ -1542,36 +1706,63 @@ int32_t pocket_airbridge_app(void* p) {
                     // This starts advertising only from GapStateIdle. During a link or
                     // numeric-comparison pairing, GAP is already active, so never
                     // disconnect it merely to recover a genuinely idle advertiser.
+                    furi_hal_bt_set_adv_hids(true);
                     FURI_LOG_D(TAG, "BLE Waiting pump: restart adv if idle");
                     furi_hal_bt_start_advertising();
                 }
-                /* Squatter kick (deploy-scoped, BLE Waiting only): a bonded macOS
-                 * HID daemon auto-reconnects the keyboard and sits on HIDS without
-                 * ever writing the vendor RX, holding the link and keeping the Web
-                 * Bluetooth picker empty. Chrome's bootstrap writes the 0x42 bundle
-                 * request immediately after subscribing, which transitions Waiting
-                 * -> Streaming in app_handle_relay/app_start_stream — so any central
-                 * still connected in Waiting past the deadline never requested the
-                 * bundle and is safe to kick. The kick can never fire after 0x42:
-                 * the screen is no longer Waiting. One kick per connection by
-                 * design: the next rising edge re-stamps ble_connected_since.
-                 * 15 s budget (not shorter): on a FRESH origin the first bootstrap
-                 * Connect runs a pairing ceremony (numeric code shown on the
-                 * Flipper + human reaction time) BEFORE 0x42 is written; hardware
-                 * showed a 3 s window killing that first connect mid-pairing.
-                 * 15 s covers the ceremony while still cycling squatters off the
-                 * link often enough for pickers to catch advertising windows. */
-                if(app->ble_connected &&
-                   now - app->ble_connected_since >= BLE_WAITING_SQUATTER_KICK_MS) {
-                    FURI_LOG_W(TAG, "BLE Waiting: kicking silent squatter");
+                /* Squatter kick (Waiting): a bonded macOS HID daemon
+                 * auto-reconnects the keyboard and sits on the link without ever
+                 * subscribing the AirBridge TX CCCD, keeping the Web Bluetooth
+                 * picker empty. Chrome's bootstrap subscribes TX immediately,
+                 * so any central still unsubscribed past the deadline is safe to
+                 * kick. One kick per connection by design: the next rising edge
+                 * re-stamps ble_connected_since. 15 s budget (not shorter): on a
+                 * FRESH origin the first bootstrap Connect runs a pairing
+                 * ceremony (numeric code shown on the Flipper + human reaction
+                 * time) BEFORE the TX subscription lands; hardware showed a 3 s
+                 * window killing that first connect mid-pairing. */
+                app_ble_squatter_watchdog(app);
+                /* Waiting zombie-kick: a SUBSCRIBED zombie from a failed
+                 * bootstrap attempt (Chrome's gatt.disconnect() does not
+                 * reliably drop the OS link) survives the squatter watchdog
+                 * and blocks advertising forever. On Waiting the only legit
+                 * link progress is the 0x42 deploy write, and
+                 * ble_last_rx_tick is zeroed per connection, so a link with
+                 * no RX after 90 s (pairing ceremony included) is dead. */
+                if(app->ble_connected && app->ble_last_rx_tick == 0 &&
+                   furi_get_tick() - app->ble_connected_since >= BLE_WAITING_ZOMBIE_KICK_MS) {
+                    FURI_LOG_W(TAG, "BLE Waiting: kicking subscribed zombie link");
                     bt_disconnect(app->bt);
                     furi_hal_bt_start_advertising();
-                    /* Defer re-check while the async disconnect lands; the next
-                     * connection's rising edge overwrites this with a fresh window. */
-                    app->ble_connected_since = now;
                 }
             }
+        } else if(app->screen == AirbridgeScreenDone) {
+            /* Zombie-kick: the ONLY client allowed to span the stream is the
+             * deploy bootstrap, and it must be disconnected by Done
+             * (browser-side gatt.disconnect() is not reliable — a subscribed
+             * zombie holds the link invisibly and starves the part-3 picker).
+             * Any link still up whose connect predates the stream start is that
+             * zombie by definition; a legit next client connects only after
+             * Done and gets a fresh timestamp. */
+            if(app->ble_connected && app->stream_started_tick != 0 &&
+               app->ble_connected_since < app->stream_started_tick &&
+               furi_get_tick() - app->done_since >= BLE_DONE_ZOMBIE_GRACE_MS) {
+                FURI_LOG_W(TAG, "BLE Done: kicking bootstrap zombie link");
+                bt_disconnect(app->bt);
+                furi_hal_bt_start_advertising();
+                app->ble_connected_since = furi_get_tick();
+            }
+            /* Done: the picker window matters again (the user may start a new
+             * transfer from either page), so a squatter holding the link here
+             * wedges Web Bluetooth exactly like on Bridge/Waiting. */
+            app_ble_squatter_watchdog(app);
+        } else if(app->screen == AirbridgeScreenError) {
+            /* Error: same picker-window rationale as Done. */
+            app_ble_squatter_watchdog(app);
         }
+        /* NO squatter kick on DeployPrompt: the pairing ceremony at the prompt
+         * (numeric comparison + human reaction time) can exceed 15 s before the
+         * TX CCCD subscription lands, and kicking there aborts the deploy. */
         view_port_update(view_port);
 
         if(furi_get_tick() - last_heartbeat >= 500) {

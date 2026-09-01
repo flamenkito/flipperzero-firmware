@@ -1,5 +1,5 @@
 diff --git a/applications/services/bt/bt_service/bt.c b/applications/services/bt/bt_service/bt.c
-index 7554d87e..0b1e7717 100644
+index 7554d87e..0312567a 100644
 --- a/applications/services/bt/bt_service/bt.c
 +++ b/applications/services/bt/bt_service/bt.c
 @@ -8,6 +8,9 @@
@@ -12,7 +12,7 @@ index 7554d87e..0b1e7717 100644
  
  #define TAG "BtSrv"
  
-@@ -17,6 +20,96 @@
+@@ -17,6 +20,102 @@
  
  #define ICON_SPACER 2
  
@@ -86,6 +86,11 @@ index 7554d87e..0b1e7717 100644
 +    bt_raw_serial_ctx = ctx;
 +}
 +
++bool bt_pairing_in_progress(Bt* bt) {
++    furi_check(bt);
++    return bt->pairing_in_progress;
++}
++
 +bool bt_serial_tx(const uint8_t* data, uint16_t len) {
 +    if(!bt_instance) return false;
 +
@@ -97,7 +102,8 @@ index 7554d87e..0b1e7717 100644
 +    if(profile) {
 +        if(bt_profile_is_airbridge(profile)) {
 +            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
-+            ret = serial_svc && ble_svc_airbridge_serial_update_tx(serial_svc, (uint8_t*)data, len);
++            ret = serial_svc &&
++                  ble_svc_airbridge_serial_update_tx(serial_svc, (uint8_t*)data, len);
 +        } else {
 +            ret = ble_profile_serial_tx(profile, (uint8_t*)data, len);
 +        }
@@ -109,7 +115,7 @@ index 7554d87e..0b1e7717 100644
  static void bt_draw_statusbar_callback(Canvas* canvas, void* context) {
      furi_assert(context);
  
-@@ -150,9 +243,13 @@ static void bt_battery_level_changed_callback(const void* _event, void* context)
+@@ -150,9 +249,14 @@ static void bt_battery_level_changed_callback(const void* _event, void* context)
  
  Bt* bt_alloc(void) {
      Bt* bt = malloc(sizeof(Bt));
@@ -120,10 +126,11 @@ index 7554d87e..0b1e7717 100644
 +    bt->current_profile_readers = 0;
 +    bt->current_profile_is_serial = false;
 +    bt->current_profile_is_airbridge = false;
++    bt->pairing_in_progress = false;
      // Keys storage
      bt->keys_storage = bt_keys_storage_alloc(BT_KEYS_STORAGE_PATH);
      // Alloc queue
-@@ -190,7 +287,19 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
+@@ -190,7 +294,19 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
      Bt* bt = context;
      uint16_t ret = 0;
  
@@ -143,7 +150,7 @@ index 7554d87e..0b1e7717 100644
          size_t bytes_processed =
              rpc_session_feed(bt->rpc_session, event.data.buffer, event.data.size, 1000);
          if(bytes_processed != event.data.size) {
-@@ -199,16 +308,25 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
+@@ -199,16 +315,25 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
          }
          ret = rpc_session_get_available_size(bt->rpc_session);
      } else if(event.event == SerialServiceEventTypeDataSent) {
@@ -178,7 +185,7 @@ index 7554d87e..0b1e7717 100644
      }
      return ret;
  }
-@@ -226,13 +344,24 @@ static void bt_rpc_send_bytes_callback(void* context, uint8_t* bytes, size_t byt
+@@ -226,13 +351,24 @@ static void bt_rpc_send_bytes_callback(void* context, uint8_t* bytes, size_t byt
      size_t bytes_sent = 0;
      while(bytes_sent < bytes_len) {
          size_t bytes_remain = bytes_len - bytes_sent;
@@ -188,8 +195,8 @@ index 7554d87e..0b1e7717 100644
 -        } else {
 -            ble_profile_serial_tx(bt->current_profile, &bytes[bytes_sent], bytes_remain);
 -            bytes_sent += bytes_remain;
-+        size_t bytes_to_send =
-+            bytes_remain > bt->max_packet_size ? bt->max_packet_size : bytes_remain;
++        size_t bytes_to_send = bytes_remain > bt->max_packet_size ? bt->max_packet_size :
++                                                                    bytes_remain;
 +        /* The serial profile may be replaced mid-send; re-validate each chunk.
 +         * Reader ref only: the mutex is never held across ble_profile_serial_tx
 +         * (blocking hci_send_req) or the furi_event_flag_wait below. */
@@ -209,7 +216,7 @@ index 7554d87e..0b1e7717 100644
          // We want BT_RPC_EVENT_DISCONNECTED to stick, so don't clear
          uint32_t event_flag = furi_event_flag_wait(
              bt->rpc_event, BT_RPC_EVENT_ALL, FuriFlagWaitAny | FuriFlagNoClear, FuriWaitForever);
-@@ -248,8 +377,24 @@ static void bt_rpc_send_bytes_callback(void* context, uint8_t* bytes, size_t byt
+@@ -248,8 +384,24 @@ static void bt_rpc_send_bytes_callback(void* context, uint8_t* bytes, size_t byt
  static void bt_serial_buffer_is_empty_callback(void* context) {
      furi_assert(context);
      Bt* bt = context;
@@ -236,7 +243,7 @@ index 7554d87e..0b1e7717 100644
  }
  
  // Called from GAP thread
-@@ -258,8 +403,18 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+@@ -258,50 +410,93 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
      Bt* bt = context;
      bool ret = false;
      bool do_update_status = false;
@@ -255,40 +262,97 @@ index 7554d87e..0b1e7717 100644
 +    bool current_profile_is_airbridge = bt_profile_is_airbridge(current_profile);
  
      if(event.type == GapEventTypeConnected) {
-         // Update status bar
-@@ -268,6 +423,16 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
-         // Clear BT_RPC_EVENT_DISCONNECTED because it might be set from previous session
-         furi_event_flag_clear(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
- 
-+        if(current_profile_is_airbridge) {
-+            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
-+            if(serial_svc) {
-+                ble_svc_airbridge_serial_set_callbacks(
-+                    serial_svc, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
-+            } else {
-+                FURI_LOG_E(TAG, "AirBridge serial service unavailable on connect");
-+            }
-+        }
-+
-         if(current_profile_is_serial) {
-             // Open RPC session
-             bt->rpc_session = rpc_session_open(bt->rpc, RpcOwnerBle);
-@@ -278,9 +443,9 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
-                     bt->rpc_session, bt_serial_buffer_is_empty_callback);
-                 rpc_session_set_context(bt->rpc_session, bt);
-                 ble_profile_serial_set_event_callback(
+-        // Update status bar
+-        bt->status = BtStatusConnected;
+-        do_update_status = true;
+-        // Clear BT_RPC_EVENT_DISCONNECTED because it might be set from previous session
+-        furi_event_flag_clear(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
+-
+-        if(current_profile_is_serial) {
+-            // Open RPC session
+-            bt->rpc_session = rpc_session_open(bt->rpc, RpcOwnerBle);
+-            if(bt->rpc_session) {
+-                FURI_LOG_I(TAG, "Open RPC connection");
+-                rpc_session_set_send_bytes_callback(bt->rpc_session, bt_rpc_send_bytes_callback);
+-                rpc_session_set_buffer_is_empty_callback(
+-                    bt->rpc_session, bt_serial_buffer_is_empty_callback);
+-                rpc_session_set_context(bt->rpc_session, bt);
+-                ble_profile_serial_set_event_callback(
 -                    bt->current_profile, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
-+                    current_profile, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
-                 ble_profile_serial_set_rpc_active(
+-                ble_profile_serial_set_rpc_active(
 -                    bt->current_profile, FuriHalBtSerialRpcStatusActive);
-+                    current_profile, FuriHalBtSerialRpcStatusActive);
-             } else {
-                 FURI_LOG_W(TAG, "RPC is busy, failed to open new session");
+-            } else {
+-                FURI_LOG_W(TAG, "RPC is busy, failed to open new session");
++        if(bt->status == BtStatusConnected) {
++            /* Duplicate Connected (gap.c fires at connection-complete, then
++             * again at pairing-complete on fresh pairings) must not double-open
++             * the RPC session, re-set serial callbacks, or re-send the battery
++             * message. This second fire marks ceremony end. */
++            bt->pairing_in_progress = false;
++            ret = true;
++        } else {
++            // Update status bar
++            bt->status = BtStatusConnected;
++            do_update_status = true;
++            // Clear BT_RPC_EVENT_DISCONNECTED because it might be set from previous session
++            furi_event_flag_clear(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
++
++            if(current_profile_is_airbridge) {
++                BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
++                if(serial_svc) {
++                    ble_svc_airbridge_serial_set_callbacks(
++                        serial_svc, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
++                } else {
++                    FURI_LOG_E(TAG, "AirBridge serial service unavailable on connect");
++                }
++            }
++
++            if(current_profile_is_serial) {
++                // Open RPC session
++                bt->rpc_session = rpc_session_open(bt->rpc, RpcOwnerBle);
++                if(bt->rpc_session) {
++                    FURI_LOG_I(TAG, "Open RPC connection");
++                    rpc_session_set_send_bytes_callback(
++                        bt->rpc_session, bt_rpc_send_bytes_callback);
++                    rpc_session_set_buffer_is_empty_callback(
++                        bt->rpc_session, bt_serial_buffer_is_empty_callback);
++                    rpc_session_set_context(bt->rpc_session, bt);
++                    ble_profile_serial_set_event_callback(
++                        current_profile, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
++                    ble_profile_serial_set_rpc_active(
++                        current_profile, FuriHalBtSerialRpcStatusActive);
++                } else {
++                    FURI_LOG_W(TAG, "RPC is busy, failed to open new session");
++                }
              }
-@@ -295,13 +460,19 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
-             furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
-         ret = true;
++            // Update battery level
++            PowerInfo info;
++            power_get_info(bt->power, &info);
++            BtMessage message = {.type = BtMessageTypeUpdateStatus};
++            message.type = BtMessageTypeUpdateBatteryLevel;
++            message.data.battery_level = info.charge;
++            furi_check(
++                furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) ==
++                FuriStatusOk);
++            ret = true;
+         }
+-        // Update battery level
+-        PowerInfo info;
+-        power_get_info(bt->power, &info);
+-        BtMessage message = {.type = BtMessageTypeUpdateStatus};
+-        message.type = BtMessageTypeUpdateBatteryLevel;
+-        message.data.battery_level = info.charge;
+-        furi_check(
+-            furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
+-        ret = true;
      } else if(event.type == GapEventTypeDisconnected) {
++        /* Peer-initiated disconnects must always update status: previously the
++         * FAP only learned about a dropped link via subsequent Start/StopAdvertising
++         * events, which never arrive when advertising auto-resume fails or is
++         * disabled, leaving consumers' connected flag stuck true forever. */
++        bt->status = BtStatusOff;
++        do_update_status = true;
++        bt->pairing_in_progress = false;
 +        if(current_profile_is_airbridge) {
 +            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
 +            if(serial_svc) {
@@ -297,9 +361,9 @@ index 7554d87e..0b1e7717 100644
 +        }
          if(current_profile_is_serial && bt->rpc_session) {
              FURI_LOG_I(TAG, "Close RPC connection");
-             ble_profile_serial_set_rpc_active(
+-            ble_profile_serial_set_rpc_active(
 -                bt->current_profile, FuriHalBtSerialRpcStatusNotActive);
-+                current_profile, FuriHalBtSerialRpcStatusNotActive);
++            ble_profile_serial_set_rpc_active(current_profile, FuriHalBtSerialRpcStatusNotActive);
              furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
              rpc_session_close(bt->rpc_session);
 -            ble_profile_serial_set_event_callback(bt->current_profile, 0, NULL, NULL);
@@ -307,7 +371,22 @@ index 7554d87e..0b1e7717 100644
              bt->rpc_session = NULL;
          }
          ret = true;
-@@ -339,6 +510,9 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+@@ -314,12 +509,14 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
+         do_update_status = true;
+         ret = true;
+     } else if(event.type == GapEventTypePinCodeShow) {
++        bt->pairing_in_progress = true;
+         BtMessage message = {
+             .type = BtMessageTypePinCodeShow, .data.pin_code = event.data.pin_code};
+         furi_check(
+             furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
+         ret = true;
+     } else if(event.type == GapEventTypePinCodeVerify) {
++        bt->pairing_in_progress = true;
+         ret = bt_pin_code_verify_event_handler(bt, event.data.pin_code);
+     } else if(event.type == GapEventTypeUpdateMTU) {
+         bt->max_packet_size = event.data.max_packet_size;
+@@ -339,6 +536,9 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
          furi_check(
              furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
      }
@@ -317,7 +396,7 @@ index 7554d87e..0b1e7717 100644
      return ret;
  }
  
-@@ -382,31 +556,58 @@ static void bt_show_warning(Bt* bt, const char* text) {
+@@ -382,31 +582,58 @@ static void bt_show_warning(Bt* bt, const char* text) {
  }
  
  static void bt_close_rpc_connection(Bt* bt) {
@@ -381,7 +460,7 @@ index 7554d87e..0b1e7717 100644
              FURI_LOG_I(TAG, "Bt App started");
              if(bt->bt_settings.enabled) {
                  furi_hal_bt_start_advertising();
-@@ -416,10 +617,10 @@ static void bt_change_profile(Bt* bt, BtMessage* message) {
+@@ -416,10 +643,10 @@ static void bt_change_profile(Bt* bt, BtMessage* message) {
              FURI_LOG_E(TAG, "Failed to start Bt App");
          }
          if(message->profile_instance) {
@@ -394,7 +473,7 @@ index 7554d87e..0b1e7717 100644
          }
  
      } else {
-@@ -458,22 +659,41 @@ static void bt_load_keys(Bt* bt) {
+@@ -458,22 +685,41 @@ static void bt_load_keys(Bt* bt) {
          bt_close_rpc_connection(bt);
          bt_keys_storage_load(bt->keys_storage);
  
@@ -440,7 +519,7 @@ index 7554d87e..0b1e7717 100644
              FURI_LOG_E(TAG, "BLE App start failed");
              bt->status = BtStatusUnavailable;
          }
-@@ -519,6 +739,7 @@ static void bt_init_keys_settings(Bt* bt) {
+@@ -519,6 +765,7 @@ static void bt_init_keys_settings(Bt* bt) {
  int32_t bt_srv(void* p) {
      UNUSED(p);
      Bt* bt = bt_alloc();
@@ -449,7 +528,7 @@ index 7554d87e..0b1e7717 100644
      if(furi_hal_rtc_get_boot_mode() != FuriHalRtcBootModeNormal) {
          FURI_LOG_W(TAG, "Skipping start in special boot mode");
 diff --git a/applications/services/bt/bt_service/bt.h b/applications/services/bt/bt_service/bt.h
-index 27092254..ac94b7b7 100644
+index 27092254..1efd031f 100644
 --- a/applications/services/bt/bt_service/bt.h
 +++ b/applications/services/bt/bt_service/bt.h
 @@ -5,6 +5,14 @@
@@ -467,7 +546,23 @@ index 27092254..ac94b7b7 100644
  #ifdef __cplusplus
  extern "C" {
  #endif
-@@ -79,6 +87,21 @@ void bt_keys_storage_set_storage_path(Bt* bt, const char* keys_storage_path);
+@@ -51,6 +59,15 @@ bool bt_profile_restore_default(Bt* bt);
+  */
+ void bt_disconnect(Bt* bt);
+ 
++/** True while a pairing ceremony (PIN show/numeric comparison) is in
++ * progress on the current link. Written on the GAP event thread.
++ *
++ * @param bt        Bt instance
++ *
++ * @return          true if pairing is in progress, false otherwise
++ */
++bool bt_pairing_in_progress(Bt* bt);
++
+ /** Set callback for Bluetooth status change notification
+  *
+  * @param bt        Bt instance
+@@ -79,6 +96,21 @@ void bt_keys_storage_set_storage_path(Bt* bt, const char* keys_storage_path);
   */
  void bt_keys_storage_set_default_path(Bt* bt);
  
@@ -511,7 +606,7 @@ index 39b9a099..29d55524 100644
  
  void bt_disconnect(Bt* bt) {
 diff --git a/applications/services/bt/bt_service/bt_i.h b/applications/services/bt/bt_service/bt_i.h
-index 192da001..20f1a30f 100644
+index 192da001..e9f52c02 100644
 --- a/applications/services/bt/bt_service/bt_i.h
 +++ b/applications/services/bt/bt_service/bt_i.h
 @@ -64,6 +64,8 @@ typedef struct {
@@ -523,9 +618,13 @@ index 192da001..20f1a30f 100644
  struct Bt {
      uint8_t* bt_keys_addr_start;
      uint16_t bt_keys_size;
-@@ -73,6 +75,25 @@ struct Bt {
+@@ -72,7 +74,29 @@ struct Bt {
+     BtKeysStorage* keys_storage;
      BtStatus status;
      bool beacon_active;
++    /* True while a pairing ceremony (PIN show/numeric comparison) is in
++     * progress on the current link; written on the GAP event thread. */
++    volatile bool pairing_in_progress;
      FuriHalBleProfileBase* current_profile;
 +    /* Deadlock-freedom invariant: this mutex is only ever held for
 +     * pointer/counter manipulation (microseconds) - NEVER across an
@@ -1206,7 +1305,7 @@ index d4d85181..fe71041f 100644
  void ble_gatt_characteristic_init(
      uint16_t svc_handle,
 diff --git a/targets/f7/ble_glue/gap.c b/targets/f7/ble_glue/gap.c
-index 38fc5e42..963fed30 100644
+index 38fc5e42..f4fd1da2 100644
 --- a/targets/f7/ble_glue/gap.c
 +++ b/targets/f7/ble_glue/gap.c
 @@ -1,4 +1,5 @@
@@ -1215,16 +1314,20 @@ index 38fc5e42..963fed30 100644
  
  #include "app_common.h"
  #include <core/mutex.h>
-@@ -13,6 +14,17 @@
+@@ -11,8 +12,19 @@
  
- #define FAST_ADV_TIMEOUT    30000
- #define INITIAL_ADV_TIMEOUT 60000
+ #define TAG "BleGap"
+ 
+-#define FAST_ADV_TIMEOUT    30000
+-#define INITIAL_ADV_TIMEOUT 60000
++#define FAST_ADV_TIMEOUT     30000
++#define INITIAL_ADV_TIMEOUT  60000
 +#define GAP_ADV_DATA_MAX_LEN 31U
 +
-+#define GAP_AD_STRUCTURE_OVERHEAD      2U
-+#define GAP_ADV_FLAGS_LEN              (GAP_AD_STRUCTURE_OVERHEAD + 1U)
-+#define GAP_ADV_128_BIT_UUID_LIST_LEN  (GAP_AD_STRUCTURE_OVERHEAD + 16U)
-+#define GAP_ADV_16_BIT_UUID_LIST_LEN   (GAP_AD_STRUCTURE_OVERHEAD + 2U)
++#define GAP_AD_STRUCTURE_OVERHEAD     2U
++#define GAP_ADV_FLAGS_LEN             (GAP_AD_STRUCTURE_OVERHEAD + 1U)
++#define GAP_ADV_128_BIT_UUID_LIST_LEN (GAP_AD_STRUCTURE_OVERHEAD + 16U)
++#define GAP_ADV_16_BIT_UUID_LIST_LEN  (GAP_AD_STRUCTURE_OVERHEAD + 2U)
 +
 +_Static_assert(
 +    GAP_ADV_FLAGS_LEN + GAP_ADV_128_BIT_UUID_LIST_LEN + GAP_ADV_16_BIT_UUID_LIST_LEN <=
@@ -1260,7 +1363,20 @@ index 38fc5e42..963fed30 100644
      GapCommandAdvStop,
      GapCommandKillThread,
  } GapCommand;
-@@ -306,7 +320,7 @@ BleEventFlowStatus ble_event_app_notification(void* pckt) {
+@@ -197,6 +211,12 @@ BleEventFlowStatus ble_event_app_notification(void* pckt) {
+                 // Start pairing by sending security request
+                 aci_gap_slave_security_req(event->Connection_Handle);
+             }
++            /* Deviation from upstream: bonded reconnects skip pairing entirely,
++             * so Connected must fire at physical link-up, not only on
++             * pairing-complete below — otherwise consumers never learn that a
++             * bonded central holds the link. */
++            GapEvent conn_event = {.type = GapEventTypeConnected};
++            gap->on_event_cb(conn_event, gap->context);
+         } break;
+ 
+         default:
+@@ -306,7 +326,7 @@ BleEventFlowStatus ble_event_app_notification(void* pckt) {
      return BleEventFlowEnable;
  }
  
@@ -1269,7 +1385,7 @@ index 38fc5e42..963fed30 100644
      if(uid_len == 2) {
          gap->service.adv_svc_uuid[0] = AD_TYPE_16_BIT_SERV_UUID;
      } else if(uid_len == 4) {
-@@ -318,12 +332,16 @@ static void set_advertisment_service_uid(uint8_t* uid, uint8_t uid_len) {
+@@ -318,12 +338,16 @@ static void set_advertisment_service_uid(uint8_t* uid, uint8_t uid_len) {
      gap->service.adv_svc_uuid_len += uid_len;
  }
  
@@ -1292,7 +1408,7 @@ index 38fc5e42..963fed30 100644
  }
  
  static void gap_init_svc(Gap* gap, const GapRootSecurityKeys* root_keys) {
-@@ -424,6 +442,8 @@ static void gap_advertise_start(GapState new_state) {
+@@ -424,6 +448,8 @@ static void gap_advertise_start(GapState new_state) {
      tBleStatus status;
      uint16_t min_interval;
      uint16_t max_interval;
@@ -1301,7 +1417,7 @@ index 38fc5e42..963fed30 100644
  
      FURI_LOG_D(TAG, "Start: %d", new_state);
  
-@@ -437,9 +457,8 @@ static void gap_advertise_start(GapState new_state) {
+@@ -437,9 +463,8 @@ static void gap_advertise_start(GapState new_state) {
      // Stop advertising timer
      furi_timer_stop(gap->advertise_timer);
  
@@ -1313,14 +1429,14 @@ index 38fc5e42..963fed30 100644
          status = aci_gap_set_non_discoverable();
          if(status) {
              FURI_LOG_E(TAG, "set_non_discoverable failed %d", status);
-@@ -448,8 +467,15 @@ static void gap_advertise_start(GapState new_state) {
+@@ -448,8 +473,15 @@ static void gap_advertise_start(GapState new_state) {
          }
      }
  
 -    if(gap->service.mfg_data_len > 0) {
 -        hci_le_set_scan_response_data(gap->service.mfg_data_len, gap->service.mfg_data);
-+    status = hci_le_set_scan_response_data(
-+        gap->service.scan_response_len, gap->service.scan_response);
++    status =
++        hci_le_set_scan_response_data(gap->service.scan_response_len, gap->service.scan_response);
 +    if(status) {
 +        FURI_LOG_E(TAG, "set_scan_response_data failed %d", status);
 +    }
@@ -1331,7 +1447,7 @@ index 38fc5e42..963fed30 100644
      }
  
      // Configure advertising
-@@ -459,14 +485,32 @@ static void gap_advertise_start(GapState new_state) {
+@@ -459,14 +491,32 @@ static void gap_advertise_start(GapState new_state) {
          max_interval,
          CFG_IDENTITY_ADDRESS,
          0,
@@ -1366,7 +1482,51 @@ index 38fc5e42..963fed30 100644
      }
      gap->state = new_state;
      GapEvent event = {.type = GapEventTypeStartAdvertising};
-@@ -524,9 +568,27 @@ void gap_stop_advertising(void) {
+@@ -478,25 +528,34 @@ static void gap_advertise_stop(void) {
+     FURI_LOG_D(TAG, "Stop");
+     tBleStatus ret;
+     if(gap->state > GapStateIdle) {
++        // Stop the advertise timer first, then stop advertising BEFORE any
++        // terminate, so no central can complete a new connection mid-teardown.
++        furi_timer_stop(gap->advertise_timer);
++        ret = aci_gap_set_non_discoverable();
++        if(ret != BLE_STATUS_SUCCESS) {
++            FURI_LOG_E(TAG, "set_non_discoverable failed %d", ret);
++        } else {
++            FURI_LOG_D(TAG, "set_non_discoverable success");
++        }
+         if(gap->state == GapStateConnected) {
+-            // Terminate connection
++            /* Honest state: the link stays physically up until the HCI
++             * disconnection-complete arrives, so keep GapStateConnected and let
++             * that handler set GapStateIdle. An early Idle here let
++             * furi_hal_bt_stop_advertising's wait exit before link-down, callers
++             * re-advertised immediately, and the late disconnect-complete could
++             * then match a REUSED connection handle of a new link, tearing down
++             * live GAP state. */
+             ret = aci_gap_terminate(gap->service.connection_handle, 0x13);
+             if(ret != BLE_STATUS_SUCCESS) {
+                 FURI_LOG_E(TAG, "terminate failed %d", ret);
+             } else {
+                 FURI_LOG_D(TAG, "terminate success");
+             }
+-        }
+-        // Stop advertising
+-        furi_timer_stop(gap->advertise_timer);
+-        ret = aci_gap_set_non_discoverable();
+-        if(ret != BLE_STATUS_SUCCESS) {
+-            FURI_LOG_E(TAG, "set_non_discoverable failed %d", ret);
+         } else {
+-            FURI_LOG_D(TAG, "set_non_discoverable success");
++            gap->state = GapStateIdle;
+         }
+-        gap->state = GapStateIdle;
+     }
++    // Advertising IS off at this point regardless of link state.
+     GapEvent event = {.type = GapEventTypeStopAdvertising};
+     gap->on_event_cb(event, gap->context);
+ }
+@@ -524,9 +583,34 @@ void gap_stop_advertising(void) {
      furi_check(furi_mutex_release(gap->state_mutex) == FuriStatusOk);
  }
  
@@ -1377,6 +1537,13 @@ index 38fc5e42..963fed30 100644
 +
 +    furi_check(furi_mutex_acquire(gap->state_mutex, FuriWaitForever) == FuriStatusOk);
 +
++    if(gap->advertise_hids == enable) {
++        /* No-change early-out: callers may re-command idempotently (the FAP's
++         * adv watchdog re-arms HIDS every tick) without paying an adv
++         * stop/start refresh each time. */
++        furi_check(furi_mutex_release(gap->state_mutex) == FuriStatusOk);
++        return;
++    }
 +    gap->advertise_hids = enable;
 +
 +    if(gap->state == GapStateAdvFast || gap->state == GapStateAdvLowPower) {
@@ -1395,7 +1562,7 @@ index 38fc5e42..963fed30 100644
      furi_check(furi_message_queue_put(gap->command_queue, &command, 0) == FuriStatusOk);
  }
  
-@@ -542,6 +604,7 @@ bool gap_init(
+@@ -542,6 +626,7 @@ bool gap_init(
      furi_check(gap == NULL);
  
      gap = malloc(sizeof(Gap));
@@ -1403,7 +1570,7 @@ index 38fc5e42..963fed30 100644
      gap->config = config;
      // Create advertising timer
      gap->advertise_timer = furi_timer_alloc(gap_advetise_timer_callback, FuriTimerTypeOnce, NULL);
-@@ -566,10 +629,17 @@ bool gap_init(
+@@ -566,10 +651,15 @@ bool gap_init(
      gap->is_secure = false;
      gap->negotiation_round = 0;
  
@@ -1418,13 +1585,11 @@ index 38fc5e42..963fed30 100644
 -        gap->service.mfg_data_len = 2;
 -        set_manufacturer_data(gap->config->mfg_data, gap->config->mfg_data_len);
 +        set_scan_response_data(
-+            AD_TYPE_MANUFACTURER_SPECIFIC_DATA,
-+            gap->config->mfg_data,
-+            gap->config->mfg_data_len);
++            AD_TYPE_MANUFACTURER_SPECIFIC_DATA, gap->config->mfg_data, gap->config->mfg_data_len);
      }
  
      gap->service.adv_svc_uuid_len = 1;
-@@ -646,6 +716,10 @@ static int32_t gap_app(void* context) {
+@@ -646,6 +736,10 @@ static int32_t gap_app(void* context) {
              gap_advertise_start(GapStateAdvFast);
          } else if(command == GapCommandAdvLowPower) {
              gap_advertise_start(GapStateAdvLowPower);
@@ -1678,10 +1843,10 @@ index 00000000..2cbc9780
 +#endif
 diff --git a/targets/f7/ble_glue/services/airbridge_serial_service.c b/targets/f7/ble_glue/services/airbridge_serial_service.c
 new file mode 100644
-index 00000000..eab3a5b1
+index 00000000..40fcb6fd
 --- /dev/null
 +++ b/targets/f7/ble_glue/services/airbridge_serial_service.c
-@@ -0,0 +1,336 @@
+@@ -0,0 +1,352 @@
 +#include "airbridge_serial_service.h"
 +#include "airbridge_serial_uuid.h"
 +#include "app_common.h"
@@ -1723,7 +1888,7 @@ index 00000000..eab3a5b1
 +             .uuid_type = UUID_TYPE_128,
 +             .char_properties = CHAR_PROP_READ | CHAR_PROP_NOTIFY,
 +             .security_permissions = ATTR_PERMISSION_AUTHEN_READ,
-+             .gatt_evt_mask = GATT_DONT_NOTIFY_EVENTS,
++             .gatt_evt_mask = GATT_NOTIFY_ATTRIBUTE_WRITE,
 +             .is_variable = CHAR_VALUE_LEN_VARIABLE},
 +        [AirbridgeSerialSvcGattCharacteristicFlowCtrl] =
 +            {.name = "Flow control",
@@ -1759,6 +1924,7 @@ index 00000000..eab3a5b1
 +    AirbridgeSerialServiceEventCallback callback;
 +    void* context;
 +    GapSvcEventHandler* event_handler;
++    volatile bool client_subscribed;
 +};
 +
 +static BleServiceAirbridgeSerial* active_airbridge_serial_service = NULL;
@@ -1773,7 +1939,15 @@ index 00000000..eab3a5b1
 +        if(blecore_evt->ecode == ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE) {
 +            attribute_modified = (aci_gatt_attribute_modified_event_rp0*)blecore_evt->data;
 +            if(attribute_modified->Attr_Handle ==
-+               serial_svc->chars[AirbridgeSerialSvcGattCharacteristicRx].handle + 2) {
++               serial_svc->chars[AirbridgeSerialSvcGattCharacteristicTx].handle + 2) {
++                serial_svc->client_subscribed =
++                    (attribute_modified->Attr_Data_Length >= 1 &&
++                     (attribute_modified->Attr_Data[0] & 0x01));
++                FURI_LOG_D(TAG, "TX subscription: %d", serial_svc->client_subscribed);
++                ret = BleEventAckFlowEnable;
++            } else if(
++                attribute_modified->Attr_Handle ==
++                serial_svc->chars[AirbridgeSerialSvcGattCharacteristicRx].handle + 2) {
 +                ret = BleEventAckFlowEnable;
 +                FURI_LOG_D(TAG, "RX descriptor event");
 +            } else if(
@@ -1924,6 +2098,9 @@ index 00000000..eab3a5b1
 +    serial_svc->context = context;
 +    serial_svc->buff_size = buff_size;
 +    serial_svc->bytes_ready_to_receive = buff_size;
++    /* Reset on both transitions: bt.c calls this with the real callback on
++     * connect (before any CCCD write) and with NULL on disconnect. */
++    serial_svc->client_subscribed = false;
 +
 +    uint32_t buff_size_reversed = REVERSE_BYTES_U32(serial_svc->buff_size);
 +    ble_gatt_characteristic_update(
@@ -2018,12 +2195,16 @@ index 00000000..eab3a5b1
 +BleServiceAirbridgeSerial* ble_svc_airbridge_serial_get_active(void) {
 +    return active_airbridge_serial_service;
 +}
++
++bool ble_svc_airbridge_serial_client_subscribed(BleServiceAirbridgeSerial* service) {
++    return service ? service->client_subscribed : false;
++}
 diff --git a/targets/f7/ble_glue/services/airbridge_serial_service.h b/targets/f7/ble_glue/services/airbridge_serial_service.h
 new file mode 100644
-index 00000000..6ec796d3
+index 00000000..3d5d67af
 --- /dev/null
 +++ b/targets/f7/ble_glue/services/airbridge_serial_service.h
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,44 @@
 +#pragma once
 +
 +#include <stdbool.h>
@@ -2062,6 +2243,8 @@ index 00000000..6ec796d3
 +    uint16_t data_len);
 +
 +BleServiceAirbridgeSerial* ble_svc_airbridge_serial_get_active(void);
++
++bool ble_svc_airbridge_serial_client_subscribed(BleServiceAirbridgeSerial* service);
 +
 +#ifdef __cplusplus
 +}
@@ -2130,7 +2313,7 @@ index 66aafc49..7af01e85 100644
  
      battery_svc->auto_update = auto_update;
 diff --git a/targets/f7/furi_hal/furi_hal_bt.c b/targets/f7/furi_hal/furi_hal_bt.c
-index f1881f94..4645fdcc 100644
+index f1881f94..e9d60047 100644
 --- a/targets/f7/furi_hal/furi_hal_bt.c
 +++ b/targets/f7/furi_hal/furi_hal_bt.c
 @@ -1,6 +1,7 @@
@@ -2141,7 +2324,33 @@ index f1881f94..4645fdcc 100644
  #include <furi_hal_bt.h>
  #include <furi_ble/profile_interface.h>
  
-@@ -267,6 +268,10 @@ void furi_hal_bt_stop_advertising(void) {
+@@ -252,6 +253,10 @@ bool furi_hal_bt_is_active(void) {
+     return gap_get_state() > GapStateIdle;
+ }
+ 
++bool furi_hal_bt_is_connected(void) {
++    return gap_get_state() == GapStateConnected;
++}
++
+ void furi_hal_bt_start_advertising(void) {
+     if(gap_get_state() == GapStateIdle) {
+         gap_start_advertising();
+@@ -261,12 +266,25 @@ void furi_hal_bt_start_advertising(void) {
+ void furi_hal_bt_stop_advertising(void) {
+     if(furi_hal_bt_is_active()) {
+         gap_stop_advertising();
++        /* With honest GAP state this genuinely waits for the disconnect-complete
++         * after a terminate; bound the wait so a lost HCI event can never wedge
++         * the caller (BtSrv) forever. Do NOT force state on timeout. */
++        uint32_t waited_ms = 0;
+         while(furi_hal_bt_is_active()) {
++            if(waited_ms >= 1000) {
++                FURI_LOG_E(TAG, "stop_advertising: timed out waiting for GAP idle");
++                return;
++            }
+             furi_delay_tick(1);
++            waited_ms++;
+         }
      }
  }
  
@@ -3011,10 +3220,24 @@ index 911aa082..e7f24974 100644
          "bit_lib",
          "toolbox",
 diff --git a/targets/furi_hal_include/furi_hal_bt.h b/targets/furi_hal_include/furi_hal_bt.h
-index 1711f703..8b9d4352 100644
+index 1711f703..e9830e98 100644
 --- a/targets/furi_hal_include/furi_hal_bt.h
 +++ b/targets/furi_hal_include/furi_hal_bt.h
-@@ -137,6 +137,13 @@ void furi_hal_bt_start_advertising(void);
+@@ -129,6 +129,13 @@ void furi_hal_bt_update_power_state(bool charging);
+  */
+ bool furi_hal_bt_is_active(void);
+ 
++/** Checks if a BLE link is physically up. Unlike furi_hal_bt_is_active, this is
++ * false while merely advertising — true only in GAP Connected state.
++ *
++ * @return          true if a central is connected, false otherwise
++ */
++bool furi_hal_bt_is_connected(void);
++
+ /** Start advertising
+  */
+ void furi_hal_bt_start_advertising(void);
+@@ -137,6 +144,13 @@ void furi_hal_bt_start_advertising(void);
   */
  void furi_hal_bt_stop_advertising(void);
  
