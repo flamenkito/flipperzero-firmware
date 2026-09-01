@@ -39,7 +39,7 @@ static const BleGattCharacteristicParams
              .uuid_type = UUID_TYPE_128,
              .char_properties = CHAR_PROP_READ | CHAR_PROP_NOTIFY,
              .security_permissions = ATTR_PERMISSION_AUTHEN_READ,
-             .gatt_evt_mask = GATT_DONT_NOTIFY_EVENTS,
+             .gatt_evt_mask = GATT_NOTIFY_ATTRIBUTE_WRITE,
              .is_variable = CHAR_VALUE_LEN_VARIABLE},
         [AirbridgeSerialSvcGattCharacteristicFlowCtrl] =
             {.name = "Flow control",
@@ -75,6 +75,7 @@ struct BleServiceAirbridgeSerial {
     AirbridgeSerialServiceEventCallback callback;
     void* context;
     GapSvcEventHandler* event_handler;
+    volatile bool client_subscribed;
 };
 
 static BleServiceAirbridgeSerial* active_airbridge_serial_service = NULL;
@@ -89,7 +90,15 @@ static BleEventAckStatus ble_svc_airbridge_serial_event_handler(void* event, voi
         if(blecore_evt->ecode == ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE) {
             attribute_modified = (aci_gatt_attribute_modified_event_rp0*)blecore_evt->data;
             if(attribute_modified->Attr_Handle ==
-               serial_svc->chars[AirbridgeSerialSvcGattCharacteristicRx].handle + 2) {
+               serial_svc->chars[AirbridgeSerialSvcGattCharacteristicTx].handle + 2) {
+                serial_svc->client_subscribed =
+                    (attribute_modified->Attr_Data_Length >= 1 &&
+                     (attribute_modified->Attr_Data[0] & 0x01));
+                FURI_LOG_D(TAG, "TX subscription: %d", serial_svc->client_subscribed);
+                ret = BleEventAckFlowEnable;
+            } else if(
+                attribute_modified->Attr_Handle ==
+                serial_svc->chars[AirbridgeSerialSvcGattCharacteristicRx].handle + 2) {
                 ret = BleEventAckFlowEnable;
                 FURI_LOG_D(TAG, "RX descriptor event");
             } else if(
@@ -240,6 +249,9 @@ void ble_svc_airbridge_serial_set_callbacks(
     serial_svc->context = context;
     serial_svc->buff_size = buff_size;
     serial_svc->bytes_ready_to_receive = buff_size;
+    /* Reset on both transitions: bt.c calls this with the real callback on
+     * connect (before any CCCD write) and with NULL on disconnect. */
+    serial_svc->client_subscribed = false;
 
     uint32_t buff_size_reversed = REVERSE_BYTES_U32(serial_svc->buff_size);
     ble_gatt_characteristic_update(
@@ -333,4 +345,8 @@ void ble_svc_airbridge_serial_set_rpc_active(BleServiceAirbridgeSerial* serial_s
 
 BleServiceAirbridgeSerial* ble_svc_airbridge_serial_get_active(void) {
     return active_airbridge_serial_service;
+}
+
+bool ble_svc_airbridge_serial_client_subscribed(BleServiceAirbridgeSerial* service) {
+    return service ? service->client_subscribed : false;
 }

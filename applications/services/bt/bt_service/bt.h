@@ -59,6 +59,15 @@ bool bt_profile_restore_default(Bt* bt);
  */
 void bt_disconnect(Bt* bt);
 
+/** True while a pairing ceremony (PIN show/numeric comparison) is in
+ * progress on the current link. Written on the GAP event thread.
+ *
+ * @param bt        Bt instance
+ *
+ * @return          true if pairing is in progress, false otherwise
+ */
+bool bt_pairing_in_progress(Bt* bt);
+
 /** Set callback for Bluetooth status change notification
  *
  * @param bt        Bt instance

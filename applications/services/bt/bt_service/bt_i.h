@@ -74,6 +74,9 @@ struct Bt {
     BtKeysStorage* keys_storage;
     BtStatus status;
     bool beacon_active;
+    /* True while a pairing ceremony (PIN show/numeric comparison) is in
+     * progress on the current link; written on the GAP event thread. */
+    volatile bool pairing_in_progress;
     FuriHalBleProfileBase* current_profile;
     /* Deadlock-freedom invariant: this mutex is only ever held for
      * pointer/counter manipulation (microseconds) - NEVER across an

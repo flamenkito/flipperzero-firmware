@@ -268,7 +268,7 @@ Header,+,targets/f7/ble_glue/furi_ble/gatt.h,,
 Header,+,targets/f7/ble_glue/furi_ble/profile_interface.h,,
 Header,+,targets/f7/ble_glue/profiles/serial_profile.h,,
 Header,-,targets/f7/ble_glue/services/airbridge_dev_info_service.h,,
-Header,-,targets/f7/ble_glue/services/airbridge_serial_service.h,,
+Header,+,targets/f7/ble_glue/services/airbridge_serial_service.h,,
 Header,-,targets/f7/ble_glue/services/airbridge_serial_uuid.h,,
 Header,+,targets/f7/ble_glue/services/battery_service.h,,
 Header,+,targets/f7/ble_glue/services/dev_info_service.h,,
@@ -777,7 +777,8 @@ Function,+,ble_profile_serial_set_rpc_active,void,"FuriHalBleProfileBase*, _Bool
 Function,+,ble_profile_serial_tx,_Bool,"FuriHalBleProfileBase*, uint8_t*, uint16_t"
 Function,-,ble_svc_airbridge_dev_info_start,BleServiceAirbridgeDevInfo*,const AirbridgeDisStrings*
 Function,-,ble_svc_airbridge_dev_info_stop,void,BleServiceAirbridgeDevInfo*
-Function,-,ble_svc_airbridge_serial_get_active,BleServiceAirbridgeSerial*,
+Function,+,ble_svc_airbridge_serial_client_subscribed,_Bool,BleServiceAirbridgeSerial*
+Function,+,ble_svc_airbridge_serial_get_active,BleServiceAirbridgeSerial*,
 Function,-,ble_svc_airbridge_serial_notify_buffer_is_empty,void,BleServiceAirbridgeSerial*
 Function,-,ble_svc_airbridge_serial_set_callbacks,void,"BleServiceAirbridgeSerial*, uint16_t, AirbridgeSerialServiceEventCallback, void*"
 Function,-,ble_svc_airbridge_serial_set_rpc_active,void,"BleServiceAirbridgeSerial*, _Bool"
@@ -816,6 +817,7 @@ Function,+,bt_keys_storage_set_file_path,void,"BtKeysStorage*, const char*"
 Function,+,bt_keys_storage_set_ram_params,void,"BtKeysStorage*, uint8_t*, uint16_t"
 Function,+,bt_keys_storage_set_storage_path,void,"Bt*, const char*"
 Function,+,bt_keys_storage_update,_Bool,"BtKeysStorage*, uint8_t*, uint32_t"
+Function,+,bt_pairing_in_progress,_Bool,Bt*
 Function,+,bt_profile_restore_default,_Bool,Bt*
 Function,+,bt_profile_start,FuriHalBleProfileBase*,"Bt*, const FuriHalBleProfileTemplate*, FuriHalBleProfileParams"
 Function,+,bt_serial_tx,_Bool,"const uint8_t*, uint16_t"
@@ -1343,6 +1345,7 @@ Function,+,furi_hal_bt_get_transmitted_packets,uint32_t,
 Function,-,furi_hal_bt_init,void,
 Function,+,furi_hal_bt_is_active,_Bool,
 Function,+,furi_hal_bt_is_alive,_Bool,
+Function,+,furi_hal_bt_is_connected,_Bool,
 Function,+,furi_hal_bt_is_gatt_gap_supported,_Bool,
 Function,+,furi_hal_bt_is_testing_supported,_Bool,
 Function,+,furi_hal_bt_lock_core2,void,

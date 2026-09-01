@@ -90,6 +90,11 @@ void bt_set_raw_serial_callback(BtRawSerialCallback cb, void* ctx) {
     bt_raw_serial_ctx = ctx;
 }
 
+bool bt_pairing_in_progress(Bt* bt) {
+    furi_check(bt);
+    return bt->pairing_in_progress;
+}
+
 bool bt_serial_tx(const uint8_t* data, uint16_t len) {
     if(!bt_instance) return false;
 
@@ -101,7 +106,8 @@ bool bt_serial_tx(const uint8_t* data, uint16_t len) {
     if(profile) {
         if(bt_profile_is_airbridge(profile)) {
             BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
-            ret = serial_svc && ble_svc_airbridge_serial_update_tx(serial_svc, (uint8_t*)data, len);
+            ret = serial_svc &&
+                  ble_svc_airbridge_serial_update_tx(serial_svc, (uint8_t*)data, len);
         } else {
             ret = ble_profile_serial_tx(profile, (uint8_t*)data, len);
         }
@@ -250,6 +256,7 @@ Bt* bt_alloc(void) {
     bt->current_profile_readers = 0;
     bt->current_profile_is_serial = false;
     bt->current_profile_is_airbridge = false;
+    bt->pairing_in_progress = false;
     // Keys storage
     bt->keys_storage = bt_keys_storage_alloc(BT_KEYS_STORAGE_PATH);
     // Alloc queue
@@ -344,8 +351,8 @@ static void bt_rpc_send_bytes_callback(void* context, uint8_t* bytes, size_t byt
     size_t bytes_sent = 0;
     while(bytes_sent < bytes_len) {
         size_t bytes_remain = bytes_len - bytes_sent;
-        size_t bytes_to_send =
-            bytes_remain > bt->max_packet_size ? bt->max_packet_size : bytes_remain;
+        size_t bytes_to_send = bytes_remain > bt->max_packet_size ? bt->max_packet_size :
+                                                                    bytes_remain;
         /* The serial profile may be replaced mid-send; re-validate each chunk.
          * Reader ref only: the mutex is never held across ble_profile_serial_tx
          * (blocking hci_send_req) or the furi_event_flag_wait below. */
@@ -417,49 +424,67 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
     bool current_profile_is_airbridge = bt_profile_is_airbridge(current_profile);
 
     if(event.type == GapEventTypeConnected) {
-        // Update status bar
-        bt->status = BtStatusConnected;
-        do_update_status = true;
-        // Clear BT_RPC_EVENT_DISCONNECTED because it might be set from previous session
-        furi_event_flag_clear(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
+        if(bt->status == BtStatusConnected) {
+            /* Duplicate Connected (gap.c fires at connection-complete, then
+             * again at pairing-complete on fresh pairings) must not double-open
+             * the RPC session, re-set serial callbacks, or re-send the battery
+             * message. This second fire marks ceremony end. */
+            bt->pairing_in_progress = false;
+            ret = true;
+        } else {
+            // Update status bar
+            bt->status = BtStatusConnected;
+            do_update_status = true;
+            // Clear BT_RPC_EVENT_DISCONNECTED because it might be set from previous session
+            furi_event_flag_clear(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
 
-        if(current_profile_is_airbridge) {
-            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
-            if(serial_svc) {
-                ble_svc_airbridge_serial_set_callbacks(
-                    serial_svc, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
-            } else {
-                FURI_LOG_E(TAG, "AirBridge serial service unavailable on connect");
+            if(current_profile_is_airbridge) {
+                BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
+                if(serial_svc) {
+                    ble_svc_airbridge_serial_set_callbacks(
+                        serial_svc, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
+                } else {
+                    FURI_LOG_E(TAG, "AirBridge serial service unavailable on connect");
+                }
             }
-        }
 
-        if(current_profile_is_serial) {
-            // Open RPC session
-            bt->rpc_session = rpc_session_open(bt->rpc, RpcOwnerBle);
-            if(bt->rpc_session) {
-                FURI_LOG_I(TAG, "Open RPC connection");
-                rpc_session_set_send_bytes_callback(bt->rpc_session, bt_rpc_send_bytes_callback);
-                rpc_session_set_buffer_is_empty_callback(
-                    bt->rpc_session, bt_serial_buffer_is_empty_callback);
-                rpc_session_set_context(bt->rpc_session, bt);
-                ble_profile_serial_set_event_callback(
-                    current_profile, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
-                ble_profile_serial_set_rpc_active(
-                    current_profile, FuriHalBtSerialRpcStatusActive);
-            } else {
-                FURI_LOG_W(TAG, "RPC is busy, failed to open new session");
+            if(current_profile_is_serial) {
+                // Open RPC session
+                bt->rpc_session = rpc_session_open(bt->rpc, RpcOwnerBle);
+                if(bt->rpc_session) {
+                    FURI_LOG_I(TAG, "Open RPC connection");
+                    rpc_session_set_send_bytes_callback(
+                        bt->rpc_session, bt_rpc_send_bytes_callback);
+                    rpc_session_set_buffer_is_empty_callback(
+                        bt->rpc_session, bt_serial_buffer_is_empty_callback);
+                    rpc_session_set_context(bt->rpc_session, bt);
+                    ble_profile_serial_set_event_callback(
+                        current_profile, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
+                    ble_profile_serial_set_rpc_active(
+                        current_profile, FuriHalBtSerialRpcStatusActive);
+                } else {
+                    FURI_LOG_W(TAG, "RPC is busy, failed to open new session");
+                }
             }
+            // Update battery level
+            PowerInfo info;
+            power_get_info(bt->power, &info);
+            BtMessage message = {.type = BtMessageTypeUpdateStatus};
+            message.type = BtMessageTypeUpdateBatteryLevel;
+            message.data.battery_level = info.charge;
+            furi_check(
+                furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) ==
+                FuriStatusOk);
+            ret = true;
         }
-        // Update battery level
-        PowerInfo info;
-        power_get_info(bt->power, &info);
-        BtMessage message = {.type = BtMessageTypeUpdateStatus};
-        message.type = BtMessageTypeUpdateBatteryLevel;
-        message.data.battery_level = info.charge;
-        furi_check(
-            furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
-        ret = true;
     } else if(event.type == GapEventTypeDisconnected) {
+        /* Peer-initiated disconnects must always update status: previously the
+         * FAP only learned about a dropped link via subsequent Start/StopAdvertising
+         * events, which never arrive when advertising auto-resume fails or is
+         * disabled, leaving consumers' connected flag stuck true forever. */
+        bt->status = BtStatusOff;
+        do_update_status = true;
+        bt->pairing_in_progress = false;
         if(current_profile_is_airbridge) {
             BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
             if(serial_svc) {
@@ -468,8 +493,7 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
         }
         if(current_profile_is_serial && bt->rpc_session) {
             FURI_LOG_I(TAG, "Close RPC connection");
-            ble_profile_serial_set_rpc_active(
-                current_profile, FuriHalBtSerialRpcStatusNotActive);
+            ble_profile_serial_set_rpc_active(current_profile, FuriHalBtSerialRpcStatusNotActive);
             furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_DISCONNECTED);
             rpc_session_close(bt->rpc_session);
             ble_profile_serial_set_event_callback(current_profile, 0, NULL, NULL);
@@ -485,12 +509,14 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
         do_update_status = true;
         ret = true;
     } else if(event.type == GapEventTypePinCodeShow) {
+        bt->pairing_in_progress = true;
         BtMessage message = {
             .type = BtMessageTypePinCodeShow, .data.pin_code = event.data.pin_code};
         furi_check(
             furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
         ret = true;
     } else if(event.type == GapEventTypePinCodeVerify) {
+        bt->pairing_in_progress = true;
         ret = bt_pin_code_verify_event_handler(bt, event.data.pin_code);
     } else if(event.type == GapEventTypeUpdateMTU) {
         bt->max_packet_size = event.data.max_packet_size;

@@ -37,6 +37,8 @@ bool ble_svc_airbridge_serial_update_tx(
 
 BleServiceAirbridgeSerial* ble_svc_airbridge_serial_get_active(void);
 
+bool ble_svc_airbridge_serial_client_subscribed(BleServiceAirbridgeSerial* service);
+
 #ifdef __cplusplus
 }
 #endif

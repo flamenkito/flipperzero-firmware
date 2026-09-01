@@ -253,6 +253,10 @@ bool furi_hal_bt_is_active(void) {
     return gap_get_state() > GapStateIdle;
 }
 
+bool furi_hal_bt_is_connected(void) {
+    return gap_get_state() == GapStateConnected;
+}
+
 void furi_hal_bt_start_advertising(void) {
     if(gap_get_state() == GapStateIdle) {
         gap_start_advertising();
@@ -262,8 +266,17 @@ void furi_hal_bt_start_advertising(void) {
 void furi_hal_bt_stop_advertising(void) {
     if(furi_hal_bt_is_active()) {
         gap_stop_advertising();
+        /* With honest GAP state this genuinely waits for the disconnect-complete
+         * after a terminate; bound the wait so a lost HCI event can never wedge
+         * the caller (BtSrv) forever. Do NOT force state on timeout. */
+        uint32_t waited_ms = 0;
         while(furi_hal_bt_is_active()) {
+            if(waited_ms >= 1000) {
+                FURI_LOG_E(TAG, "stop_advertising: timed out waiting for GAP idle");
+                return;
+            }
             furi_delay_tick(1);
+            waited_ms++;
         }
     }
 }

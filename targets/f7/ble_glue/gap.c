@@ -12,14 +12,14 @@
 
 #define TAG "BleGap"
 
-#define FAST_ADV_TIMEOUT    30000
-#define INITIAL_ADV_TIMEOUT 60000
+#define FAST_ADV_TIMEOUT     30000
+#define INITIAL_ADV_TIMEOUT  60000
 #define GAP_ADV_DATA_MAX_LEN 31U
 
-#define GAP_AD_STRUCTURE_OVERHEAD      2U
-#define GAP_ADV_FLAGS_LEN              (GAP_AD_STRUCTURE_OVERHEAD + 1U)
-#define GAP_ADV_128_BIT_UUID_LIST_LEN  (GAP_AD_STRUCTURE_OVERHEAD + 16U)
-#define GAP_ADV_16_BIT_UUID_LIST_LEN   (GAP_AD_STRUCTURE_OVERHEAD + 2U)
+#define GAP_AD_STRUCTURE_OVERHEAD     2U
+#define GAP_ADV_FLAGS_LEN             (GAP_AD_STRUCTURE_OVERHEAD + 1U)
+#define GAP_ADV_128_BIT_UUID_LIST_LEN (GAP_AD_STRUCTURE_OVERHEAD + 16U)
+#define GAP_ADV_16_BIT_UUID_LIST_LEN  (GAP_AD_STRUCTURE_OVERHEAD + 2U)
 
 _Static_assert(
     GAP_ADV_FLAGS_LEN + GAP_ADV_128_BIT_UUID_LIST_LEN + GAP_ADV_16_BIT_UUID_LIST_LEN <=
@@ -211,6 +211,12 @@ BleEventFlowStatus ble_event_app_notification(void* pckt) {
                 // Start pairing by sending security request
                 aci_gap_slave_security_req(event->Connection_Handle);
             }
+            /* Deviation from upstream: bonded reconnects skip pairing entirely,
+             * so Connected must fire at physical link-up, not only on
+             * pairing-complete below — otherwise consumers never learn that a
+             * bonded central holds the link. */
+            GapEvent conn_event = {.type = GapEventTypeConnected};
+            gap->on_event_cb(conn_event, gap->context);
         } break;
 
         default:
@@ -467,8 +473,8 @@ static void gap_advertise_start(GapState new_state) {
         }
     }
 
-    status = hci_le_set_scan_response_data(
-        gap->service.scan_response_len, gap->service.scan_response);
+    status =
+        hci_le_set_scan_response_data(gap->service.scan_response_len, gap->service.scan_response);
     if(status) {
         FURI_LOG_E(TAG, "set_scan_response_data failed %d", status);
     }
@@ -522,16 +528,8 @@ static void gap_advertise_stop(void) {
     FURI_LOG_D(TAG, "Stop");
     tBleStatus ret;
     if(gap->state > GapStateIdle) {
-        if(gap->state == GapStateConnected) {
-            // Terminate connection
-            ret = aci_gap_terminate(gap->service.connection_handle, 0x13);
-            if(ret != BLE_STATUS_SUCCESS) {
-                FURI_LOG_E(TAG, "terminate failed %d", ret);
-            } else {
-                FURI_LOG_D(TAG, "terminate success");
-            }
-        }
-        // Stop advertising
+        // Stop the advertise timer first, then stop advertising BEFORE any
+        // terminate, so no central can complete a new connection mid-teardown.
         furi_timer_stop(gap->advertise_timer);
         ret = aci_gap_set_non_discoverable();
         if(ret != BLE_STATUS_SUCCESS) {
@@ -539,8 +537,25 @@ static void gap_advertise_stop(void) {
         } else {
             FURI_LOG_D(TAG, "set_non_discoverable success");
         }
-        gap->state = GapStateIdle;
+        if(gap->state == GapStateConnected) {
+            /* Honest state: the link stays physically up until the HCI
+             * disconnection-complete arrives, so keep GapStateConnected and let
+             * that handler set GapStateIdle. An early Idle here let
+             * furi_hal_bt_stop_advertising's wait exit before link-down, callers
+             * re-advertised immediately, and the late disconnect-complete could
+             * then match a REUSED connection handle of a new link, tearing down
+             * live GAP state. */
+            ret = aci_gap_terminate(gap->service.connection_handle, 0x13);
+            if(ret != BLE_STATUS_SUCCESS) {
+                FURI_LOG_E(TAG, "terminate failed %d", ret);
+            } else {
+                FURI_LOG_D(TAG, "terminate success");
+            }
+        } else {
+            gap->state = GapStateIdle;
+        }
     }
+    // Advertising IS off at this point regardless of link state.
     GapEvent event = {.type = GapEventTypeStopAdvertising};
     gap->on_event_cb(event, gap->context);
 }
@@ -575,6 +590,13 @@ void gap_set_adv_hids(bool enable) {
 
     furi_check(furi_mutex_acquire(gap->state_mutex, FuriWaitForever) == FuriStatusOk);
 
+    if(gap->advertise_hids == enable) {
+        /* No-change early-out: callers may re-command idempotently (the FAP's
+         * adv watchdog re-arms HIDS every tick) without paying an adv
+         * stop/start refresh each time. */
+        furi_check(furi_mutex_release(gap->state_mutex) == FuriStatusOk);
+        return;
+    }
     gap->advertise_hids = enable;
 
     if(gap->state == GapStateAdvFast || gap->state == GapStateAdvLowPower) {
@@ -637,9 +659,7 @@ bool gap_init(
     }
     if(gap->config->mfg_data_len > 0) {
         set_scan_response_data(
-            AD_TYPE_MANUFACTURER_SPECIFIC_DATA,
-            gap->config->mfg_data,
-            gap->config->mfg_data_len);
+            AD_TYPE_MANUFACTURER_SPECIFIC_DATA, gap->config->mfg_data, gap->config->mfg_data_len);
     }
 
     gap->service.adv_svc_uuid_len = 1;
