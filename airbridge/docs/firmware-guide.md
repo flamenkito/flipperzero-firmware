@@ -2,7 +2,10 @@
 
 ## What We Built
 
-This custom firmware and apps repository includes:
+This one local custom firmware and apps repository is rooted at
+`/Users/asutov/projects/flipperzero-firmware`. Pocket AirBridge product assets
+live under `airbridge/`; firmware changes and FAP sources live beside the rest of
+the firmware tree. It includes:
 
 1. **New USB HID profile** `usb_airbridge` (bidirectional 64-byte vendor HID, based on the U2F profile)
 2. **AirBridge BLE impersonation profile** (Battery + DIS + HIDS + AirBridge serial), config-driven identity, and `bt_service` routing so the FAP can intercept raw serial data
@@ -60,7 +63,7 @@ flipperzero-firmware/
 ## Build
 
 ```bash
-cd ~/projects/flipperzero-firmware
+cd /Users/asutov/projects/flipperzero-firmware
 ./fbt build APPSRC=applications_user/pocket_airbridge
 ```
 
@@ -70,8 +73,13 @@ If this is the first build after adding the USB profile, the firmware will detec
 
 On a normally-booted, USB-connected Flipper:
 
+Before a physical action, play the attention signal and use one `question` tool
+gate with a confirmation and cancel option. Do not assume a button press,
+unplug, unlock, or picker action occurred. See the root `AGENTS.md` for the
+required browser-window and artifact-path rules.
+
 ```bash
-cd ~/projects/flipperzero-firmware
+cd /Users/asutov/projects/flipperzero-firmware
 ./fbt flash_usb
 ```
 
@@ -82,7 +90,7 @@ This bundles a self-update package, uploads it over the serial CLI to `/ext/upda
 ### Option A: Build, Upload, and Launch with Official Scripts (Verified)
 
 ```bash
-cd ~/projects/flipperzero-firmware
+cd /Users/asutov/projects/flipperzero-firmware
 ./fbt build APPSRC=applications_user/pocket_airbridge
 
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
@@ -238,8 +246,8 @@ in-flight transfer.
 ### The Deploy Flow
 
 1. From the Bridge screen, press **RIGHT** (or **LEFT**) to reach the USB Deploy prompt or the BLE Deploy prompt, then press **OK** on the prompt to start that deploy.
-2. For BLE Deploy, the HIDS advertising window opens for the entire prompt and typing interaction. On the target PC, pair `HP 725 K+M` if this is the first use, then open a tab at `https://blank.org` (not `about:blank` — some Chrome builds report `window.isSecureContext === false` there; blank.org loads from browser cache offline).
-3. On OK, the FAP types `bootstrap.js` over USB or `bootstrap-ble.js` over BLE HIDS with a small bounded per-key timing jitter. The `TYPING via USB/BLE` screen shows a determinate progress bar (chars typed / total, plus %) for the entire emission; BACK aborts instantly. HIDS stops advertising when BLE typing ends or the deploy flow is aborted; the AirBridge serial UUID remains advertised throughout. BLE service UUID hiding is deferred until the broad Web Bluetooth picker flow is hardware-proven.
+2. Setup briefly clears the HIDS advertising latch after profile installation. In the normal active state, the Bridge watchdog restores serial plus HIDS within its 2.5-second cadence and restarts advertising only when GAP is idle, without disconnecting an active link. On the target PC, pair `HP 725 K+M` if this is the first use, then open a tab at `https://blank.org` (not `about:blank` — some Chrome builds report `window.isSecureContext === false` there; blank.org loads from browser cache offline). Advertising HIDS alone does not emit keyboard reports.
+3. On OK, the FAP types `bootstrap.js` over USB or `bootstrap-ble.js` over BLE HIDS with a small bounded per-key timing jitter. The `TYPING via USB/BLE` screen shows a determinate progress bar (chars typed / total, plus %) for the entire emission; BACK aborts instantly. No keyboard report is emitted in Bridge mode or on a bridge data path; typing is available only after the explicit Deploy menu action and confirmation. The AirBridge serial UUID is re-advertised with HIDS by the active-state watchdog. BLE service UUID hiding is deferred until the broad Web Bluetooth picker flow is hardware-proven.
 4. The executed bootstrap paints a landing page. While it waits, the FAP shows `Waiting for browser...` with an indeterminate marquee (a block bouncing across the bar frame) and the hint `Click Connect in the browser`. Clicking **Connect** supplies the browser user gesture, opens the matching WebHID or Web Bluetooth transport, and sends `0x42`. During BLE Deploy Waiting, a central that has not requested the bundle is disconnected after 15 seconds and advertising resumes, preventing a bonded macOS HID connection from starving a new browser picker.
 5. The FAP streams the length+checksum header and transport-matched `app-usb.html.gz` or `app-ble.html.gz` bundle (see [protocol.md](protocol.md), "Bootstrap Stream Protocol"). The bootstrap inflates it with `DecompressionStream("gzip")`; unsupported browsers show `Transfer unsupported - retry`. The `Serving app via USB/BLE` screen shows a determinate progress bar (KB sent / total, plus %); BACK aborts.
 6. The screen shows `Done` and returns to Bridge.
@@ -247,10 +255,10 @@ in-flight transfer.
 The FAP source of truth is
 `/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c`.
 
-Static BLE radio evidence: firmware requests ATT MTU 414, enables DLE, prefers
-2M PHY, and requests a 7.5 to 45 ms interval. Those are configured values only.
-Negotiated runtime MTU, PHY, DLE, interval, and throughput remain unclaimed
-without a physical run.
+Static BLE radio evidence: firmware configures and supports a local ATT MTU maximum
+of 414, enables DLE, prefers 2M PHY, and requests a 7.5 to 45 ms interval. Those
+are configured values only; negotiated MTU is peer-driven. Negotiated runtime MTU,
+PHY, DLE, interval, and throughput remain unclaimed without a physical run.
 
 USB Deploy requires a kbd+vendor USB profile. BLE Deploy uses the AirBridge HIDS
 keyboard report and does not depend on the USB keyboard collection.
@@ -294,9 +302,13 @@ generated in `airbridge/web/airbridge-identity.js`:
 
 The firmware source keeps the controller-order values in
 `targets/f7/ble_glue/services/airbridge_serial_uuid.h`; the browser uses the
-byte-reversed on-air strings above. The serial service UUID is advertised at all
-times. HIDS is advertised only for the BLE Deploy prompt and typing window, and
-the profile includes DIS values from the FAP config. Bonding is enabled: the
+byte-reversed on-air strings above. Setup briefly clears the HIDS advertising latch;
+in the normal active state, the Bridge watchdog re-arms serial plus HIDS every 2.5
+seconds and restarts advertising only when GAP is idle, without disconnecting an
+active link. The profile includes DIS values from the FAP config. Advertising HIDS
+does not authorize keyboard emission: Bridge mode and all bridge data paths emit no
+keyboard reports; reports are limited to the explicit, confirmed Deploy typing flow.
+Bonding is enabled: the
 first pairing uses MITM numeric comparison and stores a bond for silent later
 reconnects.
 
@@ -376,14 +388,14 @@ seconds, then resumes advertising, so a browser picker gets another chance.
 For chat, Chrome tries `navigator.bluetooth.getDevices()` before opening a
 picker. Enable `chrome://flags/#enable-web-bluetooth-new-permissions-backend`
 to retain granted devices across Chrome restarts. A bonded macOS HID connection
-can still grip a Bridge-mode link and require an app restart before chat
-connects; a Bridge-mode squatter-kick is a known follow-up, not part of the
-Deploy timeout.
+can still grip a Bridge-mode link. The same 15-second unsubscribed-link watchdog
+applies there; a subscribed link with no deploy `0x42` request is a 90-second
+zombie only while the app is in Deploy Waiting.
 
-For passive advertising QA, `python3 airbridge/scripts/ble_qa_scan.py scan` asserts the
-serial UUID alone in Bridge mode. Run the same command with `--expect-hids`
-while the BLE Deploy prompt or typing screen is active; it then requires the
-serial UUID plus HIDS.
+For passive advertising QA, `python3 airbridge/scripts/ble_qa_scan.py scan` asserts
+the AirBridge serial UUID plus HIDS after active-state watchdog recovery in Bridge
+and Deploy states. This advertisement contract is distinct from keyboard emission:
+only the confirmed Deploy typing flow sends keyboard reports.
 
 ## Step-by-Step Chat Demo Script
 
@@ -416,7 +428,7 @@ serial UUID plus HIDS.
 | Flipper unresponsive after app launch or a USB mode switch | Probe with `python3 airbridge/tools/flipper_alive.py --wait 30`. A healthy CLI answers `\r` with a `>:` prompt within 5 s. Port present but silent means the firmware is hung (USB CDC still enumerated, firmware dead). Recovery is a physical reset; do not attempt a DTR-toggle reset from software |
 | `storage.py` can't find `/dev/cu.usbmodemflip_*` | The AirBridge app is still running — exit it (long BACK) or restart the Flipper so the serial port reappears |
 | `TXERR` counter is non-zero | One `TXERR` can occur during a mid-flight cancel race (a frame reaches the main loop after the peer went away); benign if the transfer error is visible on both pages. Persistent `TXERR` growth means the BLE link is down — reconnect PC-B |
-| Pairing code dialog vanishes during deploy Connect before it can be confirmed | Fixed 2026-07-23: the deploy Waiting pump now only restarts advertising from GAP-idle and never disconnects, so a pairing code shown during deploy Connect can be confirmed at leisure. Previously the pump force-disconnected every 2.5 s and killed in-progress pairings — redeploy the current FAP |
+| Pairing code dialog vanishes during deploy Connect before it can be confirmed | The Waiting advertising pump runs every 2.5 s but only restarts advertising when GAP is idle; it does not disconnect an active numeric-comparison pairing. Separately, the Waiting watchdog disconnects an unsubscribed central after 15 s, while a subscribed central that sends no deploy `0x42` request is treated as a zombie after 90 s. Redeploy the current FAP if an older 2.5 s force-disconnect build is installed. |
 | App is missing an icon | Add `applications_user/pocket_airbridge/icon.png` and `fap_icon="icon.png"` in `application.fam`, then rebuild/redeploy |
 
 ## Important Notes

@@ -2,6 +2,12 @@
 
 A browser-only, offline, end-to-end encrypted chat and attachment exchange system using a **Flipper Zero** as a physical bridge between two computers.
 
+Pocket AirBridge lives in one local custom firmware and apps repository at
+`/Users/asutov/projects/flipperzero-firmware`. Its product assets are under
+`airbridge/`, and its canonical FAP source is
+`applications_user/pocket_airbridge/`. Edit and build those in-tree sources.
+There is no separate product repository, patch bundle, or patch-application step.
+
 **Hackathon goal**: Exchange text messages and send small files or images between PC-A and PC-B with no network, no cloud, and nothing to install on either PC.
 
 ## Quickstart
@@ -16,6 +22,9 @@ A browser-only, offline, end-to-end encrypted chat and attachment exchange syste
 5. **Open `http://127.0.0.1:8081/chat-usb.html`** on PC-A (Chrome/Edge), click **Connect USB**, and pick the Pocket AirBridge device in the browser prompt.
 6. **Open `http://127.0.0.1:8081/chat-ble.html`** on PC-B (Chrome/Edge), click **Connect BLE**, and pick the Flipper Zero in the browser prompt.
 7. Compare the six-digit SAS on both browsers, click **Accept SAS** on both sides, then type a message or select a file and hit **Send**.
+
+For a browser-only protocol check, open the canonical harness URL:
+`http://127.0.0.1:8081/protocol-harness.html`.
 
 ## Architecture
 
@@ -46,16 +55,19 @@ This is BadUSB-shaped by design. Keyboard emulation is the whole point: it is th
 - Keystrokes are emitted only from an explicit deploy prompt on the Flipper (reached with LEFT/RIGHT from the Bridge screen), and only after you place the cursor and press OK to confirm.
 - The Flipper screen shows `TYPING…` for the entire emission; pressing BACK aborts instantly.
 - No keyboard report is ever sent in Bridge mode or on any data path. Typing exists only inside the Deploy flow.
-- The typed payload is a fixed, reviewable, ASCII-only artifact: [`web/bootstrap.js`](web/bootstrap.js) in this repo. It fetches a gzip-compressed app bundle and requires browser support for `DecompressionStream("gzip")`; unsupported browsers show `Transfer unsupported - retry` before WebHID selection.
+- The typed payload is a fixed, reviewable, ASCII-only artifact: [`bootstrap.js`](web/bootstrap.js). It fetches a gzip-compressed app bundle and requires browser support for `DecompressionStream("gzip")`; unsupported browsers show `Transfer unsupported - retry` before WebHID selection.
 - The whole thing requires physical possession of the Flipper plus explicit on-device actions. Task 8 adds small bounded typing jitter, but typing still exists only inside the explicit Deploy flow.
 
 ### Steps
 
+Run these commands from the monorepo root,
+`/Users/asutov/projects/flipperzero-firmware`.
+
 1. **Build the app bundle:**
    ```bash
-   python3 tools/build_bundle.py
+   python3 airbridge/tools/build_bundle.py
    ```
-   This inlines the shared JS modules into self-contained app pages and writes deterministic gzip companions: `dist/app-usb.html.gz` and `dist/app-ble.html.gz`.
+   This inlines the shared JS modules into self-contained app pages and writes deterministic gzip companions: `airbridge/dist/app-usb.html.gz` and `airbridge/dist/app-ble.html.gz`.
 2. **Deploy the bootstrap and the bundle to the Flipper SD card** (exact commands in [docs/firmware-guide.md](docs/firmware-guide.md)).
 3. **Launch Pocket AirBridge** on the Flipper. The app opens on the Bridge relay screen; press **RIGHT** to reach the USB Deploy prompt. (LEFT/RIGHT cycle Bridge → USB Deploy → BLE Deploy → Bridge; a short BACK returns to Bridge, a long BACK exits the app. The relay keeps running in the background on every screen.) The prompt asks you to place the cursor, then press OK.
 4. **On the target PC**, open a browser tab at `https://blank.org`, open DevTools (F12), and click into the console. Any `https://` page works; `about:blank` is possible but verify first — on some Chrome builds `window.isSecureContext === false` there, which blocks WebHID. Run `console.log(window.isSecureContext)` to confirm before proceeding.
@@ -146,7 +158,7 @@ use `chat-usb.html` and `chat-ble.html` instead.
 
 | Gap | Mitigation for Demo |
 |-----|---------------------|
-| Custom BLE profile built | AirBridge composite profile with Battery, DIS, HIDS, and custom serial UUID family (`7b871228-baf0-c5b4-5f46-9c2613d627a3` / TX `87825ec0-7398-8cb7-3242-b083eaa34f27` / RX `152f7eeb-e3b7-5898-ba41-7ff66121c98d`); TX uses NOTIFY (not INDICATE). Static firmware config requests ATT MTU 414, DLE, 2M PHY preference, and 7.5 to 45 ms interval, but negotiated runtime evidence still needs hardware. |
+| Custom BLE profile built | AirBridge composite profile with Battery, DIS, HIDS, and custom serial UUID family (`7b871228-baf0-c5b4-5f46-9c2613d627a3` / TX `87825ec0-7398-8cb7-3242-b083eaa34f27` / RX `152f7eeb-e3b7-5898-ba41-7ff66121c98d`); TX uses NOTIFY (not INDICATE). Static firmware config supports a local ATT MTU maximum of 414, enables DLE, prefers 2M PHY, and requests a 7.5 to 45 ms interval; negotiated runtime values remain peer-driven and need hardware evidence. |
 | Custom HID descriptor registration | May need to patch `furi_hal_usb_hid` or use a community plugin template |
 | BLE service UUID hiding | Deferred. The serial UUID is still advertised and the browser still uses the service-filtered picker until `acceptAllDevices:true` with `optionalServices` is proven on hardware. |
 | 59-byte chunks | Slow but simple; works for files < 50 KB in reasonable time |

@@ -4,7 +4,7 @@
 # dependencies = []
 # ///
 # ─── How to run ───
-# python3 tools/gen_identity.py
+# python3 airbridge/tools/gen_identity.py
 """Generate the browser BLE identity module from the FAP config and firmware UUID header."""
 
 from __future__ import annotations
@@ -126,11 +126,9 @@ def reverse_uuid_bytes(values: list[str]) -> list[str]:
 def parse_serial_uuids(path: Path) -> tuple[str, str, str, str, str]:
     """Parse UUID macro bytes and verify them against the header's canonical comment.
 
-    The header comment and the byte-array macro are both in controller byte
-    order, so the cross-check compares the controller-order string to the
-    documented controller-order string. The function then reverses the 16
-    bytes for each UUID before returning the on-air form that the browser
-    and bleak actually observe.
+    The byte-array macro is in controller order while the header comment is
+    the canonical on-air form. Reverse each macro before comparing and
+    returning the UUID that the browser and bleak actually observe.
     """
     header = path.read_text(encoding="utf-8")
     documented: dict[str, str] = {}
@@ -147,12 +145,12 @@ def parse_serial_uuids(path: Path) -> tuple[str, str, str, str, str]:
             documented_uuid = documented[label.casefold()]
         except KeyError as error:
             raise IdentityGenerationError(f"{path}: missing UUID definition {error.args[0]}") from error
-        controller_order = bytes_to_uuid(macro_bytes)
-        if controller_order != documented_uuid:
+        on_air_uuid = bytes_to_uuid(reverse_uuid_bytes(macro_bytes))
+        if on_air_uuid != documented_uuid:
             raise IdentityGenerationError(
-                f"{path}: {macro_name} parses as {controller_order}, expected documented {documented_uuid}",
+                f"{path}: {macro_name} reverses to {on_air_uuid}, expected documented {documented_uuid}",
             )
-        parsed.append(bytes_to_uuid(reverse_uuid_bytes(macro_bytes)))
+        parsed.append(on_air_uuid)
     return parsed[0], parsed[1], parsed[2], parsed[3], parsed[4]
 
 

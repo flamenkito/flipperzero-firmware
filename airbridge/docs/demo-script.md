@@ -21,6 +21,7 @@ Write logs and screenshots under:
 
 3. For browser-driven QA, use persistent Chrome CDP at `http://localhost:9222`, not an ephemeral browser.
 4. If no Flipper is connected, record `airbridge/tools/flipper_alive.py` output as the hardware blocker and stop before physical claims.
+5. Before every physical or browser-permission action, follow root `AGENTS.md`: play the attention signal, check whether the expected state is already true, then use one `question` gate with confirmation and cancel. For a browser gate, verify the visible frontmost persistent-CDP tab first and name its exact URL in the question. Keep captures in `/tmp`, `.playwright-mcp/`, or `.omo/evidence/`, never in tracked product paths.
 
 ## Build and deploy
 
@@ -49,7 +50,7 @@ Write logs and screenshots under:
    /ext/apps_data/pocket_airbridge/app-ble.html.gz
    ```
 
-4. Before launch, check there is exactly one FAP copy at `/ext/apps/USB/pocket_airbridge.fap`. Remove stale copies before continuing.
+4. Before launch, run `python3 scripts/storage.py -p <port> list /ext/apps | grep -i airbridge`. It must return exactly `/ext/apps/USB/pocket_airbridge.fap`; remove every stray copy before continuing.
 
 ## Connect and unlock
 
@@ -82,5 +83,5 @@ Write logs and screenshots under:
 
 - E2E crypto is browser-only and always on. The Flipper is a blind relay and never stores plaintext, session keys, or decrypted files.
 - NACK retries exact current-item outer frames only. There is no byte-range resume, plaintext-range resume, or cross-session resume.
-- BLE tuning evidence is static unless recorded in this run: configured ATT MTU 414, DLE enabled, 2M preference, 7.5 to 45 ms requested interval, and 244-byte serial value capacity. Negotiated runtime values require hardware logs.
+- BLE tuning evidence is static unless recorded in this run: a configured and supported local ATT MTU maximum of 414, DLE enabled, 2M preference, a 7.5 to 45 ms requested interval, and 244-byte serial value capacity. Negotiated MTU is peer-driven; negotiated runtime values require hardware logs.
 - Stealth hardening includes deploy typing jitter and per-device DIS serial. BLE service UUID hiding and Windows USB tree comparison remain deferred without physical Chrome and Windows evidence.

@@ -22,11 +22,14 @@ an FNV-1a hash of the local firmware UID and formats it as `HP` plus eight
 uppercase hex digits. Explicit config still wins, and the raw Flipper UID is not
 copied into the DIS string.
 
-The serial service UUID is advertised continuously. HIDS is advertised only
-during the BLE Deploy prompt and typing window, so macOS sees the keyboard only
-when it is needed for explicit deploy typing. Bonding is enabled: each host's
-first pairing uses MITM numeric comparison, and later reconnects use the stored
-bond silently. The serial service's additional UUIDs are flow control notify
+Setup briefly clears the HIDS advertising latch after profile installation. In the
+normal active state, the Bridge watchdog re-arms serial plus HIDS every 2.5 seconds
+and restarts advertising only when GAP is idle, without disconnecting an active link.
+Advertising HIDS is not keyboard activity: Bridge mode and bridge data paths emit no
+keyboard reports. Keyboard reports remain limited to the explicit, user-confirmed
+Deploy typing flow. Bonding is enabled: each host's first pairing uses MITM numeric
+comparison, and later reconnects use the stored bond silently. The serial service's
+additional UUIDs are flow control notify
 `d2d968bf-cbd8-568f-d24c-5bbddb824f25` and status notify/read/write
 `bebb7113-63db-bbae-bb45-37dbbf73b6b3`.
 
@@ -313,8 +316,8 @@ This is a separate, deliberately simpler protocol from the chat protocol above. 
 
 | Deploy control | Typed bootstrap | Bundle | Delivery channel |
 |---|---|---|---|
-| **UP** | `bootstrap.js` | `app-usb.html.gz` | USB vendor HID |
-| **DOWN** | `bootstrap-ble.js` | `app-ble.html.gz` | AirBridge serial TX notify |
+| **LEFT/RIGHT → USB Deploy, then OK** | `bootstrap.js` | `app-usb.html.gz` | USB vendor HID |
+| **LEFT/RIGHT → BLE Deploy, then OK** | `bootstrap-ble.js` | `app-ble.html.gz` | AirBridge serial TX notify |
 
 The FAP loads the matching pair from `/ext/apps_data/pocket_airbridge/`. No
 per-chunk ACK is used for the bootstrap stream; USB interrupt IN reports are
@@ -337,5 +340,5 @@ The additive checksum exists to catch profile-switch race bytes at the start of 
 - Single receiver per session.
 - No byte-range resume or cross-session transfer resume; NACK only retries exact current-item outer frames.
 - Deploy bundles are gzip-compressed; chat items are encrypted but not compressed.
-- Runtime BLE radio values are not implied by static firmware settings. The current firmware requests ATT MTU 414, enables DLE, prefers 2M PHY, and asks for a 7.5 to 45 ms interval, but negotiated MTU/PHY/DLE/interval and throughput need hardware logs.
+- Runtime BLE radio values are not implied by static firmware settings. The current firmware configures and supports a local ATT MTU maximum of 414, enables DLE, prefers 2M PHY, and requests a 7.5 to 45 ms interval; negotiated MTU is peer-driven, and negotiated MTU/PHY/DLE/interval and throughput need hardware logs.
 - Fixed small chunk size optimized for HID report size, not throughput. Observed throughput on hardware is roughly **0.5–2 KB/s** — fine for text and small attachments, slow for anything larger.

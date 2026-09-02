@@ -1,7 +1,8 @@
 # W8 BLE identity QA runbook
 
 Run this only after the W8 tooling self-test is green. It is the hardware evidence
-procedure for the BLE half of the HP impersonation goal; it does not flash, deploy,
+procedure for the BLE half of the HP impersonation goal. It does not flash,
+deploy, or claim a result that was not observed.
 
 ## Preconditions
 
@@ -55,10 +56,14 @@ user action.
    ```
 
    Expected exit `0`: every row is `PASS` (Darwin MAC/OUI/adjacent rows are the
-   documented `WARN` exception). The target's local name equals config `ble_name`,
-   no row reports `flipper`, the advertised service set is exactly `0x1812`, HP
-   company data is present, and exactly one matching source exists. On Windows/Linux,
-   the actual address must exactly equal config `ble_mac` and its OUI must be allowed.
+    documented `WARN` exception). The target's local name equals config `ble_name`,
+    no row reports `flipper`, the AirBridge serial service and HIDS `0x1812` are
+    advertised, HP company data is present, and exactly one matching source exists.
+    On Windows/Linux, the actual address must exactly equal config `ble_mac` and its
+     OUI must be allowed. The normal active state after startup/watchdog recovery
+     advertises both services in Bridge and Deploy; advertising HIDS does not emit
+     keyboard reports. Keyboard reports remain restricted to an explicitly
+     confirmed Deploy typing flow.
 4. **Pair and enumerate GATT — physical gate when the OS dialog appears.** Start:
 
    ```sh
@@ -77,7 +82,7 @@ user action.
    characteristics and config strings, no readable value matches a git hash, GAP has
    the config name and appearance `0x03C1`, and serial has exactly the four canonical
    UUIDs parsed from that module.
-5. **Exit FAP — physical gate.** Press BACK to leave Pocket AirBridge. Confirm with
+5. **Exit FAP — physical gate.** Long-press BACK to leave Pocket AirBridge. Confirm with
    `question` when the Flipper has returned to its desktop; this exercises the FAP's
    mandatory profile restore path.
 6. **Verify restoration after exit.** Run:
@@ -92,14 +97,19 @@ user action.
 7. **Reboot — physical gate.** Reboot the Flipper normally. Confirm with `question`
    only when it has restarted and reached the desktop.
 8. **Verify restoration after reboot.** Repeat the previous `stock` command. Expected:
-   exit `0` with both stock rows `PASS`. Save both scanner transcripts under
-   `.omo/notepads/ble-impersonation/` as W8 evidence.
+    exit `0` with both stock rows `PASS`. Save both scanner transcripts under
+    `.omo/evidence/ble-impersonation/` as W8 evidence.
 
 ## Chromium / Playwright Web Bluetooth scenario
 
-This scenario verifies the browser contract separately from Bleak. Use a Chromium
-instance controlled by Playwright and an HTTPS or `localhost` origin; Web Bluetooth
-does not work from a file URL. Keep the FAP running from step 2.
+This scenario verifies the browser contract separately from Bleak. Use the
+persistent Chrome instance with CDP on port 9222, not an ephemeral Playwright
+browser, and connect every Playwright call with `cdp_url="http://localhost:9222"`.
+Use an HTTPS or `localhost` origin; Web Bluetooth does not work from a file URL.
+Keep the FAP running from step 2. Before each browser gate, confirm that the
+Chrome window is visible, the target tab is frontmost, and its URL is the exact
+one named in the `question` prompt. Save captures only in `/tmp`,
+`.playwright-mcp/`, or `.omo/evidence/`.
 
 1. Serve the in-tree web directory and have Playwright navigate its controlled
    window to `http://127.0.0.1:8081/chat-ble.html`:
@@ -131,8 +141,10 @@ does not work from a file URL. Keep the FAP running from step 2.
    ```
 
 3. The click must open a Chromium picker with the full device list. Before the human
-   picker action, play the alert and use `question` naming that Playwright window
-   explicitly. Select the HP-named device and approve numeric comparison if it is shown.
+   picker action, wait about five seconds and verify the picker was not already
+   handled. Then play the alert and use `question` naming the Playwright window
+   showing `http://127.0.0.1:8081/chat-ble.html` explicitly. Select the HP-named
+   device and approve numeric comparison only when its values agree.
 4. Expected console result is `BLE_QA_PASS`, the HP device name, and the generated
    AirBridge serial UUID. No `SecurityError` may appear. This proves the user can select
    the HP device from unfiltered discovery and `getPrimaryService(identity.SERIAL_SERVICE_UUID)`

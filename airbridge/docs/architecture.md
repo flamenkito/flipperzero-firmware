@@ -52,11 +52,14 @@ DIS serial derived from a stable hash of the Flipper hardware UID unless
 `ble_dis_serial` is explicitly configured.
 
 The AirBridge profile includes HIDS alongside Battery, DIS, and the AirBridge
-serial service. HIDS is present for the explicit BLE Deploy typing flow only; no
-keyboard reports are emitted while bridging chat traffic. HIDS is advertised only
-for the BLE Deploy prompt and typing window. The profile uses numeric-comparison
-pairing with persistent bonding, so first pairing needs a code check and later
-reconnects can be silent.
+serial service. Setup briefly clears the HIDS advertising latch after profile
+installation; in the normal active state, the Bridge watchdog re-arms serial plus
+HIDS every 2.5 seconds and restarts advertising only when GAP is idle, without
+disconnecting an active link. Advertising HIDS is distinct from keyboard emission:
+no keyboard reports are emitted while bridging chat traffic or on any bridge data
+path. Keyboard reports exist only in the explicit, user-confirmed BLE Deploy typing
+flow. The profile uses numeric-comparison pairing with persistent bonding, so first
+pairing needs a code check and later reconnects can be silent.
 
 Browser discovery and data use only the generated AirBridge serial UUID family
 from `web/airbridge-identity.js`, not HIDS. The on-air UUIDs are service
@@ -65,8 +68,9 @@ from `web/airbridge-identity.js`, not HIDS. The on-air UUIDs are service
 `152f7eeb-e3b7-5898-ba41-7ff66121c98d`.
 
 Current evidence for BLE tuning is static unless a hardware run says otherwise:
-configured ATT MTU 414, DLE enabled, 2M PHY preference, requested 7.5 to 45 ms
-connection interval, and 244-byte serial value capacity. Runtime negotiated
+the firmware configures and supports a local ATT MTU maximum of 414, enables DLE,
+prefers 2M PHY, requests a 7.5 to 45 ms connection interval, and supports a
+244-byte serial value capacity. Negotiated MTU is peer-driven; negotiated radio
 values and BLE throughput require physical evidence.
 
 ### PC-B — BLE Chat Web App (Web Bluetooth)
@@ -107,8 +111,8 @@ The Bridge screen provides two distinct, user-confirmed deployment paths:
 
 | FAP control | Typing transport | Bootstrap | Streamed bundle |
 |---|---|---|---|
-| **UP** | USB HID keyboard | `bootstrap.js` | `app-usb.html.gz` |
-| **DOWN** | BLE HIDS keyboard | `bootstrap-ble.js` | `app-ble.html.gz` |
+| **LEFT/RIGHT → USB Deploy, then OK** | USB HID keyboard | `bootstrap.js` | `app-usb.html.gz` |
+| **LEFT/RIGHT → BLE Deploy, then OK** | BLE HIDS keyboard | `bootstrap-ble.js` | `app-ble.html.gz` |
 
 Both bootstraps require `DecompressionStream("gzip")`, then request the compressed bundle with `0x42` only after a user clicks their
 landing-page Connect button. USB streams fixed 64-byte vendor-HID reports;
@@ -120,7 +124,7 @@ deployed app opens WebHID for USB Deploy and Web Bluetooth for BLE Deploy.
 
 | Decision | Rationale |
 |----------|-----------|
-| **Vendor HID (not keyboard)** | For the Bridge data path, vendor HID avoids exposing a keyboard interface to the host. The Deploy flow intentionally uses keyboard emulation and is BadUSB-shaped by design; see the "Honest framing" section in README.md. |
+| **Vendor HID Bridge data path** | The selected composite USB personality exposes keyboard and vendor collections to the host. Bridge frames use only the vendor HID collection on usage page `0xFF00`; no keyboard reports are emitted in Bridge mode or on bridge data paths. Keyboard reports are limited to the explicit, user-confirmed Deploy flow; see the "Honest framing" section in README.md. |
 | **AirBridge BLE notifications** | The custom serial TX characteristic uses GATT notify, which Chromium exposes through `characteristicvaluechanged`; low overhead suits small data. |
 | **Small chunks (~60 bytes payload)** | Fits within a single 64-byte HID report, avoiding report-fragmentation complexity for the MVP. |
 | **ACK-per-chunk backpressure** | Ensures Flipper Zero never buffers more than a couple of frames. Simple, reliable for demo. |

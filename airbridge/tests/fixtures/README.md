@@ -2,7 +2,7 @@
 
 `*.txt` files in this directory are evidence fixtures for W7's USB identity
 comparison. They are intentionally plain text so code review and
-`tools/usb_descriptor_diff.py` can compare one normalized field per line.
+`airbridge/tools/usb_descriptor_diff.py` can compare one normalized field per line.
 
 ## Format and provenance
 
@@ -48,16 +48,18 @@ capture after a device, OS, or tool change.
 ## macOS capture
 
 Use a non-hub, directly visible target and preserve the generated file without
-editing it. The utility executes and embeds both commands shown in its header:
+editing it. Run these commands from the monorepo root,
+`/Users/asutov/projects/flipperzero-firmware`. The utility executes and embeds
+both commands shown in its header:
 
 ```sh
-python3 tools/usb_descriptor_capture.py 03f0:5341 \
-  --output tests/fixtures/hp_03f0_5341_genuine.txt
-python3 tools/usb_descriptor_capture.py 03f0:5341 \
-  --output tests/fixtures/hp_03f0_5341_flipper.txt
-python3 tools/usb_descriptor_diff.py \
-  tests/fixtures/hp_03f0_5341_genuine.txt \
-  tests/fixtures/hp_03f0_5341_flipper.txt --explain
+python3 airbridge/tools/usb_descriptor_capture.py 03f0:5341 \
+  --output airbridge/tests/fixtures/hp_03f0_5341_genuine.txt
+python3 airbridge/tools/usb_descriptor_capture.py 03f0:5341 \
+  --output airbridge/tests/fixtures/hp_03f0_5341_flipper.txt
+python3 airbridge/tools/usb_descriptor_diff.py \
+  airbridge/tests/fixtures/hp_03f0_5341_genuine.txt \
+  airbridge/tests/fixtures/hp_03f0_5341_flipper.txt --explain
 ```
 
 If two devices share the VID:PID, first obtain their `Location ID` from
@@ -75,7 +77,12 @@ The existing N50194 `Get-PnpDevice` evidence is a topology check only;
 (`usbccgp.sys`) is not a descriptor dump. Capture both artifacts while the
 genuine dongle is the only `03F0:5341` device attached.
 
-Open **PowerShell as Administrator** on N50194 and run this exact tree capture:
+Open **PowerShell as Administrator** on N50194, change to the monorepo root,
+and run this exact tree capture:
+
+```powershell
+Set-Location C:\path\to\flipperzero-firmware
+```
 
 ```powershell
 $id = (Get-PnpDevice -PresentOnly | Where-Object {
@@ -86,9 +93,9 @@ $parent = (Get-PnpDeviceProperty -InstanceId $id -KeyName 'DEVPKEY_Device_Parent
 Get-PnpDevice -PresentOnly | Where-Object {
   $_.InstanceId -eq $id -or $_.InstanceId -eq $parent -or $_.InstanceId -like "$id&*"
 } | Select-Object Status, Class, FriendlyName, InstanceId | Format-List |
-  Out-File -Encoding utf8 tests\fixtures\hp_03f0_5341_genuine_n50194_pnp.txt
+  Out-File -Encoding utf8 airbridge\tests\fixtures\hp_03f0_5341_genuine_n50194_pnp.txt
 Get-PnpDeviceProperty -InstanceId $id | Format-List KeyName, Type, Data |
-  Out-File -Encoding utf8 -Append tests\fixtures\hp_03f0_5341_genuine_n50194_pnp.txt
+  Out-File -Encoding utf8 -Append airbridge\tests\fixtures\hp_03f0_5341_genuine_n50194_pnp.txt
 ```
 
 Then use the N50194 USB descriptor viewer (`descdump.exe`, if installed there,
@@ -99,14 +106,14 @@ report descriptor text beside the tree capture:
 ```powershell
 $descriptorDump = Get-Command descdump.exe -ErrorAction Stop
 $descriptorDump.Source |
-  Out-File -Encoding utf8 tests\fixtures\hp_03f0_5341_genuine_n50194_descriptor_tool_path.txt
+  Out-File -Encoding utf8 airbridge\tests\fixtures\hp_03f0_5341_genuine_n50194_descriptor_tool_path.txt
 Start-Process -FilePath $descriptorDump.Source
 ```
 
 The path file is provenance for the exact N50194 descriptor binary. Select the
 physical `VID_03F0&PID_5341` device in its picker, then use its **Save** or
 **Copy all** operation to write
-`tests\fixtures\hp_03f0_5341_genuine_n50194_descdump.txt`. Do not pipe a
+`airbridge\tests\fixtures\hp_03f0_5341_genuine_n50194_descdump.txt`. Do not pipe a
 GUI tool's startup output to `Out-File`: that captures no descriptors.
 
 If N50194 has no `descdump.exe`, locate and launch the Windows SDK USBView
@@ -118,7 +125,7 @@ to the same `..._descdump.txt` target:
 $usbView = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10" -Recurse -Filter USBView.exe |
   Select-Object -First 1 -ExpandProperty FullName
 if (-not $usbView) { throw 'Install the Windows SDK USBView tool or descdump.exe' }
-$usbView | Out-File -Encoding utf8 tests\fixtures\hp_03f0_5341_genuine_n50194_descriptor_tool_path.txt
+$usbView | Out-File -Encoding utf8 airbridge\tests\fixtures\hp_03f0_5341_genuine_n50194_descriptor_tool_path.txt
 Start-Process -FilePath $usbView
 ```
 
