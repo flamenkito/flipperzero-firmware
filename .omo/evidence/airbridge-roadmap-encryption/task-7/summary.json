@@ -1,0 +1,41 @@
+{
+  "schema": "airbridge-task-7-summary/v1",
+  "capturedAt": "2026-08-29T20:37:07Z",
+  "task": "7. BLE radio tuning and runtime evidence",
+  "status": "blocked-for-runtime-hardware; static-baseline-complete",
+  "codeChanges": false,
+  "firmwareBuildRun": false,
+  "firmwareBuildReason": "No BLE/FAP source or config files were modified in this task, so the required FAP build gate for firmware code changes was not applicable.",
+  "artifacts": {
+    "staticParams": ".omo/evidence/airbridge-roadmap-encryption/task-7/static-params.json",
+    "hardwareBlocker": ".omo/evidence/airbridge-roadmap-encryption/task-7/hardware-blocker.json"
+  },
+  "staticFindings": [
+    "ATT MTU configured maximum is 414 bytes via CFG_BLE_MAX_ATT_MTU and stack init uses it; negotiated MTU is only knowable from ACI_ATT_EXCHANGE_MTU_RESP runtime logs.",
+    "DLE is enabled at stack init via CFG_BLE_DATA_LENGTH_EXTENSION=1, but product code has no explicit hci_le_set_data_length call and no captured runtime data-length-change values.",
+    "2M PHY is preferred with hci_le_set_default_phy(... TX_2M_PREFERRED, RX_2M_PREFERRED); product code has no explicit per-connection hci_le_set_phy tuning call.",
+    "AirBridge profile requests connection interval 0x0006..0x24 (7.5..45 ms), latency 0; actual accepted interval requires live connection logs.",
+    "AirBridge serial characteristic max is 244 bytes, ext update fragments are <=243 bytes, while bridge relay frames remain 64-byte HID-sized records carrying the browser protocol's 59-byte payload."
+  ],
+  "decision": "No tuning/logging code change was justified without runtime evidence. The existing static parameters are already aggressive for throughput; runtime measurement is deferred until hardware is present.",
+  "verification": {
+    "codegraphPrimaryAttempted": true,
+    "codegraphAvailableForFirmwareRepo": false,
+    "hardwareDetector": "ABSENT: no usbmodem port",
+    "runtimeThroughputMeasured": false,
+    "negotiatedValuesMeasured": false,
+    "sourceFilesModified": []
+  },
+  "preservedBehaviorScope": [
+    "No web crypto/NACK protocol files modified.",
+    "No deploy bootstrap/compression files modified.",
+    "No Bridge advertising watchdog or BLE disconnect behavior modified.",
+    "No dependencies added."
+  ],
+  "nextHardwareRunChecklist": [
+    "Launch persistent Chrome with CDP at http://localhost:9222 and use it for any browser-gated QA.",
+    "Deploy/launch the current FAP only through /ext/apps/USB/pocket_airbridge.fap if code changed before the run.",
+    "Connect WebHID + Web Bluetooth with physical-gate protocol and capture serial/browser logs.",
+    "Record MTU, PHY, DLE/packet-size evidence, connection interval, bidirectional text, attachment SHA, throughput, cancel behavior, and Flipper DROP/TXERR counters."
+  ]
+}

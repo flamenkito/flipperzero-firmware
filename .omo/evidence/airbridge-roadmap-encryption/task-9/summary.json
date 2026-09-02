@@ -1,0 +1,57 @@
+{
+  "task": "9",
+  "date": "2026-08-29",
+  "bundle": {
+    "source_firmware_repo": "/Users/asutov/projects/flipperzero-firmware",
+    "base": "c9ab2b68",
+    "head": "81ef1974",
+    "live_fap": "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c",
+    "mirrored_fap": "firmware/pocket_airbridge/pocket_airbridge.c",
+    "firmware_patch": "firmware/airbridge-firmware.patch",
+    "api_symbols_patch": "firmware/api-symbols-additions.patch",
+    "patch_dry_run": "pass"
+  },
+  "browser_bundle": {
+    "app_usb_html_bytes": 132365,
+    "app_usb_gzip_bytes": 31707,
+    "app_usb_sha256": "2ebd0cc110ec62f18fca1149dd3414e150548a8688ed527bfeba3b66d2870f17",
+    "app_usb_gzip_sha256": "69e78c74a8c4c5b71bd48713c363dc589f933348490408737f1bce4766056dda",
+    "app_ble_html_bytes": 134578,
+    "app_ble_gzip_bytes": 32061,
+    "app_ble_sha256": "8d15a3d3ca4ed039499a9aa8a8e4ef4d33b3235fd554e438710f3caa3c7ad298",
+    "app_ble_gzip_sha256": "6e310e124cb4bc8ad6b7a2e71e68020ad5560456ff08b4fce9b3c98c10bc97fc",
+    "bootstrap_js_chars": 1196,
+    "gzip_decompress_matches_raw": true
+  },
+  "verification": {
+    "fap_build": "pass",
+    "build_bundle": "pass",
+    "gzip_hash_check": "pass",
+    "protocol_harness": "PASS: 35/35 protocol tests passed.",
+    "git_diff_check": "pass",
+    "node_check": "pass",
+    "lsp_markdown": "no configured markdown LSP",
+    "lsp_c": "non-authoritative in main repo because Flipper SDK headers are outside workspace; live FAP build passed"
+  },
+  "hardware": {
+    "flipper_alive": "ABSENT: no usbmodem port",
+    "physical_usb_ble_chat": "not run",
+    "usb_deploy": "not run",
+    "ble_runtime_negotiated_mtu_phy_dle_interval": "not claimed",
+    "flipper_counters": "not claimed"
+  },
+  "deferments": [
+    "BLE service UUID hiding pending physical Chrome picker evidence",
+    "Windows USB tree comparison pending Windows host and dongle capture",
+    "Transfer resume not implemented; NACK retries exact current-item outer frames only"
+  ],
+  "logs": {
+    "dry_run_apply": "/Users/asutov/projects/flipper-hid/.omo/evidence/airbridge-roadmap-encryption/task-9/dry-run-apply.log",
+    "fap_build": "/Users/asutov/projects/flipper-hid/.omo/evidence/airbridge-roadmap-encryption/task-9/fap-build.log",
+    "build_bundle": "/Users/asutov/projects/flipper-hid/.omo/evidence/airbridge-roadmap-encryption/task-9/build-bundle.log",
+    "gzip_hash_check": "/Users/asutov/projects/flipper-hid/.omo/evidence/airbridge-roadmap-encryption/task-9/gzip-hash-check.log",
+    "protocol_harness": "/Users/asutov/projects/flipper-hid/.omo/evidence/airbridge-roadmap-encryption/task-9/protocol-harness.json",
+    "hardware_detector": "/Users/asutov/projects/flipper-hid/.omo/evidence/airbridge-roadmap-encryption/task-9/hardware-detector.log",
+    "git_diff_check": "/Users/asutov/projects/flipper-hid/.omo/evidence/airbridge-roadmap-encryption/task-9/git-diff-check.log"
+  }
+}

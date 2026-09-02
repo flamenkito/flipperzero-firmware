@@ -1,0 +1,23 @@
+diff --git a/firmware/pocket_airbridge/pocket_airbridge.c b/firmware/pocket_airbridge/pocket_airbridge.c
+index f423119..12c2617 100644
+--- a/firmware/pocket_airbridge/pocket_airbridge.c
++++ b/firmware/pocket_airbridge/pocket_airbridge.c
+@@ -1345,9 +1345,16 @@ static void app_service_input(AirbridgeApp* app) {
+ }
+ 
+ static void app_handle_relay(AirbridgeApp* app, BridgeEvent* be) {
+-    if((app->screen == AirbridgeScreenWaiting) && (be->len > 0) && (be->data[0] == 0x42)) {
++    const bool deploy_request = (be->len > 0) && (be->data[0] == 0x42);
++    if(deploy_request && app->screen == AirbridgeScreenWaiting) {
+         app_start_stream(app);
+-    } else if(be->to_ble) {
++        return;
++    }
++    if(deploy_request && app->screen != AirbridgeScreenBridge) {
++        app_show_error(app, "DEPLOY NOT ARMED");
++        return;
++    }
++    if(be->to_ble) {
+         chunks_usb_to_ble++;
+         if(!bt_serial_tx(be->data, be->len)) {
+             tx_errors++;

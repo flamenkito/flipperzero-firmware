@@ -1,0 +1,6 @@
+{
+  "bootstrap_chars": 1196,
+  "bootstrap_budget": 1200,
+  "bootstrap_ascii": true,
+  "bootstrap_contains_decompression_stream": true
+}

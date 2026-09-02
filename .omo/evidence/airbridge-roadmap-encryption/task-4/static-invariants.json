@@ -1,0 +1,8 @@
+{
+  "mirrorMatchesLive": true,
+  "streamsOnlyInWaitingPattern": true,
+  "bridgeDeployRequestRelayAllowed": true,
+  "usesGzipBundlePaths": true,
+  "oldRawBundlePathsAbsentFromStartStream": true,
+  "bridgeWatchdogNoDisconnect": true
+}

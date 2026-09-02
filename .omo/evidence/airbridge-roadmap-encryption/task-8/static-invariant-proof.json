@@ -1,0 +1,88 @@
+{
+  "schema": "airbridge-task8-static-proof/v1",
+  "keyboardReports": {
+    "astGrepEvidence": [
+      "astgrep-kb-press-identifier.txt",
+      "astgrep-kb-release-identifier.txt",
+      "astgrep-kb-release-all.txt",
+      "astgrep-ble-kb-report.txt"
+    ],
+    "usbKeyboardCalls": [
+      {
+        "symbol": "furi_hal_hid_airbridge_kb_press",
+        "locations": [
+          "firmware/pocket_airbridge/pocket_airbridge.c:721",
+          "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:721"
+        ],
+        "enclosingFunction": "app_typing_press"
+      },
+      {
+        "symbol": "furi_hal_hid_airbridge_kb_release",
+        "locations": [
+          "firmware/pocket_airbridge/pocket_airbridge.c:730",
+          "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:730"
+        ],
+        "enclosingFunction": "app_typing_release"
+      },
+      {
+        "symbol": "furi_hal_hid_airbridge_kb_release_all",
+        "locations": [
+          "firmware/pocket_airbridge/pocket_airbridge.c:295",
+          "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:295"
+        ],
+        "enclosingFunction": "app_abort_typing",
+        "guard": "key_was_down and non-BLE typing transport"
+      }
+    ],
+    "bleKeyboardCalls": [
+      {
+        "symbol": "ble_profile_airbridge_kb_report",
+        "locations": [
+          "firmware/pocket_airbridge/pocket_airbridge.c:224",
+          "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:224"
+        ],
+        "enclosingFunction": "app_ble_kb_report_with_retry",
+        "callers": [
+          "app_typing_press",
+          "app_typing_release"
+        ]
+      },
+      {
+        "symbol": "ble_profile_airbridge_kb_report",
+        "locations": [
+          "firmware/pocket_airbridge/pocket_airbridge.c:1514",
+          "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:1514"
+        ],
+        "enclosingBlock": "deferred release-all service after app_abort_typing"
+      },
+      {
+        "symbol": "ble_profile_airbridge_kb_report",
+        "locations": [
+          "firmware/pocket_airbridge/pocket_airbridge.c:1593",
+          "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:1593"
+        ],
+        "enclosingBlock": "teardown drain of pending release-all"
+      }
+    ],
+    "bridgePath": "usb_event_callback and ble_raw_serial_callback enqueue EVENT_TYPE_RELAY; app_handle_relay forwards to bt_serial_tx or furi_hal_hid_vendor_send_response only. No keyboard report function appears in relay callbacks or app_handle_relay.",
+    "deployGate": "app_start_typing is called only from app_handle_input while screen is AirbridgeScreenDeployPrompt on OK; 0x42 starts streaming only from AirbridgeScreenWaiting and remains relay data in AirbridgeScreenBridge."
+  },
+  "typingJitter": {
+    "implemented": true,
+    "scope": "app_typing_step deploy typing path only",
+    "maxAdditionalDelayMsPerPressOrRelease": 7,
+    "seed": "furi_get_tick XOR bootstrap length XOR typing_generation",
+    "abortSemantics": "app_service_input runs before app_typing_step every loop and at BLE retry boundaries; BACK still calls app_abort_typing and returns to Bridge without waiting for typing completion."
+  },
+  "bleAdvertisingUuid": {
+    "implemented": false,
+    "reason": "Firmware currently advertises the AirBridge serial service UUID via GapConfig. Removing it requires changing Web Bluetooth from service filtering to acceptAllDevices plus optionalServices and then physically proving picker UX, wrong-device safe failure, pairing, and reconnect on Chromium. Hardware is absent in this session, so UUID hiding is deferred rather than guessed.",
+    "mdnConstraint": "With acceptAllDevices:true filters must be omitted and optionalServices must include the service to access it after selection."
+  },
+  "disSerial": {
+    "implemented": true,
+    "format": "HP%08X over FNV-1a32(local firmware UID)",
+    "configOverride": "ble_dis_serial in /ext/apps_data/pocket_airbridge/config still overrides the derived default.",
+    "rawUidExposure": false
+  }
+}

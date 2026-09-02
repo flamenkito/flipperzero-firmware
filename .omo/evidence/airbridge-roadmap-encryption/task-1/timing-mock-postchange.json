@@ -1,0 +1,29 @@
+{
+  "phase": "post-change-harness",
+  "url": "http://localhost:8000/web/protocol-harness.html?task1=post3&bust=1788030369800",
+  "command": "Playwright CDP evaluate window.runAllProtocolTests() against persistent Chrome on http://localhost:9222",
+  "statusText": "PASS: 17/17 protocol tests passed.",
+  "passed": 17,
+  "total": 17,
+  "failed": [],
+  "durationMs": 739.3,
+  "requiredOperations": {
+    "deploy-stream": true,
+    "chat-text": true,
+    "attachment": true,
+    "cancel": true,
+    "flipper-counters": true
+  },
+  "evidence": [
+    { "schema": "airbridge-timing/v1", "operation": "chat-text", "direction": "usb-to-ble", "bundleBytes": 21, "transferBytes": 21, "firstReportLatencyMs": 0.1, "completeTimeMs": 38.0, "errorState": null, "transferKbps": 0.54, "mock": true, "hardware": false, "marker": "mock" },
+    { "schema": "airbridge-timing/v1", "operation": "chat-text", "direction": "ble-to-usb", "bundleBytes": 21, "transferBytes": 21, "firstReportLatencyMs": 0.0, "completeTimeMs": 57.4, "errorState": null, "transferKbps": 0.357, "mock": true, "hardware": false, "marker": "mock" },
+    { "schema": "airbridge-timing/v1", "operation": "attachment", "bundleBytes": 3, "transferBytes": 3, "firstReportLatencyMs": 0.1, "completeTimeMs": 0.4, "errorState": null, "transferKbps": 7.324, "mock": true, "hardware": false, "marker": "mock" },
+    { "schema": "airbridge-timing/v1", "operation": "cancel", "bundleBytes": 1, "transferBytes": 0, "firstReportLatencyMs": 0.0, "completeTimeMs": 0.1, "errorState": "cancelled", "transferKbps": 9.766, "mock": true, "hardware": false, "marker": "mock", "details": { "cancelAcked": true } },
+    { "schema": "airbridge-cancel/v1", "operation": "cancel", "direction": "mock-loopback", "itemId": 88, "origin": "mock-user", "bundleBytes": 0, "transferBytes": 0, "firstReportLatencyMs": 0, "completeTimeMs": 0, "errorState": "cancelled", "transferKbps": 0, "mock": true, "hardware": false, "marker": "mock" },
+    { "schema": "airbridge-timing/v1", "operation": "deploy-stream", "bundleBytes": 54, "transferBytes": 54, "firstReportLatencyMs": 0.1, "completeTimeMs": 0.3, "errorState": null, "transferKbps": 175.781, "mock": true, "hardware": false, "marker": "mock" },
+    { "schema": "airbridge-timing/v1", "operation": "deploy-stream", "bundleBytes": 54, "transferBytes": 54, "firstReportLatencyMs": 0, "completeTimeMs": 0, "errorState": "checksum mismatch", "transferKbps": 0, "mock": true, "hardware": false, "marker": "mock" },
+    { "schema": "airbridge-flipper-counters/v1", "operation": "flipper-counters", "bundleBytes": 0, "transferBytes": 0, "firstReportLatencyMs": 0, "completeTimeMs": 0, "errorState": null, "transferKbps": 0, "mock": true, "hardware": false, "marker": "mock", "flipperCounters": { "usbToBle": 1, "bleToUsb": 2, "drop": 0, "txerr": 0 } }
+  ],
+  "artifactScreenshot": ".omo/evidence/airbridge-roadmap-encryption/task-1/protocol-harness-post.png",
+  "timestamp": "2026-08-29T19:06:19.148Z"
+}

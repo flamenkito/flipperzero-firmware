@@ -1,0 +1,4 @@
+web/bootstrap.js: LSP diagnostics timed out waiting for fresh JS diagnostics.
+web/protocol-harness.html: Biome LSP is not installed; user previously declined installation, so HTML/JS LSP diagnostics are unavailable.
+firmware/pocket_airbridge/pocket_airbridge.c: clangd reports missing Flipper SDK headers from the main repo context (`furi.h` not found) and cascaded unknown type errors; use FAP build as authoritative C validation.
+/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c: workspace LSP rejects files outside the request cwd; authoritative validation is `./fbt build APPSRC=applications_user/pocket_airbridge`.

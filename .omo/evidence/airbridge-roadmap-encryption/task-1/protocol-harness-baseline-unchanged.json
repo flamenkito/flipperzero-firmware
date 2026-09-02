@@ -1,0 +1,27 @@
+{
+  "url": "http://localhost:8000/web/protocol-harness.html",
+  "title": "Pocket AirBridge — Protocol Harness",
+  "status": "FAIL: 15/17 passed, 2 failed.",
+  "rows": [
+    "Frame roundtrip: PASS",
+    "Fragmented META: PASS",
+    "Text item USB → BLE: PASS",
+    "Text item BLE → USB: PASS",
+    "Attachment SHA-256: PASS",
+    "Busy collision: PASS",
+    "ACK type mismatch rejected: PASS",
+    "Hash mismatch sends error: PASS",
+    "DATA before META rejected: PASS",
+    "Oversized META rejected: PASS",
+    "Busy versus rejected split: PASS",
+    "Cancel handling: PASS",
+    "bootstrap stream reassembly: PASS",
+    "simultaneous hello arbitration: PASS",
+    "bootstrap.js eval in browser context: FAIL — could not fetch bootstrap.js",
+    "broken bootstrap.js syntax is detected: PASS",
+    "bootstrap.js picker-cancel error path: FAIL — could not fetch bootstrap.js"
+  ],
+  "passCountText": "FAIL: 15/17 passed, 2 failed.",
+  "consoleErrorCountHint": "see protocol-harness-baseline-console.log",
+  "timestamp": "2026-08-29T18:57:43.690Z"
+}

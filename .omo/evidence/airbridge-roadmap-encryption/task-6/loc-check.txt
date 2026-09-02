@@ -1,0 +1,4 @@
+web/airbridge-protocol.js: pure_loc=1329
+web/protocol-harness.html: pure_loc=1566
+web/chat-usb.html: pure_loc=909
+web/chat-ble.html: pure_loc=990

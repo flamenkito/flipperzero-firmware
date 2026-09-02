@@ -1,0 +1,10 @@
+{
+  "stale_state": "Protocol harness was loaded with cache-busting query strings; stale early runs are retained as red/debug artifacts.",
+  "dirty_worktree": "baseline-worktree-status.txt records inherited Task 1 dirty files before Task 2 edits.",
+  "generated_cached_artifacts": "tools/build_bundle.py regenerated dist/app-*.html; these generated outputs were restored during cleanup because bootstrap.js is not bundled into them.",
+  "hung_commands": "Bootstrap no-report path now resolves through timeout tests instead of waiting forever.",
+  "flaky_tests": "Mock transport scheduling changed from setTimeout(0) to Promise.resolve() to avoid background-tab timer throttling in the harness.",
+  "misleading_success_output": "FAP build output is recorded separately from hardware blocker; green build is not treated as hardware Deploy success.",
+  "hardware_evidence_conflation": "hardware-blocker.json explicitly states no hardware success is claimed.",
+  "mid_operation_interrupt_cancel": "Existing Cancel handling still passes in the final 20/20 protocol harness; timeout path re-enables Connect for retry."
+}

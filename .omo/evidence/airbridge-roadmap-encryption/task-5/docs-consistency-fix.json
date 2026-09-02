@@ -1,0 +1,29 @@
+{
+  "task": 5,
+  "fix": "docs/protocol.md Consent Model no longer claims there is no application-level authentication or encryption",
+  "changedFiles": [
+    "docs/protocol.md",
+    ".omo/notepads/airbridge-roadmap-encryption/learnings.md",
+    ".omo/evidence/airbridge-roadmap-encryption/task-5/docs-consistency-fix.json"
+  ],
+  "implementationChanged": false,
+  "buildBundleNeeded": false,
+  "buildBundleReason": "docs-only correction; no source included in deploy bundles changed",
+  "protocolHarnessRerunNeeded": false,
+  "protocolHarnessReference": ".omo/evidence/airbridge-roadmap-encryption/task-5/protocol-harness.json records PASS: 30/30 protocol tests passed after Task 5 implementation",
+  "hardwareClaims": false,
+  "verificationCommands": [
+    {
+      "cmd": "grep for stale Consent Model no-encryption claim in docs/protocol.md",
+      "result": "pass: no matches"
+    },
+    {
+      "cmd": "python3 -m json.tool .omo/evidence/airbridge-roadmap-encryption/task-5/docs-consistency-fix.json >/dev/null",
+      "result": "pass"
+    },
+    {
+      "cmd": "lsp_diagnostics docs/protocol.md",
+      "result": "not applicable: no Markdown LSP server configured"
+    }
+  ]
+}
