@@ -1,2 +1,0 @@
-firmware/pocket_airbridge/pocket_airbridge.c:1350:        app_start_stream(app);
-/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:1350:        app_start_stream(app);

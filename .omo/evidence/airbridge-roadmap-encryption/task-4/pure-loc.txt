@@ -1,5 +1,0 @@
-tools/build_bundle.py      120
-web/bootstrap.js        1
-web/protocol-harness.html     1203
-firmware/pocket_airbridge/pocket_airbridge.c     1373
-/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c     1373

@@ -1,7 +1,0 @@
-HTTP/1.0 200 OK
-Server: SimpleHTTP/0.6 Python/3.14.5
-Date: Sat, 29 Aug 2026 19:40:12 GMT
-Content-type: text/html
-Content-Length: 52882
-Last-Modified: Sat, 29 Aug 2026 19:28:22 GMT
-

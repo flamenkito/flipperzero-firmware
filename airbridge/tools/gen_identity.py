@@ -16,12 +16,11 @@ import re
 from typing import Final
 
 
+MONOREPO_ROOT: Final = Path(__file__).resolve().parents[2]
 ROOT: Final = Path(__file__).resolve().parents[1]
 CONFIG_PATH: Final = ROOT / "config" / "pocket_airbridge.conf"
 UUID_HEADER_PATH: Final = (
-    Path.home()
-    / "projects"
-    / "flipperzero-firmware"
+    MONOREPO_ROOT
     / "targets"
     / "f7"
     / "ble_glue"

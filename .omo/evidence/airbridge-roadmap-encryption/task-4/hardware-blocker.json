@@ -1,6 +1,0 @@
-{
-  "hardware_usb_deploy_attempted": false,
-  "reason": "ABSENT: no usbmodem port",
-  "blocking_gate_available": false,
-  "claim": "No hardware USB Deploy timing/success claimed for Task 4; compressed deploy proof is build/mock/browser only."
-}

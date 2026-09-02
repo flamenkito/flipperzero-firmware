@@ -1,5 +1,0 @@
-Cleanup receipt:
-- Generated `dist/app-usb.html` and `dist/app-ble.html` from `tools/build_bundle.py`, then restored those generated files because bootstrap.js is not bundled into them and baseline status showed they were clean before Task 2.
-- Attempted to stop the recorded `http.server` pid; it was already stopped or not owned, so no Task 2-owned server process remains from that pid.
-- Closed the protocol harness tab in persistent CDP Chrome. Existing `https://blank.org` tab(s) were left intact for the persistent browser profile.
-- No temporary source files were created outside `.omo/evidence/airbridge-roadmap-encryption/task-2/`.

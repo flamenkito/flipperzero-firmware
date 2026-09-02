@@ -1,9 +1,0 @@
-{
-  "status": "Running protocol tests...",
-  "results": [
-    "Frame roundtrip: PASS",
-    "Fragmented META: PASS",
-    "Text item USB → BLE: PASS",
-    "Text item BLE → USB: RUNNING"
-  ]
-}

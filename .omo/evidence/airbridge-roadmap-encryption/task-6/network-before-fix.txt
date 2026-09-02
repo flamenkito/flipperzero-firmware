@@ -1,4 +1,0 @@
-1. [GET] http://localhost:8000/web/protocol-harness.html?task6=20260829 => [200] OK
-2. [GET] http://localhost:8000/web/airbridge-identity.js => [200] OK
-3. [GET] http://localhost:8000/web/airbridge-evidence.js => [200] OK
-4. [GET] http://localhost:8000/web/airbridge-protocol.js => [200] OK

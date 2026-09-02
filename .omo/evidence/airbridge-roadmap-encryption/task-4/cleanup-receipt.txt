@@ -1,4 +1,0 @@
-http-server pid 64320 cleanup requested
-Playwright harness tab closed with browser_close.
-Persistent Chrome CDP cleanup requested for profile airbridge-pw-chrome.
-No temp files outside evidence/dist intentionally retained.

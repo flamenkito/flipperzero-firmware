@@ -12,30 +12,27 @@ Write logs and screenshots under:
 
 ## Setup
 
-1. Main repo: `/Users/asutov/projects/flipper-hid`.
-2. Firmware repo: `/Users/asutov/projects/flipperzero-firmware`.
-3. Serve the web app:
+1. Custom firmware and apps repo: `/Users/asutov/projects/flipperzero-firmware`.
+2. Serve the web app:
 
    ```bash
-   cd /Users/asutov/projects/flipper-hid
-   python3 -m http.server 8080
+   python3 -m http.server 8081 --bind 127.0.0.1 --directory /Users/asutov/projects/flipperzero-firmware/airbridge/web
    ```
 
-4. For browser-driven QA, use persistent Chrome CDP at `http://localhost:9222`, not an ephemeral browser.
-5. If no Flipper is connected, record `tools/flipper_alive.py` output as the hardware blocker and stop before physical claims.
+3. For browser-driven QA, use persistent Chrome CDP at `http://localhost:9222`, not an ephemeral browser.
+4. If no Flipper is connected, record `airbridge/tools/flipper_alive.py` output as the hardware blocker and stop before physical claims.
 
 ## Build and deploy
 
 1. Build the browser deploy bundles:
 
    ```bash
-   cd /Users/asutov/projects/flipper-hid
-   python3 tools/build_bundle.py
+   python3 /Users/asutov/projects/flipperzero-firmware/airbridge/tools/build_bundle.py
    ```
 
-   Expected outputs include `dist/app-usb.html.gz`, `dist/app-ble.html.gz`, raw and gzip SHA-256 values, and `web/bootstrap.js: 1196 chars`.
+   Expected outputs include `airbridge/dist/app-usb.html.gz`, `airbridge/dist/app-ble.html.gz`, raw and gzip SHA-256 values, and `airbridge/web/bootstrap.js: 1196 chars`.
 
-2. Build the live FAP:
+2. Build the live FAP from the same repository:
 
    ```bash
    cd /Users/asutov/projects/flipperzero-firmware
@@ -57,8 +54,8 @@ Write logs and screenshots under:
 ## Connect and unlock
 
 1. Launch Pocket AirBridge.
-2. PC-A opens `http://localhost:8080/web/chat-usb.html`, clicks **Connect USB**, and selects the active impersonation profile in the WebHID picker.
-3. PC-B opens `http://localhost:8080/web/chat-ble.html`, clicks **Connect BLE**, selects the Flipper, and confirms the BLE numeric comparison code when first pairing.
+2. PC-A opens `http://127.0.0.1:8081/chat-usb.html`, clicks **Connect USB**, and selects the active impersonation profile in the WebHID picker.
+3. PC-B opens `http://127.0.0.1:8081/chat-ble.html`, clicks **Connect BLE**, selects the Flipper, and confirms the BLE numeric comparison code when first pairing.
 4. Both browser pages display a six-digit SAS after the crypto handshake.
 5. Compare the SAS out loud. Click **Accept SAS** on both pages only if they match.
 6. Before SAS acceptance, send controls must stay locked and plaintext item frames must fail closed.

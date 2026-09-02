@@ -1,9 +1,0 @@
-{
-  "path": "web/bootstrap.js",
-  "chars": 1200,
-  "bytes": 1200,
-  "asciiOnly": true,
-  "underOrEqual1200": true,
-  "timeoutStatusIsComposedFromTokens": true,
-  "containsDeployRequestByte": true
-}

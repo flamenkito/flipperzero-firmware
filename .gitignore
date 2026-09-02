@@ -27,6 +27,12 @@ __pycache__/
 *$py.class
 *.pickle
 
+# Pocket AirBridge runtime state
+/.omo/boulder.json
+/.omo/run-continuation/
+/.omo/start-work/
+/.playwright-mcp/
+
 .obj/
 bindings/
 .DS_Store

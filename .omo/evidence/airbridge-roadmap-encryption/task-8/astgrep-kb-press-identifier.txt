@@ -1,4 +1,0 @@
-/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c (1 match)
-  /Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:721:11  furi_hal_hid_airbridge_kb_press
-firmware/pocket_airbridge/pocket_airbridge.c (1 match)
-  firmware/pocket_airbridge/pocket_airbridge.c:721:11  furi_hal_hid_airbridge_kb_press

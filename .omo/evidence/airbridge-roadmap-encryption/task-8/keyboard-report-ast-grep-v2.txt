@@ -1,6 +1,0 @@
-firmware/pocket_airbridge/pocket_airbridge.c:721:    return furi_hal_hid_airbridge_kb_press(key);
-firmware/pocket_airbridge/pocket_airbridge.c:730:    return furi_hal_hid_airbridge_kb_release(key);
-firmware/pocket_airbridge/pocket_airbridge.c:295:        furi_hal_hid_airbridge_kb_release_all();
-firmware/pocket_airbridge/pocket_airbridge.c:224:        bool error = ble_profile_airbridge_kb_report(app->ble_profile, report, 8);
-firmware/pocket_airbridge/pocket_airbridge.c:1514:            if(!ble_profile_airbridge_kb_report(app->ble_profile, report, 8)) {
-firmware/pocket_airbridge/pocket_airbridge.c:1593:            if(!ble_profile_airbridge_kb_report(app->ble_profile, report, 8)) break;

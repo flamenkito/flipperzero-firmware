@@ -1,6 +1,0 @@
-path=web/bootstrap.js
-chars=1198
-ascii_only=true
-within_1200=True
-byte_0x42_request=True
-timeout_visible=True

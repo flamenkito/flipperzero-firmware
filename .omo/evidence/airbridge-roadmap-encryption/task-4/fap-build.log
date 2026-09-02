@@ -1,4 +1,0 @@
-./fbt build APPSRC=applications_user/pocket_airbridge
-	SDKCHK	targets/f7/api_symbols.csv
-API version 87.4 is up to date
-	APPCHK	build/f7-firmware-D/.extapps/pocket_airbridge.fap

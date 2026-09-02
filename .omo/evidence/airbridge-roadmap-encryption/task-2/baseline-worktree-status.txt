@@ -1,9 +1,0 @@
-
---- flipper-hid git status ---
- M tools/build_bundle.py
- M web/chat-ble.html
- M web/chat-usb.html
- M web/protocol-harness.html
-?? web/airbridge-evidence.js
-
---- flipperzero-firmware git status ---

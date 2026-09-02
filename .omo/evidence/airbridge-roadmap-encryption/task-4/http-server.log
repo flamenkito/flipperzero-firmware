@@ -1,8 +1,0 @@
-::1 - - [29/Aug/2026 21:54:30] "GET /web/protocol-harness.html?task4=20260829 HTTP/1.1" 200 -
-::1 - - [29/Aug/2026 21:54:30] "GET /web/airbridge-evidence.js HTTP/1.1" 200 -
-::1 - - [29/Aug/2026 21:54:30] "GET /web/airbridge-protocol.js HTTP/1.1" 200 -
-::1 - - [29/Aug/2026 21:54:30] "GET /web/airbridge-identity.js HTTP/1.1" 200 -
-::1 - - [29/Aug/2026 21:54:52] "GET /web/bootstrap.js?cache=1788033292314 HTTP/1.1" 200 -
-::1 - - [29/Aug/2026 21:54:55] "GET /web/bootstrap.js?cache=1788033295317 HTTP/1.1" 200 -
-::1 - - [29/Aug/2026 21:54:58] "GET /web/bootstrap.js?cache=1788033298318 HTTP/1.1" 200 -
-::1 - - [29/Aug/2026 21:55:01] "GET /web/bootstrap.js?cache=1788033301319 HTTP/1.1" 200 -

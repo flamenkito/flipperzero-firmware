@@ -9,12 +9,12 @@ procedure for the BLE half of the HP impersonation goal; it does not flash, depl
    AirBridge FAP is deployed.
 2. The configuration is deployed at
    `/ext/apps_data/pocket_airbridge/config`; it must match
-   `config/pocket_airbridge.conf` used by this checkout.
+   `airbridge/config/pocket_airbridge.conf` used by this repository.
 3. The QA host has Python 3, a working Bluetooth adapter, and Bleak:
 
    ```sh
    pip3 install bleak
-   python3 scripts/ble_qa_scan.py --selftest
+   python3 airbridge/scripts/ble_qa_scan.py --selftest
    ```
 
    Expected: exit `0`; the good synthetic-advertisement table is all `PASS`, the
@@ -51,7 +51,7 @@ user action.
 3. **Passive identity scan — no connection.** Run:
 
    ```sh
-   python3 scripts/ble_qa_scan.py scan --timeout 8
+   python3 airbridge/scripts/ble_qa_scan.py scan --timeout 8
    ```
 
    Expected exit `0`: every row is `PASS` (Darwin MAC/OUI/adjacent rows are the
@@ -62,7 +62,7 @@ user action.
 4. **Pair and enumerate GATT — physical gate when the OS dialog appears.** Start:
 
    ```sh
-   python3 scripts/ble_qa_scan.py gatt --timeout 12
+   python3 airbridge/scripts/ble_qa_scan.py gatt --timeout 12
    ```
 
    The command requests pairing on Linux/Windows before connection. When the OS
@@ -73,7 +73,7 @@ user action.
 
    Expected exit `0`: the pre-flight scan is green, then GATT has only GAP `0x1800`,
    GATT `0x1801`, DIS `0x180A`, Battery `0x180F`, HIDS `0x1812`, and the serial
-   service parsed from `web/airbridge-identity.js`. DIS has only its four expected
+   service parsed from `airbridge/web/airbridge-identity.js`. DIS has only its four expected
    characteristics and config strings, no readable value matches a git hash, GAP has
    the config name and appearance `0x03C1`, and serial has exactly the four canonical
    UUIDs parsed from that module.
@@ -83,7 +83,7 @@ user action.
 6. **Verify restoration after exit.** Run:
 
    ```sh
-   python3 scripts/ble_qa_scan.py stock --timeout 8
+   python3 airbridge/scripts/ble_qa_scan.py stock --timeout 8
    ```
 
    Expected exit `0`: `STOCK TARGET FOUND` observes a name beginning `Flipper`, and
@@ -101,11 +101,11 @@ This scenario verifies the browser contract separately from Bleak. Use a Chromiu
 instance controlled by Playwright and an HTTPS or `localhost` origin; Web Bluetooth
 does not work from a file URL. Keep the FAP running from step 2.
 
-1. Serve the checked-out web directory and have Playwright navigate its controlled
-   window to `http://localhost:8080/chat-ble.html`:
+1. Serve the in-tree web directory and have Playwright navigate its controlled
+   window to `http://127.0.0.1:8081/chat-ble.html`:
 
    ```sh
-   python3 -m http.server 8080 --directory web
+   python3 -m http.server 8081 --bind 127.0.0.1 --directory /Users/asutov/projects/flipperzero-firmware/airbridge/web
    ```
 
 2. Inject the following control with `page.evaluate()` in that exact Playwright

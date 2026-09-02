@@ -1,3 +1,0 @@
-dist/app-usb.html: 94365 bytes
-dist/app-ble.html: 96220 bytes
-web/bootstrap.js: 1198 chars

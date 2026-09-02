@@ -2,19 +2,15 @@
 
 ## What We Built
 
-You already have `~/projects/flipperzero-firmware`. We added:
+This custom firmware and apps repository includes:
 
 1. **New USB HID profile** `usb_airbridge` (bidirectional 64-byte vendor HID, based on the U2F profile)
 2. **AirBridge BLE impersonation profile** (Battery + DIS + HIDS + AirBridge serial), config-driven identity, and `bt_service` routing so the FAP can intercept raw serial data
 3. **FAP** `pocket_airbridge` in `applications_user/pocket_airbridge/`, including `icon.png` wired through `fap_icon`
 
-**Starting from a pristine firmware checkout instead?** Everything above is bundled in
-[`firmware/`](../firmware/): `airbridge-firmware.patch` (USB, BLE-profile, BT, and GAP changes),
-`api-symbols-additions.patch`, and the FAP source. See `firmware/README.md` for
-apply instructions. The Task 9 bundle is regenerated from the firmware tree
-through `81ef1974`, plus the Task 8 live FAP working-tree changes, against
-pristine upstream `dev` base `c9ab2b68`; apply the firmware patch, then the
-API-symbol patch, before copying the FAP.
+The firmware changes and FAP are canonical in-tree sources. Edit and build them
+here. There is no separate product checkout, patch bundle, or patch-application
+step.
 
 The firmware is a blind, stateless byte relay between the two transports. The
 Flipper never parses application protocol frames, never sees browser session
@@ -166,37 +162,36 @@ The Deploy flow reads its files from `/ext/apps_data/pocket_airbridge/` on the S
 
 | SD path | Source | Role |
 |---|---|---|
-| `/ext/apps_data/pocket_airbridge/bootstrap.js` | `web/bootstrap.js` | The typed USB snippet. ASCII-only, currently 1,196 characters. It requires `DecompressionStream("gzip")`, carries a WebHID filter list for every supported profile VID/PID, requests `0x42`, verifies compressed-byte checksum, inflates gzip, and boots the app. |
-| `/ext/apps_data/pocket_airbridge/bootstrap-ble.js` | `web/bootstrap-ble.js` | The BLE twin of `bootstrap.js`, typed character-by-character through BLE HIDS during a BLE Deploy run. It opens Web Bluetooth, subscribes to the AirBridge serial TX **notify** characteristic, writes `0x42`, verifies and inflates gzip, and boots the streamed app. |
-| `/ext/apps_data/pocket_airbridge/app-usb.html.gz` | `dist/app-usb.html.gz` | The deterministic gzip WebHID app bundle streamed from the USB Deploy prompt. |
-| `/ext/apps_data/pocket_airbridge/app-ble.html.gz` | `dist/app-ble.html.gz` | The deterministic gzip Web Bluetooth app bundle streamed from the BLE Deploy prompt. |
+| `/ext/apps_data/pocket_airbridge/bootstrap.js` | `airbridge/web/bootstrap.js` | The typed USB snippet. ASCII-only, currently 1,196 characters. It requires `DecompressionStream("gzip")`, carries a WebHID filter list for every supported profile VID/PID, requests `0x42`, verifies compressed-byte checksum, inflates gzip, and boots the app. |
+| `/ext/apps_data/pocket_airbridge/bootstrap-ble.js` | `airbridge/web/bootstrap-ble.js` | The BLE twin of `bootstrap.js`, typed character-by-character through BLE HIDS during a BLE Deploy run. It opens Web Bluetooth, subscribes to the AirBridge serial TX **notify** characteristic, writes `0x42`, verifies and inflates gzip, and boots the streamed app. |
+| `/ext/apps_data/pocket_airbridge/app-usb.html.gz` | `airbridge/dist/app-usb.html.gz` | The deterministic gzip WebHID app bundle streamed from the USB Deploy prompt. |
+| `/ext/apps_data/pocket_airbridge/app-ble.html.gz` | `airbridge/dist/app-ble.html.gz` | The deterministic gzip Web Bluetooth app bundle streamed from the BLE Deploy prompt. |
 
 Build both bundles, then send all four deploy artifacts. The AirBridge app must
 NOT be running while you do this (the serial port only exists when the app is
 exited):
 
 ```bash
-cd ~/projects/flipper-hid
-python3 tools/build_bundle.py
+cd /Users/asutov/projects/flipperzero-firmware
+python3 airbridge/tools/build_bundle.py
 
-cd ~/projects/flipperzero-firmware
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
-  ~/projects/flipper-hid/web/bootstrap.js \
+  airbridge/web/bootstrap.js \
   /ext/apps_data/pocket_airbridge/bootstrap.js
 
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
-  ~/projects/flipper-hid/web/bootstrap-ble.js \
+  airbridge/web/bootstrap-ble.js \
   /ext/apps_data/pocket_airbridge/bootstrap-ble.js
 
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
-  ~/projects/flipper-hid/dist/app-usb.html.gz \
+  airbridge/dist/app-usb.html.gz \
   /ext/apps_data/pocket_airbridge/app-usb.html.gz
 
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 size \
   /ext/apps_data/pocket_airbridge/app-usb.html.gz
 
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
-  ~/projects/flipper-hid/dist/app-ble.html.gz \
+  airbridge/dist/app-ble.html.gz \
   /ext/apps_data/pocket_airbridge/app-ble.html.gz
 
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 size \
@@ -251,8 +246,6 @@ in-flight transfer.
 
 The FAP source of truth is
 `/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c`.
-The reproducible mirror in this repo is
-`firmware/pocket_airbridge/pocket_airbridge.c`.
 
 Static BLE radio evidence: firmware requests ATT MTU 414, enables DLE, prefers
 2M PHY, and requests a 7.5 to 45 ms interval. Those are configured values only.
@@ -261,20 +254,6 @@ without a physical run.
 
 USB Deploy requires a kbd+vendor USB profile. BLE Deploy uses the AirBridge HIDS
 keyboard report and does not depend on the USB keyboard collection.
-
-## Revert Firmware Changes
-
-```bash
-cd ~/projects/flipperzero-firmware
-rm targets/f7/furi_hal/furi_hal_usb_airbridge.c
-rm targets/furi_hal_include/furi_hal_usb_airbridge.h
-git checkout targets/furi_hal_include/furi_hal_usb.h
-git checkout applications/services/bt/bt_service/bt.c
-git checkout applications/services/bt/bt_service/bt.h
-git checkout applications/services/bt/bt_service/bt_i.h
-git checkout targets/f7/api_symbols.csv
-rm -rf applications_user/pocket_airbridge
-```
 
 ## How It Works
 
@@ -303,7 +282,7 @@ We patched `bt_service` to expose two new functions:
 - `bt_serial_tx(data, len)` — sends raw bytes over BLE Serial
 
 The chat page connects to the AirBridge serial service using the on-air UUIDs
-generated in `web/airbridge-identity.js`:
+generated in `airbridge/web/airbridge-identity.js`:
 
 | Role | UUID | Direction |
 |------|------|-----------|
@@ -376,13 +355,12 @@ the browser endpoints.
 Both pages must be served from a **secure origin** (`https://` or `localhost`):
 
 ```bash
-cd ~/projects/flipper-hid/web
-python3 -m http.server 8080
+python3 -m http.server 8081 --bind 127.0.0.1 --directory /Users/asutov/projects/flipperzero-firmware/airbridge/web
 ```
 
 Then open:
-- `http://localhost:8080/chat-usb.html` on PC-A (WebHID chat page)
-- `http://localhost:8080/chat-ble.html` on PC-B (Web Bluetooth chat page)
+- `http://127.0.0.1:8081/chat-usb.html` on PC-A (WebHID chat page)
+- `http://127.0.0.1:8081/chat-ble.html` on PC-B (Web Bluetooth chat page)
 
 The superseded `sender.html` and `receiver.html` file-transfer pages were removed;
 use the chat pages above for all transfers.
@@ -402,7 +380,7 @@ can still grip a Bridge-mode link and require an app restart before chat
 connects; a Bridge-mode squatter-kick is a known follow-up, not part of the
 Deploy timeout.
 
-For passive advertising QA, `python3 scripts/ble_qa_scan.py scan` asserts the
+For passive advertising QA, `python3 airbridge/scripts/ble_qa_scan.py scan` asserts the
 serial UUID alone in Bridge mode. Run the same command with `--expect-hids`
 while the BLE Deploy prompt or typing screen is active; it then requires the
 serial UUID plus HIDS.
@@ -435,7 +413,7 @@ serial UUID plus HIDS.
 | Flipper reboots | Increase `stack_size` in `application.fam` (try `3 * 1024`) |
 | `storage.py` hangs | Stop stale serial clients, then physically unplug/replug Flipper USB and retry after it returns to the desktop |
 | `runfap.py` ends with `Device not configured` | Expected for Pocket AirBridge after launch because the app switches USB from CDC serial to custom HID |
-| Flipper unresponsive after app launch or a USB mode switch | Probe with `python3 tools/flipper_alive.py --wait 30` (from this repo). A healthy CLI answers `\r` with a `>:` prompt within 5 s. Port present but silent means the firmware is hung (USB CDC still enumerated, firmware dead). Recovery is a physical reset; do not attempt a DTR-toggle reset from software |
+| Flipper unresponsive after app launch or a USB mode switch | Probe with `python3 airbridge/tools/flipper_alive.py --wait 30`. A healthy CLI answers `\r` with a `>:` prompt within 5 s. Port present but silent means the firmware is hung (USB CDC still enumerated, firmware dead). Recovery is a physical reset; do not attempt a DTR-toggle reset from software |
 | `storage.py` can't find `/dev/cu.usbmodemflip_*` | The AirBridge app is still running — exit it (long BACK) or restart the Flipper so the serial port reappears |
 | `TXERR` counter is non-zero | One `TXERR` can occur during a mid-flight cancel race (a frame reaches the main loop after the peer went away); benign if the transfer error is visible on both pages. Persistent `TXERR` growth means the BLE link is down — reconnect PC-B |
 | Pairing code dialog vanishes during deploy Connect before it can be confirmed | Fixed 2026-07-23: the deploy Waiting pump now only restarts advertising from GAP-idle and never disconnects, so a pairing code shown during deploy Connect can be confirmed at leisure. Previously the pump force-disconnected every 2.5 s and killed in-progress pairings — redeploy the current FAP |
@@ -443,6 +421,6 @@ serial UUID plus HIDS.
 
 ## Important Notes
 
-- **This modifies core firmware files.** After the hackathon, run the `git checkout` commands above to restore normal behavior.
+- **This is a custom firmware/apps repository.** Core firmware changes are in-tree and must be reviewed with the rest of this repository.
 - **The BLE Serial service is shared.** While Pocket AirBridge is running, qFlipper/mobile app RPC will NOT work because we intercept serial data. This is expected for the demo.
 - **The WebHID data channel** is the vendor-defined collection inside the active impersonation profile. When the app exits, it restores the previous USB mode (usually `usb_cdc_dual`).

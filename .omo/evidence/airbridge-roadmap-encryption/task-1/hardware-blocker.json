@@ -1,7 +1,0 @@
-{
-  "phase": "hardware-measurement",
-  "attempted": false,
-  "reason": "No explicit hardware QA gate was initiated in this task; no physical WebHID/BLE picker or Flipper-screen confirmation was requested.",
-  "claim": "No hardware timing or Flipper counter measurement is claimed. Hardware records must use marker=hardware and be captured through the guarded evidence helpers with real counter evidence.",
-  "timestamp": "2026-08-29T19:06:19.148Z"
-}

@@ -9,12 +9,12 @@ A browser-only, offline, end-to-end encrypted chat and attachment exchange syste
 1. **Flash the Pocket AirBridge firmware** (see [docs/firmware-guide.md](docs/firmware-guide.md)).
 2. **Serve the web pages locally** (WebHID/Web Bluetooth need a secure origin):
    ```bash
-   cd web && python3 -m http.server 8080
+   python3 -m http.server 8081 --bind 127.0.0.1 --directory /Users/asutov/projects/flipperzero-firmware/airbridge/web
    ```
 3. **Connect Flipper Zero to PC-A** via USB.
 4. **Pair Flipper Zero to PC-B** via Bluetooth (confirm the PIN shown on the Flipper screen).
-5. **Open `http://localhost:8080/chat-usb.html`** on PC-A (Chrome/Edge), click **Connect USB**, and pick the Pocket AirBridge device in the browser prompt.
-6. **Open `http://localhost:8080/chat-ble.html`** on PC-B (Chrome/Edge), click **Connect BLE**, and pick the Flipper Zero in the browser prompt.
+5. **Open `http://127.0.0.1:8081/chat-usb.html`** on PC-A (Chrome/Edge), click **Connect USB**, and pick the Pocket AirBridge device in the browser prompt.
+6. **Open `http://127.0.0.1:8081/chat-ble.html`** on PC-B (Chrome/Edge), click **Connect BLE**, and pick the Flipper Zero in the browser prompt.
 7. Compare the six-digit SAS on both browsers, click **Accept SAS** on both sides, then type a message or select a file and hit **Send**.
 
 ## Architecture
@@ -94,21 +94,17 @@ Tasks 1 through 8 added browser-only E2E crypto, SAS unlock, deterministic gzip 
 ## Project Structure
 
 ```
-flipper-hid/
-├── docs/
-│   ├── architecture.md     # System design and data flow
-│   ├── protocol.md         # Binary message protocol spec
-│   ├── firmware-guide.md   # How to build & deploy the Flipper app
-│   └── attic/
-│       └── bridge_app.c    # Superseded pseudocode skeleton (historical)
-├── firmware/               # Reproducible firmware bundle (patches + FAP source + apply README)
-├── web/
-│   ├── chat-usb.html       # WebHID chat page (send/receive over USB)
-│   ├── chat-ble.html       # Web Bluetooth chat page (send/receive over BLE)
-│   ├── airbridge-protocol.js   # Shared wire protocol (frames, ACK, ItemSender/ItemReceiver)
-│   ├── airbridge-transports.js # Shared WebHID/Web Bluetooth transport helpers
-│   └── protocol-harness.html   # In-browser protocol test harness
-└── README.md               # This file
+flipperzero-firmware/
+├── airbridge/
+│   ├── docs/               # Architecture, protocol, and operations docs
+│   ├── web/
+│   │   ├── chat-usb.html       # WebHID chat page (send/receive over USB)
+│   │   ├── chat-ble.html       # Web Bluetooth chat page (send/receive over BLE)
+│   │   ├── airbridge-protocol.js
+│   │   ├── airbridge-transports.js
+│   │   └── protocol-harness.html
+│   └── README.md               # This file
+└── applications_user/pocket_airbridge/ # Canonical FAP source
 ```
 
 The superseded `sender.html` and `receiver.html` file-transfer pages were removed;
@@ -168,16 +164,16 @@ use `chat-usb.html` and `chat-ble.html` instead.
 
 ## Flipper Zero Firmware Notes
 
-This project uses two custom profiles built against the Flipper firmware SDK:
+This custom firmware and apps repository contains two custom profiles:
 
 - **USB HID**: `usb_airbridge` — a vendor-defined HID profile using usage page `0xFF00` for bidirectional 64-byte reports. USB identity is selected at app start from `/ext/apps_data/pocket_airbridge/config` (default `hp_kbd_vendor`, HP VID `0x03F0` PID `0x5341`) and held for the session lifetime. Composite-to-composite reconfiguration is not attempted.
 - **BLE GATT**: `airbridge_profile` — a custom composite GATT profile (`lib/ble_profile/extra_profiles/airbridge_profile.c`) advertising the AirBridge serial UUID family: service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27` (NOTIFY, not INDICATE), and RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery, DIS, and HIDS are also included in the composite.
 
 Static BLE tuning evidence records configured ATT MTU 414, DLE enabled, 2M PHY preference, requested 7.5 to 45 ms connection interval, and 244-byte serial value capacity. Runtime negotiated MTU/PHY/DLE/interval and throughput remain unclaimed unless a hardware evidence run records them.
 
-The custom FAP lives in `applications_user/pocket_airbridge/` and is built with `ufbt` or the full firmware build system.
+The custom FAP lives in `applications_user/pocket_airbridge/` and is built with this repository's full firmware build system.
 
-The original `flipper/bridge_app.c` pseudocode skeleton now lives at [`docs/attic/bridge_app.c`](docs/attic/bridge_app.c) and is superseded — the live FAP is `applications_user/pocket_airbridge/pocket_airbridge.c` in the firmware repo.
+The original `flipper/bridge_app.c` pseudocode skeleton now lives at [`docs/attic/bridge_app.c`](docs/attic/bridge_app.c) and is superseded. The live FAP is `applications_user/pocket_airbridge/pocket_airbridge.c`.
 
 ## License
 

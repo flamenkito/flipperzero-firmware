@@ -1,1 +1,0 @@
-launched persistent Chrome CDP on http://localhost:9222 with profile ~/.cache/airbridge-pw-chrome
