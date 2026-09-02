@@ -1,0 +1,17 @@
+ M README.md
+ M dist/app-ble.html
+ M dist/app-usb.html
+ M docs/architecture.md
+ M docs/firmware-guide.md
+ M docs/protocol.md
+ M firmware/README.md
+ M firmware/pocket_airbridge/pocket_airbridge.c
+ M tools/build_bundle.py
+ M web/bootstrap-ble.js
+ M web/bootstrap.js
+ M web/chat-ble.html
+ M web/chat-usb.html
+ M web/protocol-harness.html
+?? dist/app-ble.html.gz
+?? dist/app-usb.html.gz
+?? web/airbridge-evidence.js

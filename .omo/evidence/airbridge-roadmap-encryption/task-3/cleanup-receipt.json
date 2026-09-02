@@ -1,0 +1,11 @@
+{
+  "chrome": "left running because browser-server-setup.json showed already_running=true",
+  "http_server": {
+    "method": "SIGTERM",
+    "pid": 59103,
+    "port8000_open_after": false,
+    "stopped": true
+  },
+  "protocol_harness_tab": "closed via Playwright CDP; blank.org tab left because it preexisted",
+  "temp_files": "none outside task-3 evidence artifacts"
+}

@@ -1,0 +1,22 @@
+--- firmware/pocket_airbridge/pocket_airbridge.c ---
+1347: static void app_handle_relay(AirbridgeApp* app, BridgeEvent* be) {
+1348:     const bool deploy_request = (be->len > 0) && (be->data[0] == 0x42);
+1349:     if(deploy_request && app->screen == AirbridgeScreenWaiting) {
+1350:         app_start_stream(app);
+1351:         return;
+1352:     }
+1353:     if(deploy_request && app->screen != AirbridgeScreenBridge) {
+1354:         app_show_error(app, "DEPLOY NOT ARMED");
+1355:         return;
+1356:     }
+--- /Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c ---
+1347: static void app_handle_relay(AirbridgeApp* app, BridgeEvent* be) {
+1348:     const bool deploy_request = (be->len > 0) && (be->data[0] == 0x42);
+1349:     if(deploy_request && app->screen == AirbridgeScreenWaiting) {
+1350:         app_start_stream(app);
+1351:         return;
+1352:     }
+1353:     if(deploy_request && app->screen != AirbridgeScreenBridge) {
+1354:         app_show_error(app, "DEPLOY NOT ARMED");
+1355:         return;
+1356:     }

@@ -1,0 +1,126 @@
+{
+  "task": "4. Compressed Deploy bundle",
+  "timestamp": "2026-08-29T20:00:33.501269+00:00",
+  "status": "implemented_with_hardware_blocker",
+  "changedFilesTask4": [
+    "tools/build_bundle.py",
+    "web/bootstrap.js",
+    "web/bootstrap-ble.js",
+    "web/protocol-harness.html",
+    "firmware/pocket_airbridge/pocket_airbridge.c",
+    "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c",
+    "dist/app-usb.html",
+    "dist/app-ble.html",
+    "dist/app-usb.html.gz",
+    "dist/app-ble.html.gz"
+  ],
+  "inheritedDirtyOutsideTask4": [
+    "docs/protocol.md",
+    "web/chat-usb.html",
+    "web/chat-ble.html",
+    "web/airbridge-evidence.js"
+  ],
+  "commands": [
+    {
+      "cmd": "python3 tools/build_bundle.py",
+      "result": "pass",
+      "artifact": "build-bundle.log"
+    },
+    {
+      "cmd": "gzip/hash comparison via Python gzip.decompress + sha256",
+      "result": "pass",
+      "artifact": "size-hash-comparison.json"
+    },
+    {
+      "cmd": "./fbt build APPSRC=applications_user/pocket_airbridge",
+      "cwd": "/Users/asutov/projects/flipperzero-firmware",
+      "result": "pass",
+      "artifact": "fap-build.log"
+    },
+    {
+      "cmd": "persistent Chrome CDP protocol harness run",
+      "url": "http://127.0.0.1:8766/web/protocol-harness.html?task4=continue20260829",
+      "result": "PASS: 23/23 protocol tests passed.",
+      "artifact": "protocol-harness-final.json"
+    },
+    {
+      "cmd": "python3 tools/flipper_alive.py",
+      "result": "ABSENT: no usbmodem port",
+      "artifact": "hardware-blocker.json"
+    }
+  ],
+  "sizeHash": {
+    "bundles": [
+      {
+        "raw": "dist/app-usb.html",
+        "gzip": "dist/app-usb.html.gz",
+        "rawBytes": 94365,
+        "gzipBytes": 23718,
+        "smaller": true,
+        "rawSha256": "c65c4a5927832a17b56d89861e4549be2abd3257f08457e8cbe6d1521d5140c4",
+        "gzipSha256": "8e56e433a8f56bc18985e5513c610ea63f58c81731b72e583e9e1c750539c1e2",
+        "decompressedSha256": "c65c4a5927832a17b56d89861e4549be2abd3257f08457e8cbe6d1521d5140c4",
+        "decompressedMatchesRaw": true
+      },
+      {
+        "raw": "dist/app-ble.html",
+        "gzip": "dist/app-ble.html.gz",
+        "rawBytes": 96220,
+        "gzipBytes": 23952,
+        "smaller": true,
+        "rawSha256": "704250aafbdfc1ca8819a035c7eae6024d30dfaa24d8ffe18ff78cdcd280585f",
+        "gzipSha256": "dbe41e6b64d055b54d76036bf47ac099b53c6fbabdf81dd94baca0caa31655d0",
+        "decompressedSha256": "704250aafbdfc1ca8819a035c7eae6024d30dfaa24d8ffe18ff78cdcd280585f",
+        "decompressedMatchesRaw": true
+      }
+    ],
+    "bootstrapChars": 1196,
+    "bootstrapAscii": true,
+    "bootstrapWithinBudget": true,
+    "bootstrapBleChars": 1825,
+    "bootstrapBleAscii": true
+  },
+  "harness": {
+    "status": "PASS: 23/23 protocol tests passed.",
+    "testCount": 23,
+    "allPassed": true
+  },
+  "staticInvariants": {
+    "mirrorMatchesLive": true,
+    "streamsOnlyInWaitingPattern": true,
+    "bridgeDeployRequestRelayAllowed": true,
+    "usesGzipBundlePaths": true,
+    "oldRawBundlePathsAbsentFromStartStream": true,
+    "bridgeWatchdogNoDisconnect": true
+  },
+  "hardware": {
+    "hardware_usb_deploy_attempted": false,
+    "reason": "ABSENT: no usbmodem port",
+    "blocking_gate_available": false,
+    "claim": "No hardware USB Deploy timing/success claimed for Task 4; compressed deploy proof is build/mock/browser only."
+  },
+  "lsp": {
+    "tools/build_bundle.py": "clean",
+    "jsHtml": "blocked: Biome LSP not installed/declined; browser harness passed",
+    "mirroredC": "blocked: SDK headers unresolved in main repo clang; live FAP build passed"
+  },
+  "cleanup": {
+    "timestamp": "2026-08-29T19:59:38.315997+00:00",
+    "actions": [
+      {
+        "target": "http.server 8766",
+        "pid": 63495,
+        "status": "SIGTERM sent"
+      },
+      {
+        "target": "Chrome CDP airbridge-pw-chrome",
+        "pid": 65405,
+        "status": "SIGTERM sent"
+      }
+    ]
+  },
+  "risks": [
+    "No physical USB Deploy timing or success proof without Flipper hardware",
+    "BLE Deploy compressed path changed in bootstrap-ble.js but not hardware-verified"
+  ]
+}

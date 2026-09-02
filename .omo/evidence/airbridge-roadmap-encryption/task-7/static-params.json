@@ -1,0 +1,114 @@
+{
+  "schema": "airbridge-task-7-static-ble-params/v1",
+  "capturedAt": "2026-08-29T20:37:07Z",
+  "firmwareRepo": "/Users/asutov/projects/flipperzero-firmware",
+  "codegraph": {
+    "available": false,
+    "blocker": "No .codegraph/ directory found in /Users/asutov/projects/flipperzero-firmware; continued with direct source reads/searches."
+  },
+  "runtimeVerified": false,
+  "staticConfigOnly": true,
+  "parameters": {
+    "attMtu": {
+      "configuredMaxExpression": "CFG_BLE_MAX_ATT_MTU (256 + 128 + 16 + 8 + 4 + 2)",
+      "configuredMaxBytes": 414,
+      "stackInitUse": "SHCI_C2_Ble_Init_Cmd_Packet_t.Param.AttMtu = CFG_BLE_MAX_ATT_MTU",
+      "runtimeEvidenceHook": "ACI_ATT_EXCHANGE_MTU_RESP_VSEVT_CODE logs Server_RX_MTU as 'Rx MTU size: %d' and emits GapEventTypeUpdateMTU with max_packet_size = Server_RX_MTU - 3.",
+      "source": [
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/app_conf.h:61-63",
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/ble_app.c:53-56",
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/gap.c:243-249",
+        "/Users/asutov/projects/flipperzero-firmware/applications/services/bt/bt_service/bt.c:495-497"
+      ],
+      "negotiatedValue": null,
+      "claim": "Configured maximum only; negotiated MTU was not measured because hardware is absent."
+    },
+    "dataLengthExtension": {
+      "enabled": true,
+      "stackInitUse": "SHCI_C2_Ble_Init_Cmd_Packet_t.Param.ExtendedPacketLengthEnable = CFG_BLE_DATA_LENGTH_EXTENSION",
+      "explicitHciLeSetDataLengthCallInProductCode": false,
+      "observedDataLengthChangeHandlerInProductCode": false,
+      "source": [
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/app_conf.h:88-91",
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/ble_app.c:53",
+        "/Users/asutov/projects/flipperzero-firmware/lib/stm32wb_copro/wpan/ble/core/auto/ble_hci_le.c:1049-1061"
+      ],
+      "negotiatedMaxTxOctets": null,
+      "claim": "DLE is enabled at stack init, but no negotiated MaxTxOctets/MaxRxOctets were measured and no product code explicitly calls hci_le_set_data_length."
+    },
+    "phy": {
+      "defaultPreference": {
+        "allPhys": "ALL_PHYS_PREFERENCE 0x00",
+        "tx": "TX_2M_PREFERRED 0x02",
+        "rx": "RX_2M_PREFERRED 0x02"
+      },
+      "defaultPhyCall": "hci_le_set_default_phy(ALL_PHYS_PREFERENCE, TX_2M_PREFERRED, RX_2M_PREFERRED)",
+      "explicitPerConnectionHciLeSetPhyCallInProductCode": false,
+      "runtimeEvidenceHook": "HCI_LE_PHY_UPDATE_COMPLETE_SUBEVT_CODE logs update success/failure and then hci_le_read_phy TX/RX values, but only when a PHY update event occurs.",
+      "source": [
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/app_conf.h:25-34",
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/gap.c:179-192",
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/gap.c:407-408"
+      ],
+      "negotiatedTxPhy": null,
+      "negotiatedRxPhy": null,
+      "claim": "2M is preferred by default config only; actual TX/RX PHY was not measured because hardware is absent."
+    },
+    "connectionInterval": {
+      "airbridgeRequest": {
+        "minUnits": 6,
+        "minMs": 7.5,
+        "maxUnits": 36,
+        "maxMs": 45.0,
+        "slaveLatency": 0,
+        "supervisionTimeout": 0
+      },
+      "advertisingIntervals": {
+        "fastMinUnits": 128,
+        "fastMinMs": 80.0,
+        "fastMaxUnits": 160,
+        "fastMaxMs": 100.0,
+        "lowPowerMinUnits": 1600,
+        "lowPowerMinMs": 1000.0,
+        "lowPowerMaxUnits": 4000,
+        "lowPowerMaxMs": 2500.0
+      },
+      "runtimeEvidenceHook": "Connection-complete and connection-update events record Conn_Interval/latency/supervision_timeout and log 'Connection parameters: Connection Interval: %d (%d ms)...'.",
+      "source": [
+        "/Users/asutov/projects/flipperzero-firmware/lib/ble_profile/extra_profiles/airbridge_profile.c:262-283",
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/gap.c:73-127",
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/gap.c:195-210",
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/gap.c:450-455"
+      ],
+      "negotiatedIntervalMs": null,
+      "claim": "Requested range only; actual accepted interval was not measured because hardware is absent."
+    },
+    "airbridgeSerialPayload": {
+      "bleCharacteristicDataLenMax": 244,
+      "bleCharacteristicFragmentLenMax": 243,
+      "txBehavior": "ble_svc_airbridge_serial_update_tx rejects data_len > 244 and fragments characteristic updates into chunks of <=243 bytes, with final fragment sent as GATT_CHAR_UPDATE_SEND_NOTIFICATION.",
+      "bridgeFrameLen": 64,
+      "browserProtocolPayloadLen": 59,
+      "fapRelayBehavior": "Pocket AirBridge relays WebHID frames <=64 bytes to BLE via bt_serial_tx; BLE RX accepts <=64 bytes and returns 64 bytes ready-to-receive to preserve HID-frame backpressure.",
+      "source": [
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/services/airbridge_serial_service.h:12-13",
+        "/Users/asutov/projects/flipperzero-firmware/targets/f7/ble_glue/services/airbridge_serial_service.c:284-324",
+        "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:867-925",
+        "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:956-970",
+        "/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:1366-1390"
+      ],
+      "runtimePacketSize": null,
+      "claim": "Static maximums only; effective over-the-air packet size and browser write size were not measured because hardware is absent."
+    }
+  },
+  "tuningDecision": {
+    "codeChanged": false,
+    "decision": "No BLE/FAP tuning change made.",
+    "rationale": "Static inspection shows ATT MTU is already high, DLE is enabled, 2M PHY is preferred, and AirBridge requests a 7.5-45 ms connection interval. Without hardware runtime evidence for negotiated MTU, PHY, data length, interval, and throughput, changing BLE stack parameters would be speculative and violates the task constraints.",
+    "deferredRuntimeWork": [
+      "Capture serial logs during Web Bluetooth connection to record Rx MTU size, Connection Interval, PHY update/read values if emitted, and any DLE change evidence available from controller events.",
+      "Measure BLE attachment throughput before/after any future gated tuning using identical files and browser evidence records.",
+      "If adding hci_le_set_data_length or hci_le_set_phy later, gate on current connection handle, log return status and resulting negotiated values, and prove with hardware/build evidence."
+    ]
+  }
+}

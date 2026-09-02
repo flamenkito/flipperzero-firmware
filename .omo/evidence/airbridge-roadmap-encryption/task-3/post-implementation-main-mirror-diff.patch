@@ -1,0 +1,73 @@
+diff --git a/firmware/pocket_airbridge/pocket_airbridge.c b/firmware/pocket_airbridge/pocket_airbridge.c
+index f423119..1393af9 100644
+--- a/firmware/pocket_airbridge/pocket_airbridge.c
++++ b/firmware/pocket_airbridge/pocket_airbridge.c
+@@ -41,6 +41,7 @@ static const bool airbridge_ble_enabled = true; // flip to false to skip BLE ins
+ #define BLE_TYPING_RETRY_MAX      5
+ #define BLE_TYPING_RETRY_DELAY_MS 20
+ #define BLE_WAITING_PUMP_MS          2500
++#define BLE_BRIDGE_ADV_WATCHDOG_MS   2500
+ #define BLE_WAITING_SQUATTER_KICK_MS 15000
+ #define BLE_STREAM_RETRY_MAX      20
+ 
+@@ -133,6 +134,7 @@ typedef struct {
+     volatile bool ble_connected;
+     uint32_t ble_connected_since;
+     uint32_t ble_waiting_last_pump_tick;
++    uint32_t ble_bridge_last_watchdog_tick;
+     char error[32];
+ } AirbridgeApp;
+ 
+@@ -250,6 +252,22 @@ static void app_ble_status_changed_callback(BtStatus status, void* context) {
+     }
+ }
+ 
++static void app_bridge_adv_watchdog(AirbridgeApp* app) {
++    if(!app->ble_profile_installed || app->ble_connected) return;
++
++    uint32_t now = furi_get_tick();
++    if(now - app->ble_bridge_last_watchdog_tick < BLE_BRIDGE_ADV_WATCHDOG_MS) return;
++    app->ble_bridge_last_watchdog_tick = now;
++
++    /* Bridge mode must never kick a central off the chat link. Use only the
++     * HAL's idle-gated advertising start helper: furi_hal_bt_start_advertising()
++     * checks GapStateIdle internally and is a no-op while GAP is advertising,
++     * pairing, or connected. This recovers the long-idle/relaunch case where
++     * GAP has fallen back to Idle without disturbing active BLE relay traffic. */
++    FURI_LOG_D(TAG, "BLE Bridge watchdog: restart adv if idle");
++    furi_hal_bt_start_advertising();
++}
++
+ static void app_abort_typing(AirbridgeApp* app) {
+     /* Invalidate any in-flight retry helper from the aborted session: its next
+      * boundary check sees the generation bump and returns without sending. */
+@@ -1345,9 +1363,16 @@ static void app_service_input(AirbridgeApp* app) {
+ }
+ 
+ static void app_handle_relay(AirbridgeApp* app, BridgeEvent* be) {
+-    if((app->screen == AirbridgeScreenWaiting) && (be->len > 0) && (be->data[0] == 0x42)) {
++    const bool deploy_request = (be->len > 0) && (be->data[0] == 0x42);
++    if(deploy_request && app->screen == AirbridgeScreenWaiting) {
+         app_start_stream(app);
+-    } else if(be->to_ble) {
++        return;
++    }
++    if(deploy_request && app->screen != AirbridgeScreenBridge) {
++        app_show_error(app, "DEPLOY NOT ARMED");
++        return;
++    }
++    if(be->to_ble) {
+         chunks_usb_to_ble++;
+         if(!bt_serial_tx(be->data, be->len)) {
+             tx_errors++;
+@@ -1456,7 +1481,9 @@ int32_t pocket_airbridge_app(void* p) {
+             }
+         }
+ 
+-        if(app->screen == AirbridgeScreenTyping) {
++        if(app->screen == AirbridgeScreenBridge) {
++            app_bridge_adv_watchdog(app);
++        } else if(app->screen == AirbridgeScreenTyping) {
+             app_typing_step(app);
+         } else if(app->screen == AirbridgeScreenStreaming) {
+             if(app->typing_transport == AirbridgeTypingTransportBle) {

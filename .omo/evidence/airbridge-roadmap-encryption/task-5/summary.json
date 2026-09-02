@@ -1,0 +1,54 @@
+{
+  "task": 5,
+  "title": "Always-on E2E encryption design and implementation",
+  "status": "implemented-browser-verified-hardware-blocked",
+  "modifiedSource": [
+    "web/airbridge-protocol.js",
+    "web/chat-usb.html",
+    "web/chat-ble.html",
+    "web/protocol-harness.html",
+    "docs/protocol.md"
+  ],
+  "generated": [
+    "dist/app-usb.html",
+    "dist/app-ble.html",
+    "dist/app-usb.html.gz",
+    "dist/app-ble.html.gz"
+  ],
+  "verification": {
+    "buildBundle": "pass",
+    "buildBundleArtifact": ".omo/evidence/airbridge-roadmap-encryption/task-5/build-bundle.json",
+    "protocolHarness": "PASS: 30/30 protocol tests passed.",
+    "protocolHarnessArtifact": ".omo/evidence/airbridge-roadmap-encryption/task-5/protocol-harness.json",
+    "lspDiagnostics": "limited: Biome LSP is unavailable/declined for HTML and timed out for airbridge-protocol.js; browser harness and bundle build passed"
+  },
+  "contract": {
+    "frameTypes": {
+      "KEY_OFFER": "0x0A",
+      "KEY_REPLY": "0x0B",
+      "KEY_CONFIRM": "0x0C",
+      "KEY_ABORT": "0x0D"
+    },
+    "failClosedBeforeUnlock": true,
+    "plaintextCompatibilityMode": false,
+    "firmwareRelayChanges": false,
+    "encryptedOuterMetadataFieldsOnly": [
+      "kind",
+      "cryptoVersion",
+      "alg",
+      "keyId",
+      "direction",
+      "iv",
+      "encryptedSize",
+      "encryptedSha256",
+      "itemId"
+    ]
+  },
+  "hardware": {
+    "attempted": false,
+    "blocker": "ABSENT: no usbmodem port",
+    "artifact": ".omo/evidence/airbridge-roadmap-encryption/task-5/hardware-blocker.txt"
+  },
+  "securityProofArtifact": ".omo/evidence/airbridge-roadmap-encryption/task-5/security-proof.json",
+  "noHardwareClaims": true
+}

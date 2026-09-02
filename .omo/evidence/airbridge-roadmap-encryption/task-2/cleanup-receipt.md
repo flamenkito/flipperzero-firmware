@@ -1,0 +1,3 @@
+- Stopped local `python3 -m http.server 8000` process on pid `61083`.
+- Removed `/tmp/airbridge-task2-http.log`.
+- Playwright persistent Chrome was left on `https://blank.org` with no active test page; it is the shared persistent CDP browser profile, not an ephemeral gated test browser.

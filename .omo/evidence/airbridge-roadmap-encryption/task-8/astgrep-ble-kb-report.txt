@@ -1,0 +1,8 @@
+/Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c (3 matches)
+  /Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:224:21  ble_profile_airbridge_kb_report(app->ble_profile, report, 8)
+  /Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:1514:16  ble_profile_airbridge_kb_report(app->ble_profile, report, 8)
+  /Users/asutov/projects/flipperzero-firmware/applications_user/pocket_airbridge/pocket_airbridge.c:1593:16  ble_profile_airbridge_kb_report(app->ble_profile, report, 8)
+firmware/pocket_airbridge/pocket_airbridge.c (3 matches)
+  firmware/pocket_airbridge/pocket_airbridge.c:224:21  ble_profile_airbridge_kb_report(app->ble_profile, report, 8)
+  firmware/pocket_airbridge/pocket_airbridge.c:1514:16  ble_profile_airbridge_kb_report(app->ble_profile, report, 8)
+  firmware/pocket_airbridge/pocket_airbridge.c:1593:16  ble_profile_airbridge_kb_report(app->ble_profile, report, 8)

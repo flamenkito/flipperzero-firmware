@@ -1,0 +1,98 @@
+{
+  "status": "PASS: 22/22 protocol tests passed.",
+  "outcomes": [
+    {
+      "name": "Frame roundtrip",
+      "ok": true
+    },
+    {
+      "name": "Fragmented META",
+      "ok": true
+    },
+    {
+      "name": "Text item USB → BLE",
+      "ok": true
+    },
+    {
+      "name": "Text item BLE → USB",
+      "ok": true
+    },
+    {
+      "name": "Attachment SHA-256",
+      "ok": true
+    },
+    {
+      "name": "Busy collision",
+      "ok": true
+    },
+    {
+      "name": "ACK type mismatch rejected",
+      "ok": true
+    },
+    {
+      "name": "Hash mismatch sends error",
+      "ok": true
+    },
+    {
+      "name": "DATA before META rejected",
+      "ok": true
+    },
+    {
+      "name": "Oversized META rejected",
+      "ok": true
+    },
+    {
+      "name": "Busy versus rejected split",
+      "ok": true
+    },
+    {
+      "name": "Cancel handling",
+      "ok": true
+    },
+    {
+      "name": "bootstrap stream reassembly",
+      "ok": true
+    },
+    {
+      "name": "bootstrap compressed stream reassembly",
+      "ok": true
+    },
+    {
+      "name": "bootstrap compressed stream unsupported",
+      "ok": true
+    },
+    {
+      "name": "bootstrap stream timeout",
+      "ok": true
+    },
+    {
+      "name": "deploy request state gate",
+      "ok": true
+    },
+    {
+      "name": "simultaneous hello arbitration",
+      "ok": true
+    },
+    {
+      "name": "bootstrap.js eval in browser context",
+      "ok": true
+    },
+    {
+      "name": "broken bootstrap.js syntax is detected",
+      "ok": true
+    },
+    {
+      "name": "bootstrap.js picker-cancel error path",
+      "ok": true
+    },
+    {
+      "name": "bootstrap.js transfer-timeout error path",
+      "ok": true
+    }
+  ],
+  "evidenceCount": 11,
+  "compression": {
+    "hasCompressionStream": true,
+    "hasDecompressionStream": true
+  }
+}

@@ -1,0 +1,1 @@
+mirrored and live FAP sources are byte-identical after Task 8 sync

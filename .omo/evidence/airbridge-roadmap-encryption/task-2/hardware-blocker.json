@@ -1,0 +1,9 @@
+{
+  "schema": "airbridge-hardware-blocker/v1",
+  "task": 2,
+  "hardwareDeployRun": false,
+  "reason": "Flipper serial preflight reported ABSENT: no usbmodem port. This tool session also does not expose the required blocking question tool for physical gates.",
+  "preflightCommand": "python3 tools/flipper_alive.py",
+  "preflightOutput": "ABSENT: no usbmodem port",
+  "claimedHardwareSuccess": false
+}

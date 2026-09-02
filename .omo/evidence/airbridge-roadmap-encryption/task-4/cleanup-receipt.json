@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-08-29T19:59:38.315997+00:00",
+  "actions": [
+    {
+      "target": "http.server 8766",
+      "pid": 63495,
+      "status": "SIGTERM sent"
+    },
+    {
+      "target": "Chrome CDP airbridge-pw-chrome",
+      "pid": 65405,
+      "status": "SIGTERM sent"
+    }
+  ]
+}

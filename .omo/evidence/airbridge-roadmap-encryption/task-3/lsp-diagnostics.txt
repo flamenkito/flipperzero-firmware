@@ -1,0 +1,12 @@
+Live FAP diagnostics: not run by LSP because the file is outside the request cwd.
+
+Mirrored FAP diagnostics command:
+  lsp_diagnostics(filePath="/Users/asutov/projects/flipper-hid/firmware/pocket_airbridge/pocket_airbridge.c", severity="all")
+
+Result: clang diagnostics are not authoritative in this repo context because the Flipper SDK include paths are not configured for the mirror. The reported first error is:
+  error[clang] (pp_file_not_found) at 1:9: 'furi.h' file not found
+
+Meaningful C gate for this task:
+  ./fbt build APPSRC=applications_user/pocket_airbridge
+Result:
+  PASS

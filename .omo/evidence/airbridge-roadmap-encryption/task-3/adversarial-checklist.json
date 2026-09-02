@@ -1,0 +1,10 @@
+{
+  "stale_state": "Bridge watchdog requires app BLE profile installed, app ble_connected false, and HAL BLE inactive before advertising kick; HAL start has its own GapStateIdle guard.",
+  "dirty_worktree": "Baseline and final git status artifacts captured for main and firmware repos; main repo had inherited Task 1/2 dirty files before Task 3.",
+  "generated_cached_artifacts": "First harness attempt on occupied port 8000 loaded stale behavior and failed; passing run used fresh port 8765 plus cache-busted URL.",
+  "hung_long_commands": "FAP build completed normally; no hung build/server remains. Cleanup receipt records stopped port 8765 server and exited port 8000 attempt.",
+  "flaky_tests": "Protocol harness pass artifact is from direct window.runAllProtocolTests() on persistent CDP Chrome: PASS 20/20.",
+  "misleading_success_output": "Build success is not treated as hardware BLE success; hardware blocker records ABSENT Flipper.",
+  "hardware_evidence_conflation": "Only mock/static evidence is claimed. No BLE picker, chat session, DROP, or TXERR hardware success is claimed.",
+  "cancel_resume_active_session_interruption": "Static proof confirms Bridge watchdog body has zero bt_disconnect calls and preserves 0x42 Bridge relay behavior."
+}

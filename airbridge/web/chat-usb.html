@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./airbridge-ui.css">
+<title>Pocket AirBridge — USB Chat</title>
+</head>
+<body>
+<h1>Pocket AirBridge — USB Chat</h1>
+      <p>PC-A chat endpoint over WebHID. Send text or attachments through the AirBridge.</p>
+<div class="mock-banner">Mock mode is active from <span class="mono">?mock=1</span>; WebHID permission is bypassed and a paired mock BLE endpoint replies in-page.</div>
+
+<section class="card" aria-labelledby="connectionTitle">
+  <h2 id="connectionTitle">Connection</h2>
+  <div class="connection-row">
+    <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span id="connectionStatus">Disconnected</span></span>
+      <button id="connectBtn" type="button">Connect USB</button>
+    <button id="disconnectBtn" type="button" disabled>Disconnect</button>
+    <span id="deviceName" class="mono">No device</span>
+  </div>
+  <div class="connection-row" style="margin-top:10px;">
+    <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">&#x1F513;</span><span id="cryptoState" class="mono">E2E locked</span></span>
+    <span class="mono">SAS <strong id="sasCode">------</strong></span>
+    <button id="acceptSasBtn" type="button" disabled>Accept SAS</button>
+    <button id="abortCryptoBtn" type="button" disabled>Abort Crypto</button>
+  </div>
+</section>
+
+<main class="grid" style="margin-top:12px;">
+  <section class="card" aria-labelledby="chatTitle">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <h2 id="chatTitle" style="margin:0;">Chat Transcript</h2>
+      <button id="clearTranscriptBtn" type="button" class="clear-btn">Clear</button>
+    </div>
+    <div id="transcript" aria-live="polite"><div class="empty">Connect, then send a message or attachment.</div></div>
+    <form id="textForm" class="composer" style="margin-top:8px;">
+      <input id="textInput" type="text" placeholder="Type a message…" autocomplete="off" disabled>
+      <button id="sendTextBtn" type="submit" disabled>Send</button>
+    </form>
+    <div class="attachment-row" style="margin-top:8px;">
+      <input id="fileInput" type="file" disabled>
+      <button id="sendFileBtn" type="button" disabled>Send Attachment</button>
+    </div>
+    <p class="hint">Attachments are chunked automatically during transfer.</p>
+  </section>
+
+  <aside class="card" aria-labelledby="transferTitle">
+    <h2 id="transferTitle">Transfer State</h2>
+    <div id="panelState" class="panel-state">idle</div>
+    <div id="throughput" class="throughput">--</div>
+    <div class="transfer-actions">
+      <button id="cancelBtn" type="button" hidden>Cancel Transfer</button>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin:12px 0 8px;">
+      <h2 style="margin:0;">Status Log</h2>
+      <button id="clearLogBtn" type="button" class="clear-btn">Clear</button>
+    </div>
+    <pre id="log">Waiting…</pre>
+  </aside>
+</main>
+
+<script type="module">
+import { createTimingRecorder, recordCancel, recordFlipperCounters } from './airbridge-evidence.js';
+import { AirBridgeCryptoSession, buildMessage, CRYPTO_ROLE, CRYPTO_STATE, encodeMeta, ItemReceiver, ItemSender, MAX_PAYLOAD, MSG, parseMessage, sha256 } from './airbridge-protocol.js';
+import { WebHIDAdapter } from './airbridge-transports.js';
+import { addMessage, addSystemMessage, clearTranscript, createLogger, createThroughputMeter, formatBytes, renderAttachmentCard, shortHash, updateCardProgress } from './airbridge-ui.js';
+
+const BUSY_BACKOFF_MS = 900;
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+const isMockMode = new URLSearchParams(location.search).get('mock') === '1';
+const evidenceMode = new URLSearchParams(location.search).get('evidence') === '1';
+
+let transport = null;
+let unsubscribeReceive = null;
+let unsubscribeDisconnect = null;
+let sender = null;
+let receiver = null;
+let cryptoSession = null;
+let isSending = false;
+let outboundItemId = null;
+let activeTransfer = null;
+let inboundMeta = null;
+let inboundHelloItemId = null;
+let lastBusyAt = 0;
+let busyRetryDelayMs = BUSY_BACKOFF_MS;
+let nextItemId = Math.floor(Math.random() * 0x7fff) + 1;
+let pendingSendRow = null;
+let pendingReceiveRow = null;
+let yieldedItem = null;
+let yieldedRetryScheduled = false;
+let inboundMeter = null;
+let inboundTiming = null;
+
+const $ = id => document.getElementById(id);
+if (isMockMode) document.body.classList.add('mock');
+
+const logger = createLogger($('log'));
+const evidenceRecords = [];
+
+function publishEvidence(record) {
+  if (!evidenceMode) return record;
+  evidenceRecords.push(record);
+  globalThis.dispatchEvent?.(new CustomEvent('airbridge:evidence', { detail: record }));
+  if (record.completeTimeMs != null) {
+    const state = record.errorState ? ` error=${record.errorState}` : '';
+    logger.log(`Evidence ${record.operation}: ${record.bundleBytes} bytes, first=${record.firstReportLatencyMs} ms, total=${record.completeTimeMs} ms, ${record.transferKbps} KB/s.${state}`, record.errorState ? 'warn' : 'ok');
+  }
+  return record;
+}
+
+globalThis.AirBridgeEvidence = Object.freeze({
+  records: evidenceRecords,
+  record: publishEvidence,
+  recordFlipperCounters: counters => publishEvidence(recordFlipperCounters(counters, { mock: isMockMode, hardware: !isMockMode })),
+});
+if (evidenceMode) {
+  window.__airbridgeEvidence = evidenceRecords;
+  window.recordAirBridgeFlipperCounters = globalThis.AirBridgeEvidence.recordFlipperCounters;
+}
+
+function createEvidenceTiming(operation, meta) {
+  if (!evidenceMode) return null;
+  return createTimingRecorder({
+    operation,
+    bundleBytes: meta?.size ?? 0,
+    mock: isMockMode,
+    hardware: !isMockMode,
+    details: { itemId: meta?.itemId, kind: meta?.kind, name: meta?.name },
+    sink: publishEvidence,
+  });
+}
+
+function setTransferState(text) {
+  $('panelState').textContent = text;
+}
+
+function setThroughputText(text) {
+  $('throughput').textContent = text;
+}
+
+function resetTransferPanel() {
+  setTransferState('idle');
+  setThroughputText('--');
+}
+
+function setConnectionStatus(status, className = '') {
+  $('connectionStatus').textContent = status;
+  $('statusPill').className = `status-pill ${className}`.trim();
+}
+
+function updateCryptoPanel(status = cryptoSession?.getStatus()) {
+  const state = status?.state ?? CRYPTO_STATE.REQUIRED;
+  const unlocked = state === CRYPTO_STATE.UNLOCKED;
+  const pending = state === CRYPTO_STATE.SAS_PENDING;
+  const aborted = state === CRYPTO_STATE.ABORTED;
+  $('cryptoState').textContent = `E2E ${unlocked ? 'unlocked' : pending ? (status.localAccepted ? 'waiting peer' : 'verify SAS') : aborted ? 'aborted' : 'locked'}`;
+  $('cryptoPill').className = `status-pill crypto-pill ${unlocked ? 'crypto-unlocked' : pending ? 'crypto-pending' : aborted ? 'crypto-aborted' : 'crypto-locked'}`;
+  $('cryptoLock').textContent = unlocked ? '\u{1F512}' : '\u{1F513}';
+  $('sasCode').textContent = status?.sas ?? '------';
+  $('acceptSasBtn').disabled = !pending || status.localAccepted;
+  $('abortCryptoBtn').disabled = !cryptoSession || state === CRYPTO_STATE.REQUIRED;
+  updateControls();
+}
+
+function isCryptoUnlocked() {
+  return Boolean(cryptoSession?.isUnlocked());
+}
+
+async function sendProtocolError(reason) {
+  if (!transport?.isConnected()) return;
+  await transport.send(buildMessage(MSG.ERROR, 0, textEncoder.encode(reason)));
+}
+
+function makeAbortError(message = 'Transfer cancelled') {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function getTransferSignal() {
+  return activeTransfer?.controller.signal ?? null;
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError' || error?.message === 'Transfer cancelled';
+}
+
+function raceWithAbort(promise, signal = getTransferSignal()) {
+  const wrapped = Promise.resolve(promise);
+  if (!signal) return wrapped;
+  if (signal.aborted) return Promise.reject(signal.reason ?? makeAbortError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? makeAbortError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    wrapped.then(
+      value => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function throwIfCancelled(signal = getTransferSignal()) {
+  if (signal?.aborted) throw signal.reason ?? makeAbortError();
+}
+
+function setSending(value, label = '') {
+  isSending = value;
+  receiver?.setBusy(value);
+  if (value) {
+    setTransferState(`sending: ${label}`);
+  } else if ($('panelState').textContent.startsWith('sending')) {
+    setTransferState('idle');
+  }
+  $('cancelBtn').hidden = !value;
+  $('cancelBtn').disabled = !value;
+  updateControls();
+}
+
+function updateControls() {
+  const connected = Boolean(transport?.isConnected());
+  const unlocked = isCryptoUnlocked();
+  const isReceiving = inboundHelloItemId != null;
+  const canCancel = isSending || isReceiving || Boolean(inboundMeta);
+  $('connectBtn').disabled = connected || $('connectionStatus').textContent === 'Connecting';
+  $('disconnectBtn').disabled = !connected;
+  $('textInput').disabled = !connected || !unlocked || isSending || isReceiving;
+  $('sendTextBtn').disabled = !connected || !unlocked || isSending || isReceiving || !$('textInput').value.trim();
+  $('fileInput').disabled = !connected || !unlocked || isSending || isReceiving;
+  $('sendFileBtn').disabled = !connected || !unlocked || isSending || isReceiving || !$('fileInput').files.length;
+  $('cancelBtn').hidden = !canCancel;
+  $('cancelBtn').disabled = !canCancel;
+}
+
+function nextId() {
+  nextItemId = (nextItemId + 1) & 0xffff;
+  if (nextItemId === 0) nextItemId = 1;
+  return nextItemId;
+}
+
+function makeChunks(bytes) {
+  const chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += MAX_PAYLOAD) {
+    chunks.push(bytes.slice(offset, offset + MAX_PAYLOAD));
+  }
+  return chunks.length ? chunks : [new Uint8Array(0)];
+}
+
+function metaTransferSize(meta) {
+  return meta?.encryptedSize ?? meta?.size ?? 0;
+}
+
+function metaChunkCount(meta) {
+  return meta?.chunks ?? Math.max(1, Math.ceil(metaTransferSize(meta) / MAX_PAYLOAD));
+}
+
+function makeMeta({ itemId, kind, name, mimeType, size, chunks, hash }) {
+  return { itemId, kind, name, mimeType, size, chunks, hash: `sha256:${hash}` };
+}
+
+function busyPayload(winnerItemId, loserItemId) {
+  return textEncoder.encode(JSON.stringify({ w: winnerItemId, l: loserItemId, r: BUSY_BACKOFF_MS }));
+}
+
+async function sendBusy(winnerItemId = null, loserItemId = null) {
+  if (!transport?.isConnected()) return;
+  await transport.send(buildMessage(MSG.BUSY, 0, busyPayload(winnerItemId, loserItemId)));
+}
+
+function parseBusy(payload) {
+  try {
+    const parsed = JSON.parse(textDecoder.decode(payload));
+    return {
+      winnerItemId: parsed.winnerItemId ?? parsed.w,
+      loserItemId: parsed.loserItemId ?? parsed.l,
+      retryAfterMs: parsed.retryAfterMs ?? parsed.r,
+    };
+  } catch (_) {
+    return {};
+  }
+}
+
+function readHelloItemId(msg) {
+  if (!msg?.payload || msg.payload.length < 4) return null;
+  const payload = msg.payload;
+  return (((payload[0] << 24) >>> 0) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
+}
+
+function createAckFrame(type, seq) {
+  return buildMessage(MSG.ACK, 0, new Uint8Array([type, (seq >> 8) & 0xff, seq & 0xff]));
+}
+
+function settleAbortedSend(transfer) {
+  const pending = transfer?.pendingAck;
+  if (!pending) return;
+  transfer.pendingAck = null;
+  sender?.receiveAck(createAckFrame(pending.type, pending.seq));
+}
+
+async function sendItemMetaWithAbort(meta, signal) {
+  const fragments = encodeMeta(meta);
+  for (let seq = 0; seq < fragments.length; seq++) {
+    throwIfCancelled(signal);
+    await raceWithAbort(sender.sendWithAck(buildMessage(MSG.ITEM_META, seq, fragments[seq]), seq), signal);
+  }
+}
+
+function* abortableChunks(chunks, signal) {
+  for (const chunk of chunks) {
+    throwIfCancelled(signal);
+    yield chunk;
+  }
+}
+
+function setupProtocol() {
+  sender = new ItemSender(frame => {
+    const message = parseMessage(frame);
+    if (activeTransfer && message) activeTransfer.pendingAck = { type: message.type, seq: message.seq };
+    activeTransfer?.timing?.markFirstReport();
+    return transport.send(frame);
+  }, { timeoutMs: 1200, retries: 2 });
+  receiver = new ItemReceiver({ sendFn: frame => transport.send(frame), busy: false });
+  sender.onAck(seq => logger.log(`ACK ${seq} received.`, 'ok'));
+  receiver.on('hello', detail => {
+    inboundHelloItemId = detail.itemId;
+    inboundTiming = createTimingRecorder({ operation: 'chat-receive', direction: 'inbound', mock: isMockMode, hardware: !isMockMode, sink: publishEvidence });
+    inboundTiming.markFirstReport();
+    updateControls();
+    logger.log(`Incoming HELLO${detail.itemId == null ? '' : ` item ${detail.itemId}`}.`);
+  });
+  receiver.on('meta', meta => {
+    if (isCryptoUnlocked() && meta.kind !== 'encrypted') {
+      receiver.resetItem();
+      sendProtocolError('plaintext metadata rejected').catch(() => {});
+      cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
+      logger.log('Rejected plaintext metadata after crypto unlock.', 'error');
+      return;
+    }
+    inboundMeta = meta;
+    if (inboundTiming) {
+      inboundTiming.record.operation = meta.kind === 'encrypted' ? 'encrypted-item' : meta.kind === 'text' ? 'chat-text' : 'attachment';
+      inboundTiming.record.itemId = meta.itemId ?? null;
+      inboundTiming.record.details = { ...inboundTiming.record.details, itemId: meta.itemId, kind: meta.kind, name: meta.name };
+      inboundTiming.record.metadata = inboundTiming.record.details;
+    }
+    updateControls();
+    setTransferState(`receiving: ${meta.kind === 'encrypted' ? 'encrypted item' : meta.name || meta.kind || 'item'}`);
+    const totalChunks = metaChunkCount(meta);
+    inboundTiming?.setBytes(metaTransferSize(meta));
+    inboundMeter = createThroughputMeter();
+    inboundMeter.tick(0, totalChunks, 0);
+    setThroughputText(inboundMeter.text());
+    logger.log(`Receiving ${meta.kind || 'item'} ${meta.name || ''} (${formatBytes(metaTransferSize(meta))}).`);
+    if (meta.kind !== 'text' && meta.kind !== 'encrypted') {
+      pendingReceiveRow = addMessage($('transcript'), { side: 'peer', kind: 'attachment', meta, data: null, hash: null, pending: true, progress: { percent: 0, label: 'Receiving…' } });
+    }
+  });
+  receiver.on('data', ({ received, meta }) => {
+    const totalChunks = metaChunkCount(meta);
+    if (!isSending && totalChunks) {
+      const pct = (received / totalChunks) * 100;
+      if (inboundMeter) {
+        const transferSize = metaTransferSize(meta) || received * MAX_PAYLOAD;
+        inboundMeter.tick(received, totalChunks, Math.min(received * MAX_PAYLOAD, transferSize));
+        inboundTiming?.tickTransferBytes(Math.min(received * MAX_PAYLOAD, transferSize));
+        setThroughputText(inboundMeter.text());
+      }
+      if (pendingReceiveRow) {
+        updateCardProgress(pendingReceiveRow, pct, `${received}/${totalChunks} chunks`);
+      }
+    }
+  });
+  receiver.on('item', ({ meta, data, hash }) => { void handleReceivedItem(meta, data, hash); });
+  receiver.on('cancel', () => {
+    inboundTiming?.fail('cancelled-by-peer');
+    inboundTiming = null;
+    inboundHelloItemId = null;
+    updateControls();
+    scheduleYieldedRetry();
+  });
+  receiver.on('busy', detail => handleBusy(detail));
+  receiver.on('rejected', () => logger.log('Rejected peer HELLO while USB chat is busy.', 'warn'));
+  receiver.on('error', error => {
+    inboundTiming?.fail(error.message || error);
+    inboundTiming = null;
+    cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
+    logger.log(`Protocol error: ${error.message || error}`, 'error');
+  });
+  receiver.on('invalid', error => {
+    inboundTiming?.fail(error.message || error);
+    inboundTiming = null;
+    logger.log(`Invalid frame: ${error.message}`, 'error');
+  });
+}
+
+async function handleInboundFrame(frame) {
+  const msg = parseMessage(frame);
+  if (!msg) {
+    logger.log('Malformed frame received.', 'error');
+    return;
+  }
+
+  if (msg.type === MSG.ACK) {
+    if (!cryptoSession?.receiveAck(msg)) sender?.receiveAck(msg);
+    return;
+  }
+
+  if (msg.type === MSG.NACK) {
+    if (!cryptoSession?.receiveNack(msg)) sender?.receiveNack(msg);
+    return;
+  }
+
+  if (cryptoSession?.isCryptoFrame(msg)) {
+    try {
+      await cryptoSession.onMessage(msg);
+    } catch (error) {
+      logger.log(`Crypto handshake failed: ${error.message}`, 'error');
+    }
+    return;
+  }
+
+  if (msg.type === MSG.ERROR) {
+    sender?.receiveError(msg);
+    cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
+    await receiver?.onMessage(msg);
+    return;
+  }
+
+  if ((msg.type === MSG.HELLO || msg.type === MSG.ITEM_META || msg.type === MSG.ITEM_DATA || msg.type === MSG.ITEM_DONE) && !isCryptoUnlocked()) {
+    await sendProtocolError('crypto locked');
+    cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
+    logger.log('Rejected plaintext item frame before crypto unlock.', 'error');
+    return;
+  }
+
+  if (msg.type === MSG.CANCEL) {
+    await receiver?.onMessage(msg);
+    await cancelActiveTransfer('peer');
+    return;
+  }
+
+  if (msg.type === MSG.HELLO && isSending && activeTransfer && !activeTransfer.yielded && outboundItemId != null) {
+    const peerItemId = readHelloItemId(msg);
+    if (peerItemId != null && peerItemId < outboundItemId) {
+      await yieldToPeer(msg, peerItemId);
+      return;
+    }
+    if (peerItemId != null) {
+      logger.log(`Keeping local item ${outboundItemId} over peer item ${peerItemId}; returning BUSY.`, 'warn');
+      await sendBusy(outboundItemId, peerItemId);
+      return;
+    }
+  }
+
+  if (isSending && activeTransfer && !activeTransfer.yielded && (msg.type === MSG.ITEM_META || msg.type === MSG.ITEM_DATA || msg.type === MSG.ITEM_DONE)) {
+    logger.log('Peer sent item data while USB chat is sending; returning BUSY.', 'warn');
+    await sendBusy(outboundItemId, null);
+    return;
+  }
+
+  await receiver?.onMessage(msg);
+}
+
+async function yieldToPeer(msg, peerItemId) {
+  const transfer = activeTransfer;
+  if (!transfer || transfer.yielded) return;
+  transfer.yielded = true;
+  yieldedItem = {
+    meta: transfer.meta,
+    plainMeta: transfer.plainMeta,
+    chunks: transfer.chunks,
+    label: transfer.label,
+    row: pendingSendRow,
+  };
+  transfer.controller.abort(makeAbortError(`Yielded to peer item ${peerItemId}`));
+  settleAbortedSend(transfer);
+  receiver?.setBusy(false);
+  resetTransferPanel();
+  if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Yielded');
+  addSystemMessage($('transcript'), `Yielded to peer item ${peerItemId}`);
+  logger.log(`Yielded local item ${transfer.itemId} to peer item ${peerItemId}.`, 'warn');
+  await receiver?.onMessage(msg);
+}
+
+async function handleReceivedItem(meta, data, hash) {
+  if (meta.kind !== 'encrypted') {
+    await sendProtocolError('plaintext item rejected');
+    cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
+    logger.log('Rejected plaintext item after crypto unlock.', 'error');
+    return;
+  }
+  let plain;
+  try {
+    plain = await cryptoSession.decryptItem(meta, data);
+  } catch (error) {
+    await sendProtocolError(error.message || 'decrypt failed');
+    logger.log(`Decrypt failed: ${error.message}`, 'error');
+    return;
+  }
+  meta = plain.meta;
+  data = plain.data;
+  hash = plain.hash;
+  inboundTiming?.complete({ bundleBytes: meta.size || data.length, transferBytes: data.length, direction: 'inbound' });
+  inboundTiming = null;
+  inboundHelloItemId = null;
+  inboundMeta = null;
+  updateControls();
+  const kind = meta.kind || 'attachment';
+  if (kind === 'text') {
+    addMessage($('transcript'), { side: 'peer', kind: 'text', text: textDecoder.decode(data), meta, hash });
+  } else {
+    if (pendingReceiveRow) {
+      const finalCard = renderAttachmentCard(meta, data, hash, false, { percent: 100, label: 'Verified', complete: true });
+      const placeholder = pendingReceiveRow.querySelector('.attachment-card');
+      if (placeholder) placeholder.replaceWith(finalCard);
+      pendingReceiveRow = null;
+    } else {
+      addMessage($('transcript'), { side: 'peer', kind: 'attachment', meta, data, hash });
+    }
+  }
+  logger.log(`Received ${kind} ${meta.name || ''}; hash ${shortHash(hash)} verified.`, 'ok');
+  setTimeout(() => { if (!isSending) resetTransferPanel(); }, 900);
+  scheduleYieldedRetry();
+}
+
+function handleBusy(detail) {
+  const msg = detail?.payload ? detail : detail?.message;
+  const info = msg?.payload ? parseBusy(msg.payload) : {};
+  const localItemId = outboundItemId;
+  const peerWins = Number.isInteger(localItemId)
+    && info.loserItemId === localItemId
+    && Number.isInteger(info.winnerItemId)
+    && info.winnerItemId < localItemId;
+  const equalIds = Number.isInteger(localItemId)
+    && info.winnerItemId === localItemId
+    && info.loserItemId === localItemId;
+  if (!isSending || activeTransfer?.yielded || (!peerWins && !equalIds)) {
+    logger.log('Ignoring BUSY that does not lose the active item arbitration.', 'warn');
+    return;
+  }
+  lastBusyAt = Date.now();
+  const retryAfterMs = Number.isFinite(info.retryAfterMs) ? info.retryAfterMs : BUSY_BACKOFF_MS;
+  busyRetryDelayMs = Math.max(0, retryAfterMs) + Math.floor(Math.random() * 401);
+  if (equalIds) activeTransfer.acceptPeerDuringBackoff = true;
+  logger.log(`Peer item ${info.winnerItemId} has priority${equalIds ? ' (equal item IDs)' : ''}; retrying in ${busyRetryDelayMs} ms.`, 'warn');
+}
+
+function scheduleYieldedRetry() {
+  if (!yieldedItem || yieldedRetryScheduled) return;
+  yieldedRetryScheduled = true;
+  setTimeout(async () => {
+    yieldedRetryScheduled = false;
+    const yielded = yieldedItem;
+    if (!yielded || isSending || inboundHelloItemId != null || !transport?.isConnected()) return;
+    yieldedItem = null;
+    pendingSendRow = yielded.row;
+    if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Retrying…');
+    await sendItem(yielded.meta, yielded.chunks, yielded.label, yielded.plainMeta);
+  }, 0);
+}
+
+async function connect() {
+  try {
+    setConnectionStatus('Connecting', 'status-connecting');
+    updateControls();
+    transport = isMockMode ? createMockPair().usb : new WebHIDAdapter({ onDisconnect: handleDisconnected });
+    await transport.connect();
+    setupProtocol();
+    unsubscribeReceive = transport.onReceive(handleInboundFrame);
+    if (transport.onDisconnect) unsubscribeDisconnect = transport.onDisconnect(handleDisconnected);
+    cryptoSession = new AirBridgeCryptoSession({ role: CRYPTO_ROLE.USB, sendFn: frame => transport.send(frame), onStateChange: updateCryptoPanel });
+    setConnectionStatus('Connected', 'status-connected');
+    $('deviceName').textContent = transport.getName();
+    logger.log(`Connected to ${transport.getName()}.`, 'ok');
+    cryptoSession.start().catch(error => logger.log(`Crypto handshake failed: ${error.message}`, 'error'));
+  } catch (error) {
+    setConnectionStatus('Disconnected', 'status-error');
+    $('deviceName').textContent = 'No device';
+    logger.log(`Connection failed: ${error.message}`, 'error');
+    transport = null;
+  } finally {
+    updateControls();
+  }
+}
+
+async function disconnect() {
+  unsubscribeReceive?.();
+  unsubscribeDisconnect?.();
+  unsubscribeReceive = null;
+  unsubscribeDisconnect = null;
+  const current = transport;
+  transport = null;
+  sender = null;
+  receiver = null;
+  cryptoSession?.clearKeys();
+  cryptoSession = null;
+  setSending(false);
+  if (current?.isConnected()) await current.disconnect();
+  handleDisconnected();
+}
+
+function handleDisconnected() {
+  if (activeTransfer && !activeTransfer.controller.signal.aborted) activeTransfer.controller.abort(makeAbortError('Disconnected'));
+  activeTransfer = null;
+  inboundTiming?.fail('disconnected');
+  inboundTiming = null;
+  inboundMeta = null;
+  inboundHelloItemId = null;
+  yieldedItem = null;
+  pendingSendRow = null;
+  pendingReceiveRow = null;
+  inboundMeter = null;
+  cryptoSession?.clearKeys();
+  cryptoSession = null;
+  updateCryptoPanel();
+  setConnectionStatus('Disconnected', 'status-disconnected');
+  $('deviceName').textContent = 'No device';
+  resetTransferPanel();
+  logger.log('Disconnected.', 'warn');
+  updateControls();
+}
+
+async function sendText() {
+  if (!isCryptoUnlocked()) {
+    logger.log('Accept matching SAS on both endpoints before sending.', 'error');
+    return;
+  }
+  const text = $('textInput').value.trim();
+  if (!text) return;
+  const data = textEncoder.encode(text);
+  const hash = await sha256(data);
+  const itemId = nextId();
+  const meta = makeMeta({ itemId, kind: 'text', name: `message-${itemId}.txt`, mimeType: 'text/plain;charset=utf-8', size: data.length, chunks: makeChunks(data).length, hash });
+  const encrypted = await cryptoSession.encryptItem(meta, data);
+  const chunks = makeChunks(encrypted.data);
+  $('textInput').value = '';
+  updateControls();
+  addMessage($('transcript'), { side: 'you', kind: 'text', text, meta, hash, pending: true });
+  await sendItem(encrypted.meta, chunks, 'encrypted text message', meta);
+}
+
+async function sendSelectedFile() {
+  if (!isCryptoUnlocked()) {
+    logger.log('Accept matching SAS on both endpoints before sending.', 'error');
+    return;
+  }
+  const file = $('fileInput').files[0];
+  if (!file) return;
+  const data = new Uint8Array(await readFileAsArrayBuffer(file));
+  const hash = await sha256(data);
+  const itemId = nextId();
+  const meta = makeMeta({ itemId, kind: 'attachment', name: file.name, mimeType: file.type || 'application/octet-stream', size: data.length, chunks: makeChunks(data).length, hash });
+  const encrypted = await cryptoSession.encryptItem(meta, data);
+  const chunks = makeChunks(encrypted.data);
+  pendingSendRow = addMessage($('transcript'), { side: 'you', kind: 'attachment', meta, data, hash, pending: true, progress: { percent: 0, label: 'Sending…' } });
+  await sendItem(encrypted.meta, chunks, `encrypted attachment ${file.name}`, meta);
+  $('fileInput').value = '';
+  updateControls();
+}
+
+function readFileAsArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function sendItem(meta, chunks, label, plainMeta = meta) {
+  if (!transport?.isConnected()) {
+    logger.log('Connect before sending.', 'error');
+    return;
+  }
+
+  const transfer = {
+    controller: new AbortController(),
+    itemId: meta.itemId,
+    meta,
+    plainMeta,
+    chunks,
+    label,
+    pendingAck: null,
+    yielded: false,
+    acceptPeerDuringBackoff: false,
+  };
+  activeTransfer = transfer;
+  outboundItemId = meta.itemId;
+  setSending(true, label);
+  const meter = createThroughputMeter();
+  const timing = createEvidenceTiming(plainMeta.kind === 'text' ? 'chat-text' : 'attachment', plainMeta);
+  transfer.timing = timing;
+  meter.tick(0, chunks.length, 0);
+  setThroughputText(meter.text());
+
+  let trackDataAcks = false;
+  const acknowledgedDataSeqs = new Set();
+  const unsubscribeAck = sender.onAck((seq, _message, type) => {
+    if (transfer.yielded || type !== MSG.ITEM_DATA || !trackDataAcks || acknowledgedDataSeqs.has(seq) || seq >= chunks.length) return;
+    acknowledgedDataSeqs.add(seq);
+    const pct = (acknowledgedDataSeqs.size / chunks.length) * 100;
+    const transferSize = metaTransferSize(meta);
+    meter.tick(acknowledgedDataSeqs.size, chunks.length, Math.min(acknowledgedDataSeqs.size * MAX_PAYLOAD, transferSize));
+    timing?.tickTransferBytes(Math.min(acknowledgedDataSeqs.size * MAX_PAYLOAD, plainMeta.size));
+    setThroughputText(meter.text());
+    if (pendingSendRow) {
+      updateCardProgress(pendingSendRow, pct, `${acknowledgedDataSeqs.size}/${chunks.length} chunks`);
+    }
+  });
+
+  try {
+    await sendWithBusyRetry(async () => {
+      const signal = transfer.controller.signal;
+      throwIfCancelled(signal);
+      timing?.markFirstReport();
+      await raceWithAbort(sender.sendHello(meta.itemId), signal);
+      throwIfCancelled(signal);
+      await sendItemMetaWithAbort(meta, signal);
+      throwIfCancelled(signal);
+      trackDataAcks = true;
+      await raceWithAbort(sender.sendItemData(abortableChunks(chunks, signal)), signal);
+      trackDataAcks = false;
+      throwIfCancelled(signal);
+      await raceWithAbort(sender.sendItemDone(), signal);
+    });
+    if (pendingSendRow) {
+      updateCardProgress(pendingSendRow, 100, 'Sent', 'complete');
+    }
+    timing?.complete({ bundleBytes: plainMeta.size, transferBytes: plainMeta.size, direction: 'outbound' });
+    logger.log(`Sent ${label}; plaintext hash ${shortHash(plainMeta.hash)}.`, 'ok');
+  } catch (error) {
+    if (!isAbortError(error)) {
+      logger.log(`Send failed: ${error.message}`, 'error');
+    }
+    timing?.fail(transfer.yielded ? 'yielded' : isAbortError(error) ? 'cancelled' : (error?.message || 'failed'), { bundleBytes: plainMeta.size, transferBytes: plainMeta.size });
+    if (isAbortError(error) && !transfer.yielded && pendingSendRow) {
+      updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
+    }
+  } finally {
+    unsubscribeAck();
+    if (activeTransfer === transfer) activeTransfer = null;
+    outboundItemId = null;
+    setSending(false);
+    if (!transfer.yielded) pendingSendRow = null;
+    if (!transfer.controller.signal.aborted) {
+      setTimeout(() => { if (!isSending) resetTransferPanel(); }, 900);
+    }
+  }
+}
+
+async function sendWithBusyRetry(operation) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    throwIfCancelled();
+    lastBusyAt = 0;
+    busyRetryDelayMs = BUSY_BACKOFF_MS;
+    try {
+      await raceWithAbort(operation());
+      return;
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      if (!lastBusyAt || attempt === 3) throw error;
+      const delay = busyRetryDelayMs;
+      logger.log(`BUSY interrupted send attempt ${attempt}; retrying in ${delay} ms.`, 'warn');
+      await raceWithAbort(sleep(delay));
+    }
+  }
+}
+
+async function sendCancelFrame() {
+  const timing = createEvidenceTiming('cancel', null);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (!transport?.isConnected()) {
+      timing?.fail('not-connected');
+      return;
+    }
+    try {
+      timing?.markFirstReport();
+      await transport.send(buildMessage(MSG.CANCEL, 0));
+      timing?.complete({ direction: 'outbound' });
+      return;
+    } catch (error) {
+      if (attempt === 3) {
+        timing?.fail(error.message || 'failed');
+        logger.log(`Failed to send CANCEL: ${error.message}`, 'error');
+        return;
+      }
+      await sleep(200);
+    }
+  }
+}
+
+async function cancelActiveTransfer(origin) {
+  const transfer = activeTransfer;
+  const cancelItemId = transfer?.itemId ?? inboundMeta?.itemId ?? inboundHelloItemId;
+  const cancelBytes = inboundMeta?.size ?? transfer?.meta?.size ?? 0;
+  if (transfer && !transfer.controller.signal.aborted) transfer.controller.abort(makeAbortError());
+  if (origin === 'user') {
+    if (!transfer && !inboundMeta && inboundHelloItemId == null) return;
+    logger.log('Transfer cancelled by user', 'warn');
+    if (evidenceMode) recordCancel({ origin: 'user', endpoint: 'usb-chat', itemId: cancelItemId, transferBytes: cancelBytes, mock: isMockMode, hardware: !isMockMode }, { sink: publishEvidence });
+    if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
+    if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled', 'cancelled');
+    await sendCancelFrame();
+    if (!transfer && (inboundMeta || inboundHelloItemId != null)) {
+      inboundTiming?.fail('cancelled-by-user');
+      inboundTiming = null;
+      receiver?.resetItem();
+      inboundMeta = null;
+      inboundHelloItemId = null;
+      addSystemMessage($('transcript'), 'Transfer cancelled by user');
+      scheduleYieldedRetry();
+    }
+  } else if (origin === 'peer') {
+    inboundMeta = null;
+    updateControls();
+    logger.log('Transfer cancelled by peer', 'warn');
+    if (evidenceMode) recordCancel({ origin: 'peer', endpoint: 'usb-chat', itemId: cancelItemId, transferBytes: cancelBytes, mock: isMockMode, hardware: !isMockMode }, { sink: publishEvidence });
+    addSystemMessage($('transcript'), 'Transfer cancelled');
+    if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled by peer', 'cancelled');
+    if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled by peer', 'cancelled');
+  }
+  setSending(false);
+  setTransferState('cancelled');
+  setThroughputText('--');
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function createMockPair() {
+  const usb = new LinkedMockTransport('Mock USB');
+  const ble = new LinkedMockTransport('Mock BLE peer');
+  usb.link(ble);
+  ble.link(usb);
+  setupMockPeer(ble);
+  return { usb: linkMockAcrossTabs(usb, 'usb'), ble };
+}
+
+function linkMockAcrossTabs(transport, role) {
+  if (!globalThis.BroadcastChannel) return transport;
+  const channel = new BroadcastChannel('pocket-airbridge-mock-bridge');
+  let remoteConnected = false;
+  const originalConnect = transport.connect.bind(transport);
+  const originalDisconnect = transport.disconnect.bind(transport);
+  const originalSend = transport.send.bind(transport);
+  const announce = type => channel.postMessage({ type, role });
+
+  channel.onmessage = event => {
+    const message = event.data;
+    if (!message || message.role === role) return;
+    if (message.type === 'connected') {
+      const wasRemoteConnected = remoteConnected;
+      remoteConnected = true;
+      if (!wasRemoteConnected) announce('connected');
+    } else if (message.type === 'disconnected') {
+      remoteConnected = false;
+    } else if (message.type === 'frame' && remoteConnected) {
+      transport.receiveCallback?.(new Uint8Array(message.frame));
+    }
+  };
+
+  transport.connect = async () => {
+    await originalConnect();
+    announce('connected');
+  };
+  transport.disconnect = async () => {
+    announce('disconnected');
+    channel.close();
+    await originalDisconnect();
+  };
+  transport.send = async frame => {
+    if (!remoteConnected) return originalSend(frame);
+    const copy = new Uint8Array(frame);
+    channel.postMessage({ type: 'frame', role, frame: copy });
+  };
+  return transport;
+}
+
+class LinkedMockTransport {
+  constructor(name) {
+    this.name = name;
+    this.peer = null;
+    this.connected = false;
+    this.receiveCallback = null;
+    this.disconnectCallback = null;
+  }
+
+  link(peer) { this.peer = peer; }
+  async connect() { this.connected = true; if (this.peer) this.peer.connected = true; }
+  async disconnect() { this.connected = false; if (this.peer) this.peer.connected = false; this.disconnectCallback?.(); }
+  async send(frame) {
+    if (!this.connected || !this.peer?.connected) throw new Error(`${this.name} is not connected`);
+    const copy = new Uint8Array(frame);
+    await sleep(8);
+    this.peer.receiveCallback?.(copy);
+  }
+  onReceive(callback) { this.receiveCallback = callback; return () => { if (this.receiveCallback === callback) this.receiveCallback = null; }; }
+  onDisconnect(callback) { this.disconnectCallback = callback; return () => { if (this.disconnectCallback === callback) this.disconnectCallback = null; }; }
+  isConnected() { return this.connected; }
+  getName() { return this.name; }
+}
+
+function setupMockPeer(peerTransport) {
+  const peerSender = new ItemSender(frame => peerTransport.send(frame), { timeoutMs: 1200, retries: 2 });
+  const peerReceiver = new ItemReceiver({ sendFn: frame => peerTransport.send(frame) });
+  const peerCrypto = new AirBridgeCryptoSession({ role: CRYPTO_ROLE.BLE, sendFn: frame => peerTransport.send(frame), onStateChange: status => {
+    if (status.state === CRYPTO_STATE.SAS_PENDING && !status.localAccepted) setTimeout(() => peerCrypto.acceptSas().catch(() => {}), 0);
+  } });
+  let replyTimer = null;
+  peerCrypto.start().catch(() => {});
+
+  peerTransport.onReceive(async frame => {
+    const msg = parseMessage(frame);
+    if (!msg) return;
+    if (msg.type === MSG.ACK) {
+      if (!peerCrypto.receiveAck(msg)) peerSender.receiveAck(msg);
+      return;
+    }
+    if (msg.type === MSG.NACK) {
+      if (!peerCrypto.receiveNack(msg)) peerSender.receiveNack(msg);
+      return;
+    }
+    if (peerCrypto.isCryptoFrame(msg)) {
+      await peerCrypto.onMessage(msg).catch(() => {});
+      return;
+    }
+    if ((msg.type === MSG.HELLO || msg.type === MSG.ITEM_META || msg.type === MSG.ITEM_DATA || msg.type === MSG.ITEM_DONE) && !peerCrypto.isUnlocked()) {
+      await peerTransport.send(buildMessage(MSG.ERROR, 0, textEncoder.encode('crypto locked')));
+      return;
+    }
+    await peerReceiver.onMessage(msg);
+  });
+
+  peerReceiver.on('item', async ({ meta, data }) => {
+    if (meta.kind !== 'encrypted') return;
+    const plain = await peerCrypto.decryptItem(meta, data);
+    clearTimeout(replyTimer);
+    const description = plain.meta.kind === 'text' ? `"${textDecoder.decode(plain.data)}"` : `${plain.meta.name} (${formatBytes(plain.meta.size || plain.data.length)})`;
+    replyTimer = setTimeout(() => sendMockReply(peerSender, peerCrypto, description), 350);
+  });
+  peerReceiver.on('cancel', () => clearTimeout(replyTimer));
+}
+
+async function sendMockReply(peerSender, peerCrypto, description) {
+  if (!peerCrypto.isUnlocked()) return;
+  const text = `Mock peer received ${description}`;
+  const data = textEncoder.encode(text);
+  const hash = await sha256(data);
+  const itemId = nextId();
+  const meta = makeMeta({ itemId, kind: 'text', name: `mock-reply-${itemId}.txt`, mimeType: 'text/plain;charset=utf-8', size: data.length, chunks: makeChunks(data).length, hash });
+  const encrypted = await peerCrypto.encryptItem(meta, data);
+  const chunks = makeChunks(encrypted.data);
+  try {
+    await peerSender.sendHello(itemId);
+    await peerSender.sendItemMeta(encrypted.meta);
+    await peerSender.sendItemData(chunks);
+    await peerSender.sendItemDone();
+  } catch (error) {
+    logger.log(`Mock peer reply failed: ${error.message}`, 'error');
+  }
+}
+
+$('connectBtn').addEventListener('click', connect);
+$('disconnectBtn').addEventListener('click', disconnect);
+$('textForm').addEventListener('submit', event => { event.preventDefault(); sendText(); });
+$('textInput').addEventListener('input', updateControls);
+$('fileInput').addEventListener('change', () => {
+  updateControls();
+});
+$('sendFileBtn').addEventListener('click', sendSelectedFile);
+$('cancelBtn').addEventListener('click', () => { cancelActiveTransfer('user'); });
+$('acceptSasBtn').addEventListener('click', () => cryptoSession?.acceptSas().catch(error => logger.log(`SAS accept failed: ${error.message}`, 'error')));
+$('abortCryptoBtn').addEventListener('click', () => cryptoSession?.rejectSas().catch(error => logger.log(`Crypto abort failed: ${error.message}`, 'error')));
+$('clearTranscriptBtn').addEventListener('click', () => clearTranscript($('transcript')));
+$('clearLogBtn').addEventListener('click', () => logger.clear());
+updateControls();
+updateCryptoPanel();
+logger.log(isMockMode ? 'Mock mode ready. Click Connect to start linked USB/BLE transports.' : 'WebHID mode ready. Use Chrome/Edge on localhost or HTTPS.');
+</script>
+</body>
+</html>

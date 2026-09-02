@@ -1,0 +1,304 @@
+{
+  "url": "http://localhost:8000/web/protocol-harness.html?task1=post-hooks-fresh",
+  "title": "Pocket AirBridge — Protocol Harness",
+  "status": "PASS: 17/17 protocol tests passed.",
+  "passed": 17,
+  "total": 17,
+  "failed": 0,
+  "outcomes": [
+    {
+      "name": "Frame roundtrip",
+      "ok": true
+    },
+    {
+      "name": "Fragmented META",
+      "ok": true
+    },
+    {
+      "name": "Text item USB → BLE",
+      "ok": true
+    },
+    {
+      "name": "Text item BLE → USB",
+      "ok": true
+    },
+    {
+      "name": "Attachment SHA-256",
+      "ok": true
+    },
+    {
+      "name": "Busy collision",
+      "ok": true
+    },
+    {
+      "name": "ACK type mismatch rejected",
+      "ok": true
+    },
+    {
+      "name": "Hash mismatch sends error",
+      "ok": true
+    },
+    {
+      "name": "DATA before META rejected",
+      "ok": true
+    },
+    {
+      "name": "Oversized META rejected",
+      "ok": true
+    },
+    {
+      "name": "Busy versus rejected split",
+      "ok": true
+    },
+    {
+      "name": "Cancel handling",
+      "ok": true
+    },
+    {
+      "name": "bootstrap stream reassembly",
+      "ok": true
+    },
+    {
+      "name": "simultaneous hello arbitration",
+      "ok": true
+    },
+    {
+      "name": "bootstrap.js eval in browser context",
+      "ok": true
+    },
+    {
+      "name": "broken bootstrap.js syntax is detected",
+      "ok": true
+    },
+    {
+      "name": "bootstrap.js picker-cancel error path",
+      "ok": true
+    }
+  ],
+  "evidence": [
+    {
+      "schema": "airbridge-timing/v1",
+      "operation": "chat-text",
+      "endpoint": null,
+      "direction": "usb-to-ble",
+      "itemId": null,
+      "bundleBytes": 21,
+      "transferBytes": 21,
+      "firstReportTimestampMs": 8492.5,
+      "firstReportAt": "2026-08-29T19:05:34.473Z",
+      "firstReportLatencyMs": 0.2,
+      "completeTimeMs": 37.6,
+      "errorState": null,
+      "transferKbps": 0.545,
+      "mock": true,
+      "hardware": false,
+      "marker": "mock",
+      "evidencePath": ".omo/evidence/airbridge-roadmap-encryption/task-1/",
+      "startedAt": "2026-08-29T19:05:34.473Z",
+      "completedAt": "2026-08-29T19:05:34.511Z",
+      "details": {
+        "direction": "usb-to-ble"
+      },
+      "metadata": {
+        "direction": "usb-to-ble"
+      }
+    },
+    {
+      "schema": "airbridge-timing/v1",
+      "operation": "chat-text",
+      "endpoint": null,
+      "direction": "ble-to-usb",
+      "itemId": null,
+      "bundleBytes": 21,
+      "transferBytes": 21,
+      "firstReportTimestampMs": 8534.8,
+      "firstReportAt": "2026-08-29T19:05:34.515Z",
+      "firstReportLatencyMs": 0.1,
+      "completeTimeMs": 54,
+      "errorState": null,
+      "transferKbps": 0.38,
+      "mock": true,
+      "hardware": false,
+      "marker": "mock",
+      "evidencePath": ".omo/evidence/airbridge-roadmap-encryption/task-1/",
+      "startedAt": "2026-08-29T19:05:34.515Z",
+      "completedAt": "2026-08-29T19:05:34.569Z",
+      "details": {
+        "direction": "ble-to-usb"
+      },
+      "metadata": {
+        "direction": "ble-to-usb"
+      }
+    },
+    {
+      "schema": "airbridge-timing/v1",
+      "operation": "attachment",
+      "endpoint": null,
+      "direction": null,
+      "itemId": null,
+      "bundleBytes": 3,
+      "transferBytes": 3,
+      "firstReportTimestampMs": 8593.7,
+      "firstReportAt": "2026-08-29T19:05:34.574Z",
+      "firstReportLatencyMs": 0,
+      "completeTimeMs": 0.4,
+      "errorState": null,
+      "transferKbps": 7.324,
+      "mock": true,
+      "hardware": false,
+      "marker": "mock",
+      "evidencePath": ".omo/evidence/airbridge-roadmap-encryption/task-1/",
+      "startedAt": "2026-08-29T19:05:34.574Z",
+      "completedAt": "2026-08-29T19:05:34.575Z",
+      "details": {},
+      "metadata": {}
+    },
+    {
+      "schema": "airbridge-timing/v1",
+      "operation": "cancel",
+      "endpoint": null,
+      "direction": null,
+      "itemId": null,
+      "bundleBytes": 1,
+      "transferBytes": 0,
+      "firstReportTimestampMs": 8618.1,
+      "firstReportAt": "2026-08-29T19:05:34.599Z",
+      "firstReportLatencyMs": 0,
+      "completeTimeMs": 0.1,
+      "errorState": "cancelled",
+      "transferKbps": 9.766,
+      "mock": true,
+      "hardware": false,
+      "marker": "mock",
+      "evidencePath": ".omo/evidence/airbridge-roadmap-encryption/task-1/",
+      "startedAt": "2026-08-29T19:05:34.599Z",
+      "completedAt": "2026-08-29T19:05:34.599Z",
+      "details": {
+        "cancelAcked": true
+      },
+      "metadata": {
+        "cancelAcked": true
+      }
+    },
+    {
+      "schema": "airbridge-cancel/v1",
+      "operation": "cancel",
+      "endpoint": null,
+      "direction": "mock-loopback",
+      "itemId": 88,
+      "origin": "mock-user",
+      "bundleBytes": 0,
+      "transferBytes": 0,
+      "firstReportTimestampMs": 0,
+      "firstReportAt": "2026-08-29T19:05:34.599Z",
+      "firstReportLatencyMs": 0,
+      "completeTimeMs": 0,
+      "errorState": "cancelled",
+      "transferKbps": 0,
+      "mock": true,
+      "hardware": false,
+      "marker": "mock",
+      "evidencePath": ".omo/evidence/airbridge-roadmap-encryption/task-1/",
+      "completedAt": "2026-08-29T19:05:34.599Z",
+      "details": {
+        "cancelAcked": true
+      },
+      "metadata": {
+        "cancelAcked": true
+      }
+    },
+    {
+      "schema": "airbridge-timing/v1",
+      "operation": "deploy-stream",
+      "endpoint": null,
+      "direction": null,
+      "itemId": null,
+      "bundleBytes": 54,
+      "transferBytes": 54,
+      "firstReportTimestampMs": 8618.9,
+      "firstReportAt": "2026-08-29T19:05:34.600Z",
+      "firstReportLatencyMs": 0.1,
+      "completeTimeMs": 0.2,
+      "errorState": null,
+      "transferKbps": 263.672,
+      "mock": true,
+      "hardware": false,
+      "marker": "mock",
+      "evidencePath": ".omo/evidence/airbridge-roadmap-encryption/task-1/",
+      "startedAt": "2026-08-29T19:05:34.599Z",
+      "completedAt": "2026-08-29T19:05:34.600Z",
+      "details": {},
+      "metadata": {}
+    },
+    {
+      "schema": "airbridge-timing/v1",
+      "operation": "deploy-stream",
+      "endpoint": null,
+      "direction": null,
+      "itemId": null,
+      "bundleBytes": 54,
+      "transferBytes": 54,
+      "firstReportTimestampMs": 8619,
+      "firstReportAt": "2026-08-29T19:05:34.600Z",
+      "firstReportLatencyMs": 0,
+      "completeTimeMs": 0.1,
+      "errorState": "checksum mismatch",
+      "transferKbps": 527.344,
+      "mock": true,
+      "hardware": false,
+      "marker": "mock",
+      "evidencePath": ".omo/evidence/airbridge-roadmap-encryption/task-1/",
+      "startedAt": "2026-08-29T19:05:34.600Z",
+      "completedAt": "2026-08-29T19:05:34.600Z",
+      "details": {},
+      "metadata": {}
+    },
+    {
+      "schema": "airbridge-flipper-counters/v1",
+      "operation": "flipper-counters",
+      "endpoint": null,
+      "flipperCounters": {
+        "usbToBle": 1,
+        "bleToUsb": 2,
+        "drop": 0,
+        "txerr": 0
+      },
+      "bundleBytes": 0,
+      "transferBytes": 0,
+      "firstReportTimestampMs": 0,
+      "firstReportAt": "2026-08-29T19:05:34.600Z",
+      "firstReportLatencyMs": 0,
+      "completeTimeMs": 0,
+      "errorState": null,
+      "transferKbps": 0,
+      "mock": true,
+      "hardware": false,
+      "marker": "mock",
+      "evidencePath": ".omo/evidence/airbridge-roadmap-encryption/task-1/",
+      "completedAt": "2026-08-29T19:05:34.600Z",
+      "details": {},
+      "metadata": {}
+    }
+  ],
+  "rows": [
+    "Frame roundtrip: PASS",
+    "Fragmented META: PASS",
+    "Text item USB → BLE: PASS",
+    "Text item BLE → USB: PASS",
+    "Attachment SHA-256: PASS",
+    "Busy collision: PASS",
+    "ACK type mismatch rejected: PASS",
+    "Hash mismatch sends error: PASS",
+    "DATA before META rejected: PASS",
+    "Oversized META rejected: PASS",
+    "Busy versus rejected split: PASS",
+    "Cancel handling: PASS",
+    "bootstrap stream reassembly: PASS",
+    "simultaneous hello arbitration: PASS",
+    "bootstrap.js eval in browser context: PASS",
+    "broken bootstrap.js syntax is detected: PASS",
+    "bootstrap.js picker-cancel error path: PASS"
+  ],
+  "durationMs": 751,
+  "timestamp": "2026-08-29T19:05:35.221Z"
+}

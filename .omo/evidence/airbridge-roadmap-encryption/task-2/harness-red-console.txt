@@ -1,0 +1,5 @@
+Total messages: 0 (Errors: 0, Warnings: 0)
+Returning 1 messages for level "debug"
+
+ReferenceError: testBootstrapTransferTimeout is not defined
+    at http://localhost:8000/web/protocol-harness.html?task2-red=1:93:48

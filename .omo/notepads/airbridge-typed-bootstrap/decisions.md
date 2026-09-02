@@ -1,0 +1,1 @@
+- 2026-07-20 — loud sound (afplay Funk x2) required before every user-attention gate (question tool, physical device interaction). Recorded in AGENTS.md + flipper-zero-dev SKILL.md.

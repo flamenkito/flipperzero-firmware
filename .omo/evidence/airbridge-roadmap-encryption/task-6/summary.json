@@ -1,0 +1,97 @@
+{
+  "task": "6. NACK support for encrypted transfers",
+  "status": "implemented",
+  "changedFiles": [
+    "web/airbridge-protocol.js",
+    "web/protocol-harness.html",
+    "web/chat-usb.html",
+    "web/chat-ble.html",
+    "docs/protocol.md",
+    "dist/app-usb.html",
+    "dist/app-ble.html",
+    "dist/app-usb.html.gz",
+    "dist/app-ble.html.gz",
+    ".omo/notepads/airbridge-roadmap-encryption/learnings.md",
+    ".omo/notepads/airbridge-roadmap-encryption/issues.md",
+    ".omo/evidence/airbridge-roadmap-encryption/task-6/summary.json"
+  ],
+  "commands": [
+    {
+      "command": "node --check web/airbridge-protocol.js",
+      "status": "passed",
+      "evidence": ".omo/evidence/airbridge-roadmap-encryption/task-6/node-check-airbridge-protocol.txt"
+    },
+    {
+      "command": "python3 tools/build_bundle.py",
+      "status": "passed",
+      "evidence": ".omo/evidence/airbridge-roadmap-encryption/task-6/build-bundle.txt"
+    },
+    {
+      "command": "gzip.decompress(dist/app-*.html.gz) == dist/app-*.html with SHA-256 checks",
+      "status": "passed",
+      "evidence": ".omo/evidence/airbridge-roadmap-encryption/task-6/gzip-hash-check.txt"
+    },
+    {
+      "command": "persistent Chrome CDP protocol harness at http://localhost:9222",
+      "status": "passed",
+      "evidence": ".omo/evidence/airbridge-roadmap-encryption/task-6/protocol-harness-result.json"
+    },
+    {
+      "command": "python3 tools/flipper_alive.py",
+      "status": "hardware_absent",
+      "evidence": ".omo/evidence/airbridge-roadmap-encryption/task-6/flipper-alive.txt"
+    }
+  ],
+  "tests": {
+    "protocolHarness": {
+      "status": "PASS: 35/35 protocol tests passed.",
+      "existingTestsPreserved": 30,
+      "nackTestsAdded": [
+        "single dropped chunk recovery",
+        "repeated drops retry exhaustion",
+        "wrong NACK ignored/fails safely",
+        "encrypted payload integrity after recovery",
+        "cancel returning idle"
+      ]
+    },
+    "bundle": {
+      "app-usb.html": {
+        "rawBytes": 132365,
+        "gzipBytes": 31707,
+        "sha256": "2ebd0cc110ec62f18fca1149dd3414e150548a8688ed527bfeba3b66d2870f17",
+        "gzipInflatesToRaw": true
+      },
+      "app-ble.html": {
+        "rawBytes": 134578,
+        "gzipBytes": 32061,
+        "sha256": "8d15a3d3ca4ed039499a9aa8a8e4ef4d33b3235fd554e438710f3caa3c7ad298",
+        "gzipInflatesToRaw": true
+      }
+    }
+  },
+  "nackBehaviorProof": {
+    "payload": "[nacked_type:u8, nacked_seq:u16be, reason:u8]",
+    "reasons": {
+      "1": "missing",
+      "2": "malformed",
+      "3": "auth-failed-retryable",
+      "4": "busy-window"
+    },
+    "scope": "outer protocol frame type/sequence only; no byte offsets, no resume, no windowed ACKs",
+    "sender": "retains current-item frames until ITEM_DONE ACK or terminal ERROR; matching NACK and ACK/NACK timeout retry only retained exact frames; retry exhaustion sends ERROR",
+    "receiver": "ACKs idempotent duplicate accepted frames, NACKs recoverable missing/malformed outer frames after the NACK delay, clears pending expectations on CANCEL/ERROR",
+    "crypto": "encrypted recovery preserves ciphertext SHA, AES-GCM authentication, and plaintext SHA verification; AES-GCM auth failure after full decrypt remains terminal ERROR"
+  },
+  "lspDiagnostics": {
+    "status": "unavailable",
+    "details": [
+      "web/airbridge-protocol.js diagnostics timed out waiting for Biome",
+      "web/protocol-harness.html diagnostics unavailable: Biome LSP is not installed and was previously declined"
+    ]
+  },
+  "hardwareBlocker": {
+    "flipperPresent": false,
+    "status": "ABSENT: no usbmodem port",
+    "hardwareEvidenceClaimed": false
+  }
+}

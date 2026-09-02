@@ -1,0 +1,218 @@
+diff --git a/applications_user/pocket_airbridge/pocket_airbridge.c b/applications_user/pocket_airbridge/pocket_airbridge.c
+index f4231199..eef94f08 100644
+--- a/applications_user/pocket_airbridge/pocket_airbridge.c
++++ b/applications_user/pocket_airbridge/pocket_airbridge.c
+@@ -1,5 +1,6 @@
+ #include <furi.h>
+ #include <furi_hal.h>
++#include <furi_hal_version.h>
+ #include <furi_hal_bt.h>
+ #include <furi_hal_usb.h>
+ #include <furi_hal_usb_airbridge.h>
+@@ -25,6 +26,7 @@ static const bool airbridge_ble_enabled = true; // flip to false to skip BLE ins
+ 
+ #define TYPE_PRESS_DELAY_MS   12
+ #define TYPE_RELEASE_DELAY_MS 18
++#define TYPE_JITTER_MAX_MS    7
+ #define STREAM_TIMEOUT_MS     50
+ 
+ /* BLE typing pacing at USB parity (12/18). macOS negotiates ~11.25-15 ms
+@@ -41,6 +43,7 @@ static const bool airbridge_ble_enabled = true; // flip to false to skip BLE ins
+ #define BLE_TYPING_RETRY_MAX      5
+ #define BLE_TYPING_RETRY_DELAY_MS 20
+ #define BLE_WAITING_PUMP_MS          2500
++#define BLE_BRIDGE_ADV_WATCHDOG_MS   BLE_WAITING_PUMP_MS
+ #define BLE_WAITING_SQUATTER_KICK_MS 15000
+ #define BLE_STREAM_RETRY_MAX      20
+ 
+@@ -121,6 +124,7 @@ typedef struct {
+     bool typing_enter_pending;
+     bool typing_enter_done;
+     uint32_t typing_next_tick;
++    uint32_t typing_jitter_state;
+     /* Bumped by app_start_typing/app_abort_typing; the BLE retry helper
+      * captures it at entry and refuses to send once it no longer matches. */
+     uint32_t typing_generation;
+@@ -133,6 +137,7 @@ typedef struct {
+     volatile bool ble_connected;
+     uint32_t ble_connected_since;
+     uint32_t ble_waiting_last_pump_tick;
++    uint32_t ble_bridge_last_watchdog_tick;
+     char error[32];
+ } AirbridgeApp;
+ 
+@@ -250,6 +255,23 @@ static void app_ble_status_changed_callback(BtStatus status, void* context) {
+     }
+ }
+ 
++static void app_bridge_adv_watchdog(AirbridgeApp* app) {
++    if(!app->ble_profile_installed || app->ble_connected) return;
++
++    uint32_t now = furi_get_tick();
++    if(now - app->ble_bridge_last_watchdog_tick < BLE_BRIDGE_ADV_WATCHDOG_MS) return;
++    app->ble_bridge_last_watchdog_tick = now;
++
++    if(furi_hal_bt_is_active()) return;
++
++    /* Bridge mode must never kick a central off the chat link. Require GAP idle
++     * before the kick, and rely on furi_hal_bt_start_advertising()'s own
++     * GapStateIdle check as a second guard. This recovers the long-idle/relaunch
++     * case without disturbing active BLE relay traffic. */
++    FURI_LOG_D(TAG, "BLE Bridge watchdog: restart adv from idle");
++    furi_hal_bt_start_advertising();
++}
++
+ static void app_abort_typing(AirbridgeApp* app) {
+     /* Invalidate any in-flight retry helper from the aborted session: its next
+      * boundary check sees the generation bump and returns without sending. */
+@@ -312,6 +334,32 @@ static const uint8_t app_hp_ouis[][3] = {
+     {0x40, 0xB0, 0x34},
+ };
+ 
++static uint32_t app_ble_serial_hash(void) {
++    const uint8_t* uid = furi_hal_version_uid();
++    size_t uid_size = furi_hal_version_uid_size();
++    if(uid == NULL || uid_size == 0) return 0;
++
++    uint32_t hash = 2166136261U;
++    for(size_t index = 0; index < uid_size; index++) {
++        hash ^= uid[index];
++        hash *= 16777619U;
++    }
++    return hash;
++}
++
++static void app_set_default_ble_identity(AirbridgeApp* app) {
++    memcpy(&app->ble_identity, &app_ble_identity_default, sizeof(app->ble_identity));
++
++    const uint32_t serial_hash = app_ble_serial_hash();
++    if(serial_hash == 0) return;
++
++    snprintf(
++        app->ble_identity.dis_serial,
++        sizeof(app->ble_identity.dis_serial),
++        "HP%08lX",
++        (unsigned long)serial_hash);
++}
++
+ static bool app_config_key_matches(const char* key, size_t key_len, const char* expected) {
+     return (strlen(expected) == key_len) && (strncmp(key, expected, key_len) == 0);
+ }
+@@ -451,7 +499,8 @@ static bool app_parse_config_line(AirbridgeApp* app, const char* line) {
+ 
+ static void app_load_config(AirbridgeApp* app) {
+     app->profile_index = FuriHalUsbAirbridgeProfileHpKbdVendor;
+-    memcpy(&app->ble_identity, &app_ble_identity_default, sizeof(app->ble_identity));
++    app->ble_identity_warning = false;
++    app_set_default_ble_identity(app);
+ 
+     Stream* stream = file_stream_alloc(app->storage);
+     FuriString* line = furi_string_alloc();
+@@ -472,11 +521,17 @@ static void app_load_config(AirbridgeApp* app) {
+         config_valid = false;
+     }
+     if(!config_valid) {
+-        memcpy(&app->ble_identity, &app_ble_identity_default, sizeof(app->ble_identity));
++        app_set_default_ble_identity(app);
+         app->ble_identity_warning = true;
+     }
+ }
+ 
++static uint32_t app_typing_jitter_ms(AirbridgeApp* app) {
++    app->typing_jitter_state =
++        app->typing_jitter_state * 1103515245U + 12345U + (uint32_t)app->typing_position;
++    return (app->typing_jitter_state >> 16U) % (TYPE_JITTER_MAX_MS + 1U);
++}
++
+ static bool app_configure_ble(AirbridgeApp* app) {
+     if(app->ble_profile_installed) return true;
+ 
+@@ -637,6 +692,11 @@ static void app_start_typing(AirbridgeApp* app, AirbridgeTypingTransport transpo
+     app->typing_key_down = false;
+     app->typing_enter_pending = false;
+     app->typing_enter_done = false;
++    app->typing_jitter_state = furi_get_tick() ^ ((uint32_t)app->bootstrap_len << 16U) ^
++                               app->typing_generation;
++    if(app->typing_jitter_state == 0) {
++        app->typing_jitter_state = 0xA53C5A5AU;
++    }
+     app->typing_next_tick = furi_get_tick();
+     if(transport == AirbridgeTypingTransportBle) {
+         app_set_hids_adv(app, true);
+@@ -706,6 +766,7 @@ static void app_typing_step(AirbridgeApp* app) {
+         if(app->typing_transport == AirbridgeTypingTransportBle && (app->typing_key >> 8)) {
+             actual_release_delay += BLE_TYPE_MODIFIED_SETTLE_MS;
+         }
++        actual_release_delay += app_typing_jitter_ms(app);
+         app->typing_next_tick = furi_get_tick() + actual_release_delay;
+         return;
+     }
+@@ -729,7 +790,7 @@ static void app_typing_step(AirbridgeApp* app) {
+         }
+         app->typing_key = key;
+         app->typing_key_down = true;
+-        app->typing_next_tick = furi_get_tick() + press_delay;
++        app->typing_next_tick = furi_get_tick() + press_delay + app_typing_jitter_ms(app);
+         return;
+     }
+ 
+@@ -748,7 +809,7 @@ static void app_typing_step(AirbridgeApp* app) {
+         app->typing_key = HID_KEYBOARD_RETURN;
+         app->typing_key_down = true;
+         app->typing_enter_pending = true;
+-        app->typing_next_tick = furi_get_tick() + press_delay;
++        app->typing_next_tick = furi_get_tick() + press_delay + app_typing_jitter_ms(app);
+         return;
+     }
+ 
+@@ -763,13 +824,13 @@ static void app_typing_step(AirbridgeApp* app) {
+ 
+ static bool app_start_stream(AirbridgeApp* app) {
+     const bool use_ble_bundle = app->typing_transport == AirbridgeTypingTransportBle;
+-    const char* bundle_path = use_ble_bundle ? APP_DATA_PATH("app-ble.html") :
+-                                               APP_DATA_PATH("app-usb.html");
+-    const char* missing_error = use_ble_bundle ? "NO app-ble.html ON SD" : "NO app-usb.html ON SD";
+-    const char* too_large_error = use_ble_bundle ? "app-ble.html TOO LARGE" :
+-                                                   "app-usb.html TOO LARGE";
+-    const char* read_error = use_ble_bundle ? "app-ble.html READ ERROR" :
+-                                              "app-usb.html READ ERROR";
++    const char* bundle_path = use_ble_bundle ? APP_DATA_PATH("app-ble.html.gz") :
++                                               APP_DATA_PATH("app-usb.html.gz");
++    const char* missing_error = use_ble_bundle ? "NO app-ble.gz ON SD" : "NO app-usb.gz ON SD";
++    const char* too_large_error = use_ble_bundle ? "app-ble.gz TOO LARGE" :
++                                                   "app-usb.gz TOO LARGE";
++    const char* read_error = use_ble_bundle ? "app-ble.gz READ ERROR" :
++                                              "app-usb.gz READ ERROR";
+     if(!storage_file_open(app->stream_file, bundle_path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+         app_show_error(app, missing_error);
+         return false;
+@@ -1345,9 +1406,16 @@ static void app_service_input(AirbridgeApp* app) {
+ }
+ 
+ static void app_handle_relay(AirbridgeApp* app, BridgeEvent* be) {
+-    if((app->screen == AirbridgeScreenWaiting) && (be->len > 0) && (be->data[0] == 0x42)) {
++    const bool deploy_request = (be->len > 0) && (be->data[0] == 0x42);
++    if(deploy_request && app->screen == AirbridgeScreenWaiting) {
+         app_start_stream(app);
+-    } else if(be->to_ble) {
++        return;
++    }
++    if(deploy_request && app->screen != AirbridgeScreenBridge) {
++        app_show_error(app, "DEPLOY NOT ARMED");
++        return;
++    }
++    if(be->to_ble) {
+         chunks_usb_to_ble++;
+         if(!bt_serial_tx(be->data, be->len)) {
+             tx_errors++;
+@@ -1456,7 +1524,9 @@ int32_t pocket_airbridge_app(void* p) {
+             }
+         }
+ 
+-        if(app->screen == AirbridgeScreenTyping) {
++        if(app->screen == AirbridgeScreenBridge) {
++            app_bridge_adv_watchdog(app);
++        } else if(app->screen == AirbridgeScreenTyping) {
+             app_typing_step(app);
+         } else if(app->screen == AirbridgeScreenStreaming) {
+             if(app->typing_transport == AirbridgeTypingTransportBle) {

@@ -1,0 +1,8 @@
+	CC	applications_user/pocket_airbridge/pocket_airbridge.c
+	SDKCHK	targets/f7/api_symbols.csv
+	LINK	build/f7-firmware-D/.extapps/pocket_airbridge_d.elf
+[32mAPI version 87.4 is up to date[0m
+	APPMETA	build/f7-firmware-D/.extapps/pocket_airbridge.fap
+	FAP	build/f7-firmware-D/.extapps/pocket_airbridge.fap
+	FASTFAP	build/f7-firmware-D/.extapps/pocket_airbridge.fap
+	APPCHK	build/f7-firmware-D/.extapps/pocket_airbridge.fap

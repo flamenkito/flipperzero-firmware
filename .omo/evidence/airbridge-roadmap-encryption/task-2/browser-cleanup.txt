@@ -1,0 +1,1 @@
+Closed the protocol harness tab in the persistent CDP Chrome session; left existing https://blank.org tab(s) intact for the persistent browser profile.
