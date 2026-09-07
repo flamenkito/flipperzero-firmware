@@ -1110,6 +1110,7 @@ export class ItemReceiver {
   constructor(options = {}) {
     if (options.sendFn) assertSendFn(options.sendFn);
     this.sendFn = options.sendFn ?? null;
+    this.itemValidator = null;
     this.nackDelayMs = options.nackDelayMs ?? 750;
     this.busy = Boolean(options.busy);
     this.listeners = new Map();
@@ -1190,6 +1191,17 @@ export class ItemReceiver {
    */
   setBusy(value) {
     this.busy = Boolean(value);
+  }
+
+  /**
+   * Set an async validator that runs before ITEM_DONE is acknowledged. The
+   * validator may return replacement item detail, such as decrypted plaintext.
+   * @param {Function|null} validator Item validator, or null to clear it.
+   * @returns {void}
+   */
+  setItemValidator(validator) {
+    if (validator !== null && typeof validator !== 'function') throw new TypeError('validator must be a function or null');
+    this.itemValidator = validator;
   }
 
   resetItem() {
@@ -1360,10 +1372,18 @@ export class ItemReceiver {
         throw new Error(`Hash mismatch: expected ${expectedHash}, got ${hash}`);
       }
 
+      let item = { meta: this.meta, data, hash };
+      if (this.itemValidator) {
+        const validated = await this.itemValidator(item);
+        if (validated !== undefined) {
+          if (!validated || typeof validated !== 'object') throw new TypeError('Item validator must return item detail or undefined');
+          item = validated;
+        }
+      }
       await this.sendAck(MSG.ITEM_DONE, msg.seq);
       this.clearExpectedFrame();
       this.emit('done', msg);
-      this.emit('item', { meta: this.meta, data, hash });
+      this.emit('item', item);
     } catch (error) {
       this.emit('error', error);
       this.resetItem();

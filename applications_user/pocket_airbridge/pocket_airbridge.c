@@ -40,6 +40,11 @@ struct AirbridgeApp {
 
 static uint32_t last_heartbeat;
 
+/* This latch has static storage duration and therefore outlives every
+ * AirbridgeApp and its queue. The loader signal callback touches only this
+ * latch, so an invocation already in flight remains safe after app teardown. */
+static AirbridgeExitLatch app_exit_latch = AIRBRIDGE_EXIT_LATCH_INITIALIZER;
+
 static void app_set_error(AirbridgeError* error, const char* title, const char* detail, const char* action) {
     snprintf(error->title, sizeof(error->title), "%s", title);
     snprintf(error->detail, sizeof(error->detail), "%s", detail);
@@ -109,15 +114,15 @@ static void app_show_fatal(AirbridgeApp* app, const char* message) {
     app->screen = AirbridgeScreenFatal;
 }
 
-static void app_request_exit(AirbridgeApp* app) {
-    app->exit_requested = true;
-    airbridge_relay_wake(&app->relay);
+static bool app_exit_is_requested(AirbridgeApp* app) {
+    return app->exit_requested || airbridge_exit_latch_requested(&app_exit_latch);
 }
 
 static bool app_signal_callback(uint32_t signal, void* arg, void* context) {
     UNUSED(arg);
+    UNUSED(context);
     if(signal != FuriSignalExit) return false;
-    app_request_exit(context);
+    airbridge_exit_latch_request(&app_exit_latch);
     return true;
 }
 
@@ -193,14 +198,18 @@ int32_t pocket_airbridge_app(void* p) {
     app->relay.usb_mode_prev = furi_hal_usb_get_config();
 
     FuriThread* app_thread = furi_thread_get_current();
-    furi_thread_set_signal_callback(app_thread, app_signal_callback, app);
+    /* Reset while detached, after app initialization. A concurrent signal may
+     * observe the callback before set_signal_callback stores its context, so
+     * the callback deliberately has no context and never touches app state. */
+    airbridge_exit_latch_reset(&app_exit_latch);
+    furi_thread_set_signal_callback(app_thread, app_signal_callback, NULL);
 
     bool startup_apply_pending = true;
 run_app:
     app->running = true;
     while(app->running) {
         airbridge_ui_service_input(&app->ui);
-        if(app->exit_requested) {
+        if(app_exit_is_requested(app)) {
             app->running = false;
             break;
         }
@@ -224,7 +233,7 @@ run_app:
             }
         }
 
-        if(app->exit_requested) {
+        if(app_exit_is_requested(app)) {
             app->running = false;
             break;
         }
@@ -354,6 +363,7 @@ run_app:
            &exit_contract, airbridge_ble_prepare_restore(&app->ble, &bt))) {
         FURI_LOG_E(TAG, "BLE callback detach timed out; retaining app ownership");
         app->exit_requested = false;
+        airbridge_exit_latch_reset(&app_exit_latch);
         goto run_app;
     }
 

@@ -325,6 +325,7 @@ async function connect() {
     sender = new ItemSender(sendFrameWithBusyBackoff, { timeoutMs: mockMode ? 1200 : 5000, retries: 4 });
     receiver = new ItemReceiver({ sendFn: frame => transport.send(frame), busy: false });
     cryptoSession = new AirBridgeCryptoSession({ role: CRYPTO_ROLE.BLE, sendFn: frame => transport.send(frame), onStateChange: updateCryptoPanel });
+    receiver.setItemValidator(({ meta, data }) => cryptoSession.decryptItem(meta, data));
     wireProtocolEvents();
     unsubscribeReceive = transport.onReceive(handleFrame);
     unsubscribeDisconnect = transport.onDisconnect?.(handleDisconnected) ?? null;
@@ -628,24 +629,7 @@ async function sendFrameWithBusyBackoff(frame) {
   await transport.send(frame);
 }
 
-async function handleIncomingItem({ meta, data, hash }) {
-  if (meta.kind !== 'encrypted') {
-    await sendProtocolError('plaintext item rejected');
-    cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
-    log('Rejected plaintext item after crypto unlock.', 'error');
-    return;
-  }
-  let plain;
-  try {
-    plain = await cryptoSession.decryptItem(meta, data);
-  } catch (error) {
-    await sendProtocolError(error.message || 'decrypt failed');
-    log(`Decrypt failed: ${error.message}`, 'error');
-    return;
-  }
-  meta = plain.meta;
-  data = plain.data;
-  hash = plain.hash;
+function handleIncomingItem({ meta, data, hash }) {
   inboundTiming?.complete({ bundleBytes: meta.size || data.length, transferBytes: data.length, direction: 'inbound' });
   inboundTiming = null;
   inboundMeta = null;
@@ -927,6 +911,7 @@ function installMockPeer(endpoint) {
   const mockCrypto = new AirBridgeCryptoSession({ role: CRYPTO_ROLE.USB, sendFn: frame => endpoint.send(frame), onStateChange: status => {
     if (status.state === CRYPTO_STATE.SAS_PENDING && !status.localAccepted) setTimeout(() => mockCrypto.acceptSas().catch(() => {}), 0);
   } });
+  mockReceiver.setItemValidator(({ meta, data }) => mockCrypto.decryptItem(meta, data));
   let replyQueued = false;
   mockCrypto.start().catch(() => {});
 
@@ -953,14 +938,12 @@ function installMockPeer(endpoint) {
   mockReceiver.on('ack', detail => { if (!mockCrypto.receiveAck(detail.message)) mockSender.receiveAck(detail.message); });
   mockReceiver.on('nack', detail => { if (!mockCrypto.receiveNack(detail.message)) mockSender.receiveNack(detail.message); });
   mockReceiver.on('item', async ({ meta, data }) => {
-    if (meta.kind !== 'encrypted') return;
-    const plain = await mockCrypto.decryptItem(meta, data);
     if (replyQueued) return;
     replyQueued = true;
     await sleep(180);
-    const text = plain.meta.kind === 'text'
-      ? `Mock peer received: ${decoder.decode(plain.data)}`
-      : `Mock peer received attachment: ${plain.meta.name} (${formatBytes(plain.meta.size || plain.data.length)})`;
+    const text = meta.kind === 'text'
+      ? `Mock peer received: ${decoder.decode(data)}`
+      : `Mock peer received attachment: ${meta.name} (${formatBytes(meta.size || data.length)})`;
     await sendMockText(mockSender, mockCrypto, text);
     replyQueued = false;
   });
