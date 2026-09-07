@@ -1,7 +1,11 @@
 CompileFlags:
+    CompilationDatabase: build/f7-firmware-D
     Add: 
         - -Wno-unknown-warning-option
         - -Wno-format
+        - -isystem/Users/asutov/projects/flipperzero-firmware/toolchain/arm64-darwin/lib/gcc/arm-none-eabi/12.3.1/include
+        - -isystem/Users/asutov/projects/flipperzero-firmware/toolchain/arm64-darwin/lib/gcc/arm-none-eabi/12.3.1/include-fixed
+        - -isystem/Users/asutov/projects/flipperzero-firmware/toolchain/arm64-darwin/arm-none-eabi/include
     Remove: 
         - -mword-relocations
 

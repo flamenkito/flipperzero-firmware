@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
 #include "usb.h"
 
 #ifdef __cplusplus
@@ -51,6 +53,15 @@ void furi_hal_usb_init(void);
  * @return     true - mode switch started, false - mode switch is locked
  */
 bool furi_hal_usb_set_config(FuriHalUsbInterface* new_if, void* ctx);
+
+/** Queue a USB device configuration change without waiting for the USB thread.
+ * The interface and context must remain valid until the request is processed.
+ *
+ * @param      mode new USB device mode
+ * @param      ctx context passed to device mode init function
+ * @return     true if queued, false if the queue stayed full for 100 ms
+ */
+bool furi_hal_usb_set_config_async(FuriHalUsbInterface* new_if, void* ctx);
 
 /** Get USB device configuration
  *

@@ -60,6 +60,7 @@ typedef void (
 
 /** Initialize start core2 and initialize transport */
 void ble_glue_init(void);
+bool ble_glue_init_bounded(uint32_t timeout);
 
 /** Start Core2 Radio stack
  *
@@ -68,6 +69,8 @@ void ble_glue_init(void);
 bool ble_glue_start(void);
 
 void ble_glue_stop(void);
+
+bool ble_glue_stop_bounded(uint32_t timeout);
 
 /** Is core2 alive and at least FUS is running
  * 
@@ -101,6 +104,7 @@ void ble_glue_set_key_storage_changed_callback(
     void* context);
 
 bool ble_glue_reinit_c2(void);
+bool ble_glue_reinit_c2_bounded(bool* completed);
 
 typedef enum {
     BleGlueCommandResultUnknown,

@@ -36,10 +36,10 @@ deploy, or claim a result that was not observed.
 At every numbered physical gate, the orchestrator must first run:
 
 ```sh
-afplay /System/Library/Sounds/Funk.aiff && sleep 1 && afplay /System/Library/Sounds/Funk.aiff
+afplay /System/Library/Sounds/Funk.aiff &
 ```
 
-Use `say "Flipper needs your attention"` only if `afplay` is unavailable, then use
+Use `say "Flipper needs your attention"` only if `afplay` is unavailable. The `&` is mandatory: play the sound ONCE, backgrounded, and call `question` immediately after — never block on or repeat the alert. Then use
 one `question` tool call with a completion and a cancel option. Do not poll for a
 user action.
 

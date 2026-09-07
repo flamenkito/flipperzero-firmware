@@ -5,6 +5,7 @@
 #pragma once
 
 #include "base.h"
+#include "timer_delete_state.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,6 +36,11 @@ FuriTimer* furi_timer_alloc(FuriTimerCallback func, FuriTimerType type, void* co
  */
 void furi_timer_free(FuriTimer* instance);
 
+FuriStatus furi_timer_free_bounded(
+    FuriTimer* instance,
+    FuriTimerDeleteState* delete_state,
+    uint32_t timeout);
+
 /** Flush timer task control message queue
  *
  * Ensures that all commands before this point was processed.
@@ -52,6 +58,8 @@ void furi_timer_flush(void);
  * @return     The furi status.
  */
 FuriStatus furi_timer_start(FuriTimer* instance, uint32_t ticks);
+
+FuriStatus furi_timer_start_bounded(FuriTimer* instance, uint32_t ticks, uint32_t timeout);
 
 /** Restart timer with previous timeout value
  *
@@ -74,6 +82,8 @@ FuriStatus furi_timer_restart(FuriTimer* instance, uint32_t ticks);
  * @return     The furi status.
  */
 FuriStatus furi_timer_stop(FuriTimer* instance);
+
+FuriStatus furi_timer_stop_bounded(FuriTimer* instance, uint32_t timeout);
 
 /** Is timer running
  *
@@ -98,6 +108,12 @@ uint32_t furi_timer_get_expire_time(FuriTimer* instance);
 typedef void (*FuriTimerPendigCallback)(void* context, uint32_t arg);
 
 void furi_timer_pending_callback(FuriTimerPendigCallback callback, void* context, uint32_t arg);
+
+FuriStatus furi_timer_pending_callback_bounded(
+    FuriTimerPendigCallback callback,
+    void* context,
+    uint32_t arg,
+    uint32_t timeout);
 
 typedef enum {
     FuriTimerThreadPriorityNormal, /**< Lower then other threads */

@@ -44,6 +44,7 @@ typedef bool (*GapEventCallback)(GapEvent event, void* context);
 typedef enum {
     GapStateUninitialized,
     GapStateIdle,
+    GapStateDisconnecting,
     GapStateStartingAdv,
     GapStateAdvFast,
     GapStateAdvLowPower,

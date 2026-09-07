@@ -4,6 +4,7 @@
 #include <ble/ble.h>
 #include <furi_ble/event_dispatcher.h>
 #include <furi_ble/gatt.h>
+#include <gap.h>
 
 #include <furi.h>
 

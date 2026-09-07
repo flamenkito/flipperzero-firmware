@@ -130,9 +130,9 @@ Questions:
 5. **MCP Browser Window Naming** — when a workflow step needs the user to act in a SPECIFIC browser window driven by the Playwright MCP, the orchestrator MUST first navigate that window to the exact URL and then explicitly name it in the question (e.g. "the Playwright window showing https://blank.org"). Never assume the user is acting in the same browser the orchestrator is driving. State scattering across two browsers cost a full debug session on 2026-07-20.
 6. **Attention Signal** — BEFORE calling `question` (or otherwise blocking on a user action), play a loud audible alert:
    ```
-   afplay /System/Library/Sounds/Funk.aiff && sleep 1 && afplay /System/Library/Sounds/Funk.aiff
+   afplay /System/Library/Sounds/Funk.aiff &
    ```
-   Fallback (if `afplay` unavailable): `say "Flipper needs your attention"`. The alert fires on EVERY physical gate — DFU entry, device plug/unplug, browser picker, screen confirmation, etc. — not just the first in a session.
+   Fallback (if `afplay` unavailable): `say "Flipper needs your attention"`. The `&` is mandatory: play the sound ONCE, backgrounded, and call `question` immediately after — never block on or repeat the alert. The alert fires on EVERY physical gate — DFU entry, device plug/unplug, browser picker, screen confirmation, etc. — not just the first in a session.
 
 ### Test Surface and Gate Discipline
 
@@ -163,15 +163,16 @@ This applies to: exiting a Flipper app, entering DFU mode, clicking a browser pi
 BEFORE calling `question` (or otherwise blocking on a user action), play a loud audible alert so the user notices immediately:
 
 ```
-afplay /System/Library/Sounds/Funk.aiff && sleep 1 && afplay /System/Library/Sounds/Funk.aiff
+afplay /System/Library/Sounds/Funk.aiff &
 ```
 
-Fallback (if `afplay` unavailable): `say "Flipper needs your attention"`.
+Fallback (if `afplay` unavailable): `say "Flipper needs your attention"`. The `&` is mandatory: play the sound ONCE, backgrounded, and call `question` immediately after — never block on or repeat the alert.
 
 The alert fires on EVERY physical gate — DFU entry, device plug/unplug, browser picker, screen confirmation, etc. — not just the first in a session.
 
 ## Key Constraints
 
+- API version policy: minor bumps only; major bumps break all existing FAPs.
 - Keyboard emulation exists ONLY as the menu-gated Deploy flow: an explicit `Deploy app` menu action, an on-screen confirmation after cursor placement, `TYPING…` shown for the entire emission, and BACK aborting instantly. No keyboard reports are ever sent in Bridge mode or on any data path.
 - The Deploy flow is BadUSB-shaped by design (HID is the only USB class that survives HID-only policies) and requires physical possession plus explicit on-device action. The typed payload is a fixed, reviewable ASCII artifact (`airbridge/web/bootstrap.js`).
 - A single USB impersonation profile is selected once from `/ext/apps_data/pocket_airbridge/config` (default `hp_kbd_vendor`, HP VID `0x03F0` PID `0x5341`). There is NO runtime profile switching: composite→composite reconfiguration is fatal on this USB stack. The menu profile line is display-only.

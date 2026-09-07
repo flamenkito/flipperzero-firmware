@@ -53,6 +53,15 @@ FURI_WARN_UNUSED FuriHalBleProfileBase* bt_profile_start(
  */
 bool bt_profile_restore_default(Bt* bt);
 
+/** Queue restoration of the default profile without waiting for radio teardown.
+ * The request owns no caller memory and is safe to complete after the caller exits.
+ *
+ * @param bt        Bt instance
+ *
+ * @return          true if the request was queued
+ */
+FURI_WARN_UNUSED bool bt_profile_restore_default_async(Bt* bt);
+
 /** Disconnect from Central
  *
  * @param bt        Bt instance
@@ -68,6 +77,27 @@ void bt_disconnect(Bt* bt);
  */
 bool bt_pairing_in_progress(Bt* bt);
 
+/** Send an AirBridge keyboard input report through the current BLE profile.
+ *
+ * The Bt service holds a reader reference for the entire report operation, so
+ * profile replacement cannot free the profile while the report is in flight.
+ *
+ * @param bt        Bt instance
+ * @param data      eight-byte keyboard report
+ * @param len       report length
+ * @return          false on success, true on error
+ */
+bool bt_airbridge_kb_report(Bt* bt, uint8_t* data, uint16_t len);
+
+/** Query whether the current AirBridge serial client subscribed to TX.
+ *
+ * The service/profile pair remains reader-referenced for the whole query.
+ *
+ * @param bt        Bt instance
+ * @return          true only for a live AirBridge profile with a subscribed client
+ */
+bool bt_airbridge_serial_client_subscribed(Bt* bt);
+
 /** Set callback for Bluetooth status change notification
  *
  * @param bt        Bt instance
@@ -75,6 +105,26 @@ bool bt_pairing_in_progress(Bt* bt);
  * @param context   pointer to context
  */
 void bt_set_status_changed_callback(Bt* bt, BtStatusChangedCallback callback, void* context);
+bool bt_set_status_changed_callback_bounded(
+    Bt* bt,
+    BtStatusChangedCallback callback,
+    void* context,
+    uint32_t timeout);
+
+/** Register the AirBridge status callback and deliver a race-free status snapshot.
+ *
+ * The known-safe AirBridge callback is invoked with the current status before
+ * releasing the callback mutex, totally ordering it before later deliveries.
+ *
+ * @param bt        Bt instance
+ * @param callback  BtStatusChangedCallback instance
+ * @param context   pointer to context
+ * @return          status delivered during registration
+ */
+BtStatus bt_airbridge_set_status_changed_callback(
+    Bt* bt,
+    BtStatusChangedCallback callback,
+    void* context);
 
 /** Forget bonded devices
  * @note Leads to wipe ble key storage and deleting bt.keys

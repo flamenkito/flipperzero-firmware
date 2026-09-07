@@ -580,20 +580,30 @@ uint16_t furi_hal_usb_airbridge_profile_pid(uint8_t index) {
 }
 
 bool furi_hal_hid_vendor_is_connected(void) {
-    return hid_vendor_connected;
+    FURI_CRITICAL_ENTER();
+    bool connected = hid_vendor_connected;
+    FURI_CRITICAL_EXIT();
+    return connected;
 }
 
 void furi_hal_hid_vendor_set_callback(HidVendorCallback cb, void* ctx) {
+    FURI_CRITICAL_ENTER();
     if((callback != NULL) && hid_vendor_connected) {
         callback(HidVendorDisconnected, cb_ctx);
     }
 
-    callback = cb;
-    cb_ctx = ctx;
+    if(cb) {
+        cb_ctx = ctx;
+        callback = cb;
+    } else {
+        callback = NULL;
+        cb_ctx = NULL;
+    }
 
     if((callback != NULL) && hid_vendor_connected) {
         callback(HidVendorConnected, cb_ctx);
     }
+    FURI_CRITICAL_EXIT();
 }
 
 static void hid_vendor_init(usbd_device* dev, FuriHalUsbInterface* intf, void* ctx) {
@@ -620,7 +630,9 @@ static void hid_vendor_deinit(usbd_device* dev) {
     hid_vendor_ep_config(dev, 0);
     usbd_reg_config(dev, NULL);
     usbd_reg_control(dev, NULL);
+    FURI_CRITICAL_ENTER();
     hid_vendor_connected = false;
+    FURI_CRITICAL_EXIT();
     usb_dev = NULL;
     furi_semaphore_release(hid_vendor_semaphore);
     furi_semaphore_release(hid_keyboard_semaphore);
@@ -628,14 +640,17 @@ static void hid_vendor_deinit(usbd_device* dev) {
 
 static void hid_vendor_on_wakeup(usbd_device* dev) {
     UNUSED(dev);
+    FURI_CRITICAL_ENTER();
     hid_vendor_connected = true;
     if(callback != NULL) {
         callback(HidVendorConnected, cb_ctx);
     }
+    FURI_CRITICAL_EXIT();
 }
 
 static void hid_vendor_on_suspend(usbd_device* dev) {
     UNUSED(dev);
+    FURI_CRITICAL_ENTER();
     if(hid_vendor_connected) {
         hid_vendor_connected = false;
         furi_semaphore_release(hid_vendor_semaphore);
@@ -644,6 +659,7 @@ static void hid_vendor_on_suspend(usbd_device* dev) {
             callback(HidVendorDisconnected, cb_ctx);
         }
     }
+    FURI_CRITICAL_EXIT();
 }
 
 bool furi_hal_hid_vendor_send_response(uint8_t* data, uint8_t len) {
@@ -732,9 +748,11 @@ static void hid_vendor_rx_ep_callback(usbd_device* dev, uint8_t event, uint8_t e
     UNUSED(dev);
     UNUSED(event);
     UNUSED(ep);
+    FURI_CRITICAL_ENTER();
     if(callback != NULL) {
         callback(HidVendorRequest, cb_ctx);
     }
+    FURI_CRITICAL_EXIT();
 }
 
 static void hid_vendor_txrx_ep_callback(usbd_device* dev, uint8_t event, uint8_t ep) {

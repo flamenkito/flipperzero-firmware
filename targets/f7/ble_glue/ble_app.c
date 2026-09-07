@@ -4,13 +4,13 @@
 #include <ble/ble.h>
 #include <interface/patterns/ble_thread/tl/hci_tl.h>
 #include <interface/patterns/ble_thread/shci/shci.h>
-#include "gap.h"
 #include "furi_ble/event_dispatcher.h"
 
 #include <furi_hal.h>
 #include <furi.h>
 
 #define TAG "Bt"
+#define BLE_APP_HCI_MUTEX_TIMEOUT (1000U)
 
 PLACE_IN_SECTION("MB_MEM1") ALIGN(4) static TL_CmdPacket_t ble_app_cmd_buffer;
 PLACE_IN_SECTION("MB_MEM2") ALIGN(4) static uint32_t ble_app_nvm[BLE_NVM_SRAM_SIZE];
@@ -22,6 +22,8 @@ _Static_assert(
 typedef struct {
     FuriMutex* hci_mtx;
     FuriSemaphore* hci_sem;
+    volatile bool hci_lock_failed;
+    bool hci_lock_held;
 } BleApp;
 
 static BleApp* ble_app = NULL;
@@ -83,6 +85,8 @@ bool ble_app_init(void) {
     // Allocate semafore and mutex for ble command buffer access
     ble_app->hci_mtx = furi_mutex_alloc(FuriMutexTypeNormal);
     ble_app->hci_sem = furi_semaphore_alloc(1, 0);
+    ble_app->hci_lock_failed = false;
+    ble_app->hci_lock_held = false;
 
     // Initialize Ble Transport Layer
     hci_init(ble_app_hci_event_handler, (void*)&hci_tl_config);
@@ -115,13 +119,20 @@ void ble_app_get_key_storage_buff(uint8_t** addr, uint16_t* size) {
 }
 
 void ble_app_deinit(void) {
-    furi_check(ble_app);
+    if(!ble_app) return;
 
     furi_mutex_free(ble_app->hci_mtx);
     furi_semaphore_free(ble_app->hci_sem);
     free(ble_app);
     ble_app = NULL;
     memset(&ble_app_cmd_buffer, 0, sizeof(ble_app_cmd_buffer));
+}
+
+bool ble_app_take_hci_lock_failure(void) {
+    furi_check(ble_app);
+    bool failed = ble_app->hci_lock_failed;
+    ble_app->hci_lock_failed = false;
+    return failed;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -133,9 +144,9 @@ void hci_cmd_resp_release(uint32_t flag) {
     furi_check(furi_semaphore_release(ble_app->hci_sem) == FuriStatusOk);
 }
 
-void hci_cmd_resp_wait(uint32_t timeout) {
+bool hci_cmd_resp_wait(uint32_t timeout) {
     furi_check(ble_app);
-    furi_check(furi_semaphore_acquire(ble_app->hci_sem, timeout) == FuriStatusOk);
+    return furi_semaphore_acquire(ble_app->hci_sem, timeout) == FuriStatusOk;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -157,10 +168,18 @@ static void ble_app_hci_event_handler(void* pPayload) {
 static void ble_app_hci_status_not_handler(HCI_TL_CmdStatus_t status) {
     if(status == HCI_TL_CmdBusy) {
         furi_hal_power_insomnia_enter();
-        furi_mutex_acquire(ble_app->hci_mtx, FuriWaitForever);
+        if(furi_mutex_acquire(ble_app->hci_mtx, BLE_APP_HCI_MUTEX_TIMEOUT) == FuriStatusOk) {
+            ble_app->hci_lock_held = true;
+        } else {
+            ble_app->hci_lock_failed = true;
+            furi_hal_power_insomnia_exit();
+        }
     } else if(status == HCI_TL_CmdAvailable) {
-        furi_mutex_release(ble_app->hci_mtx);
-        furi_hal_power_insomnia_exit();
+        if(ble_app->hci_lock_held) {
+            ble_app->hci_lock_held = false;
+            furi_mutex_release(ble_app->hci_mtx);
+            furi_hal_power_insomnia_exit();
+        }
     }
 }
 

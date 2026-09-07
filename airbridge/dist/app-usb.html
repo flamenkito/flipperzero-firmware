@@ -2125,6 +2125,7 @@ const SERIAL_UUIDS = [
 ];
 
 const BLE_RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
+const BLE_CONNECT_TIMEOUT_MS = 25000;
 
 function normalizeFrame(frame) {
   if (frame instanceof Uint8Array) return frame;
@@ -2301,6 +2302,47 @@ class WebBluetoothAdapter {
     this.gattSessionDevice = null;
     this.handleCharacteristicValueChanged = this.handleCharacteristicValueChanged.bind(this);
     this.handleDisconnected = this.handleDisconnected.bind(this);
+    this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
+    this.handleBeforeUnload = this.handleBeforeUnload.bind(this);
+    this.connectAttemptId = 0;
+    this.activeAttemptId = -1;
+    this.pendingCleanup = null;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? BLE_CONNECT_TIMEOUT_MS;
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    window.addEventListener('beforeunload', this.handleBeforeUnload);
+  }
+
+  /**
+   * Tear down a half-open GATT connect when the page becomes hidden, so a
+   * stalled bring-up never leaves the OS link dangling after the user leaves.
+   */
+  handleVisibilityChange() {
+    if (document.visibilityState === 'hidden') this.teardownHalfOpen();
+  }
+
+  /**
+   * Tear down a half-open GATT connect on page unload.
+   */
+  handleBeforeUnload() {
+    this.teardownHalfOpen();
+  }
+
+  teardownHalfOpen() {
+    if (!this.device) return;
+    if (this.device.gatt?.connected && !this.isConnected()) {
+      this.device.gatt.disconnect();
+      this.clearGattState();
+    }
+  }
+
+  /**
+   * Release lifecycle listeners and disconnect. Call when the adapter is no
+   * longer used (e.g. the page switches transports or unloads).
+   */
+  dispose() {
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    window.removeEventListener('beforeunload', this.handleBeforeUnload);
+    this.disconnect();
   }
 
   /**
@@ -2369,47 +2411,107 @@ class WebBluetoothAdapter {
    * @returns {Promise<void>}
    */
   async openGattSession() {
-    const device = this.device;
-    const epoch = this.reconnectEpoch;
-    const staleSession = () => epoch !== this.reconnectEpoch && !this.autoReconnect;
-    const throwIfStale = () => {
-      if (staleSession()) throw new Error('GATT session cancelled by disconnect');
+    const attempt = {
+      id: this.connectAttemptId,
+      device: this.device,
     };
+    this.activeAttemptId = attempt.id;
+    const staleSession = () => attempt.id !== this.connectAttemptId;
+    const throwIfStale = () => {
+      if (staleSession()) throw new Error('GATT session cancelled');
+    };
+    const device = attempt.device;
     device.addEventListener('gattserverdisconnected', this.handleDisconnected);
     try {
-      this.server = await device.gatt.connect();
-      throwIfStale();
+      await this.withConnectTimeout(attempt, async () => {
+        this.server = await device.gatt.connect();
+        throwIfStale();
 
-      const discoveredServices = await this.server.getPrimaryServices();
-      throwIfStale();
+        const discoveredServices = await this.server.getPrimaryServices();
+        throwIfStale();
 
-      let service;
-      let uuids;
-      try {
-        ({ service, uuids } = await this.findSerialService());
-      } catch (error) {
-        const discoveredUuids = discoveredServices.map(discovered => discovered.uuid).join(', ') || '(none)';
-        console.debug('Web Bluetooth discovered services:', discoveredUuids);
-        throw new Error(`${error.message}. Discovered services: ${discoveredUuids}`);
-      }
-      throwIfStale();
+        let service;
+        let uuids;
+        try {
+          ({ service, uuids } = await this.findSerialService());
+        } catch (error) {
+          const discoveredUuids = discoveredServices.map(discovered => discovered.uuid).join(', ') || '(none)';
+          console.debug('Web Bluetooth discovered services:', discoveredUuids);
+          throw new Error(`${error.message}. Discovered services: ${discoveredUuids}`);
+        }
+        throwIfStale();
 
-      this.matchedUuids = uuids;
-      this.txChar = await service.getCharacteristic(uuids.tx);
-      this.rxChar = await service.getCharacteristic(uuids.rx);
-      throwIfStale();
+        this.matchedUuids = uuids;
+        this.txChar = await service.getCharacteristic(uuids.tx);
+        this.rxChar = await service.getCharacteristic(uuids.rx);
+        throwIfStale();
 
-      await this.txChar.startNotifications();
-      throwIfStale();
-      this.txChar.addEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
+        await this.txChar.startNotifications();
+        throwIfStale();
+        this.txChar.addEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
+      });
     } catch (error) {
-      if (staleSession()) {
-        device.removeEventListener('gattserverdisconnected', this.handleDisconnected);
-        if (device.gatt?.connected) device.gatt.disconnect();
-        if (this.server?.device === device) this.clearGattState();
-      }
+      /* Every bring-up failure — timeout, stale attempt, discovery error,
+       * startNotifications error, generic exception — must tear the OS link
+       * down and reset adapter state so no dangling connection survives. */
+      device.removeEventListener('gattserverdisconnected', this.handleDisconnected);
+      if (device.gatt?.connected) device.gatt.disconnect();
+      if (this.server?.device === device) this.clearGattState();
       throw error;
     }
+  }
+
+  /**
+   * Bound the GATT connect + discovery + notification bring-up with a hard
+   * deadline. A stalled Web Bluetooth promise must never leave the OS link
+   * dangling: on timeout we invalidate the attempt (so a late completion
+   * detects staleness and disconnects) and reject.
+   * @param {Function} bringUp Async function performing the GATT bring-up.
+   * @returns {Promise<void>}
+   */
+  async withConnectTimeout(attempt, bringUp) {
+    const bringUpPromise = bringUp();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        this.connectAttemptId += 1;
+        reject(new Error('BLE connect timed out'));
+      }, this.connectTimeoutMs);
+    });
+    try {
+      await Promise.race([bringUpPromise, timeout]);
+    } catch (error) {
+      /* The timeout may have won while the bring-up is still settling. Track the
+       * bring-up separately so its LATE settlement always tears the OS link down
+       * and clears state — never leave a dangling connection behind. */
+      if (this.connectAttemptId !== attempt.id) {
+        this.pendingCleanup = bringUpPromise.then(
+          () => this.cleanupStaleAttempt(attempt),
+          () => this.cleanupStaleAttempt(attempt),
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Tear down a stale attempt's late-settled GATT session. Uses the attempt's
+   * OWN device reference (captured when the attempt started), never the mutable
+   * this.device — a replacement session on a different device must not be
+   * disconnected by an older attempt's cleanup. Guarded by the active attempt
+   * id so a replacement session is never torn down.
+   * @param {{id:number, device:object}} attempt The stale attempt record.
+   */
+  cleanupStaleAttempt(attempt) {
+    if (this.activeAttemptId !== attempt.id && this.activeAttemptId !== -1) return;
+    const device = attempt.device;
+    if (device) {
+      device.removeEventListener('gattserverdisconnected', this.handleDisconnected);
+      if (device.gatt?.connected) device.gatt.disconnect();
+    }
+    this.clearGattState();
   }
 
   /**
@@ -2424,13 +2526,41 @@ class WebBluetoothAdapter {
       return this.gattSessionPromise;
     }
     this.gattSessionDevice = device;
-    this.gattSessionPromise = this.openGattSession().finally(() => {
+    this.gattSessionPromise = (async () => {
+      /* Serialize later attempts until a stale attempt's late cleanup
+       * completes, so a replacement session never races the old teardown. The
+       * wait is bounded: a permanently-unresolved cleanup must fail the retry
+       * with an explicit error instead of hanging forever. */
+      if (this.pendingCleanup) await this.waitForCleanup();
+      return this.openGattSession();
+    })().finally(() => {
       if (this.gattSessionDevice === device) {
         this.gattSessionPromise = null;
         this.gattSessionDevice = null;
       }
     });
     return this.gattSessionPromise;
+  }
+
+  /**
+   * Wait for a stale attempt's late cleanup to finish, bounded by the connect
+   * timeout. If the cleanup never resolves, reject with an explicit
+   * cleanup-pending error so the retry fails cleanly instead of hanging.
+   * @returns {Promise<void>}
+   */
+  async waitForCleanup() {
+    const cleanup = this.pendingCleanup;
+    if (!cleanup) return;
+    let timer;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('BLE cleanup pending')), this.connectTimeoutMs);
+    });
+    try {
+      await Promise.race([cleanup, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (this.pendingCleanup === cleanup) this.pendingCleanup = null;
   }
 
   /**
@@ -2441,6 +2571,8 @@ class WebBluetoothAdapter {
    */
   async disconnect() {
     this.autoReconnect = false;
+    this.connectAttemptId += 1;
+    this.activeAttemptId = -1;
     this.cancelReconnect();
     const device = this.device;
     this.clearGattState();

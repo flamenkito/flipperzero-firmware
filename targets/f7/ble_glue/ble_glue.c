@@ -1,10 +1,10 @@
 #include "ble_glue.h"
-#include "app_common.h"
 #include "ble_app.h"
 #include "ble_event_thread.h"
 
 #include <furi_hal_cortex.h>
 #include <core/mutex.h>
+#include <core/resumable_phase.h>
 #include <core/timer.h>
 #include <ble/ble.h>
 #include <hci_tl.h>
@@ -12,13 +12,17 @@
 #include <interface/patterns/ble_thread/tl/tl.h>
 #include <interface/patterns/ble_thread/shci/shci.h>
 #include <interface/patterns/ble_thread/tl/shci_tl.h>
-#include "app_debug.h"
+#ifdef BLE_GLUE_DEBUG
+#include "app_debug.h" // IWYU pragma: keep
+#endif
 
 #include <furi_hal.h>
 
 #define TAG "Core2"
 
 #define BLE_GLUE_HARDFAULT_CHECK_PERIOD_MS (5000)
+#define BLE_GLUE_STOP_TIMEOUT_MS            (1000U)
+#define BLE_GLUE_SHCI_MUTEX_TIMEOUT_MS      (1000U)
 
 #define BLE_GLUE_HARDFAULT_INFO_MAGIC (0x1170FD0F)
 
@@ -42,7 +46,34 @@ typedef struct {
     BleGlueKeyStorageChangedCallback callback;
     BleGlueC2Info c2_info;
     void* context;
+    ResumablePhaseMachine init;
+    ResumablePhaseMachine stop;
+    FuriTimerDeleteState timer_delete;
+    volatile bool timer_stop_fence_complete;
+    volatile bool shci_lock_failed;
+    bool shci_lock_held;
 } BleGlue;
+
+typedef enum {
+    BleGlueInitPhaseTimerStart,
+    BleGlueInitPhaseShciLock,
+    BleGlueInitPhaseEventThread,
+    BleGlueInitPhaseTransport,
+    BleGlueInitPhaseComplete,
+} BleGlueInitPhase;
+
+typedef enum {
+    BleGlueStopPhaseTimerStop,
+    BleGlueStopPhaseTimerFenceSubmit,
+    BleGlueStopPhaseTimerFenceAwait,
+    BleGlueStopPhaseEventThreadQuiesce,
+    BleGlueStopPhaseTimerDelete,
+    BleGlueStopPhaseComplete,
+} BleGlueStopPhase;
+
+typedef struct {
+    uint32_t timeout;
+} BleGluePhaseContext;
 
 static BleGlue* ble_glue = NULL;
 
@@ -50,6 +81,8 @@ static BleGlue* ble_glue = NULL;
 static void ble_sys_status_not_callback(SHCI_TL_CmdStatus_t status);
 static void ble_sys_user_event_callback(void* pPayload);
 static void ble_glue_clear_shared_memory(void);
+static ResumablePhaseStepResult ble_glue_init_step(void* context, uint8_t phase);
+static ResumablePhaseStepResult ble_glue_stop_step(void* context, uint8_t phase);
 
 void ble_glue_set_key_storage_changed_callback(
     BleGlueKeyStorageChangedCallback callback,
@@ -70,47 +103,68 @@ static void furi_hal_bt_hardfault_check(void* context) {
 ///////////////////////////////////////////////////////////////////////////////
 
 void ble_glue_init(void) {
-    ble_glue = malloc(sizeof(BleGlue));
+    furi_check(ble_glue_init_bounded(FuriWaitForever));
+}
+
+bool ble_glue_init_bounded(uint32_t timeout) {
+    if(!ble_glue) {
+        ble_glue = calloc(1, sizeof(BleGlue));
+        furi_check(ble_glue);
     ble_glue->status = BleGlueStatusStartup;
-    ble_glue->hardfault_check_timer =
-        furi_timer_alloc(furi_hal_bt_hardfault_check, FuriTimerTypePeriodic, NULL);
-    furi_timer_start(ble_glue->hardfault_check_timer, BLE_GLUE_HARDFAULT_CHECK_PERIOD_MS);
+        ble_glue->hardfault_check_timer =
+            furi_timer_alloc(furi_hal_bt_hardfault_check, FuriTimerTypePeriodic, NULL);
+        ble_glue->shci_mtx = furi_mutex_alloc(FuriMutexTypeNormal);
+    }
+
+    BleGluePhaseContext context = {.timeout = timeout};
+    return resumable_phase_machine_run(&ble_glue->init, ble_glue_init_step, &context);
+}
+
+static ResumablePhaseStepResult ble_glue_init_step(void* context, uint8_t phase) {
+    BleGluePhaseContext* phase_context = context;
+    switch((BleGlueInitPhase)phase) {
+    case BleGlueInitPhaseTimerStart:
+        return furi_timer_start_bounded(
+                   ble_glue->hardfault_check_timer,
+                   BLE_GLUE_HARDFAULT_CHECK_PERIOD_MS,
+                   phase_context->timeout) == FuriStatusOk ?
+                   ResumablePhaseStepAdvance :
+                   ResumablePhaseStepRetry;
+    case BleGlueInitPhaseShciLock:
+        if(furi_mutex_acquire(ble_glue->shci_mtx, phase_context->timeout) != FuriStatusOk) {
+            return ResumablePhaseStepRetry;
+        }
+        ble_glue->shci_lock_held = true;
+        return ResumablePhaseStepAdvance;
+    case BleGlueInitPhaseEventThread:
+        ble_event_thread_start();
+        return ResumablePhaseStepAdvance;
+    case BleGlueInitPhaseTransport: {
 
 #ifdef BLE_GLUE_DEBUG
-    APPD_Init();
+        APPD_Init();
 #endif
 
-    // Initialize all transport layers
-    TL_MM_Config_t tl_mm_config;
-    SHCI_TL_HciInitConf_t SHci_Tl_Init_Conf;
-    // Reference table initialization
-    TL_Init();
+        TL_MM_Config_t tl_mm_config;
+        SHCI_TL_HciInitConf_t SHci_Tl_Init_Conf;
+        TL_Init();
 
-    ble_glue->shci_mtx = furi_mutex_alloc(FuriMutexTypeNormal);
-    // Take mutex, SHCI will release it in most unusual way later
-    furi_check(furi_mutex_acquire(ble_glue->shci_mtx, FuriWaitForever) == FuriStatusOk);
+        SHci_Tl_Init_Conf.p_cmdbuffer = (uint8_t*)&ble_glue_cmd_buff;
+        SHci_Tl_Init_Conf.StatusNotCallBack = ble_sys_status_not_callback;
+        shci_init(ble_sys_user_event_callback, (void*)&SHci_Tl_Init_Conf);
 
-    // FreeRTOS system task creation
-    ble_event_thread_start();
-
-    // System channel initialization
-    SHci_Tl_Init_Conf.p_cmdbuffer = (uint8_t*)&ble_glue_cmd_buff;
-    SHci_Tl_Init_Conf.StatusNotCallBack = ble_sys_status_not_callback;
-    shci_init(ble_sys_user_event_callback, (void*)&SHci_Tl_Init_Conf);
-
-    /**< Memory Manager channel initialization */
-    tl_mm_config.p_BleSpareEvtBuffer = ble_spare_event_buff;
-    tl_mm_config.p_SystemSpareEvtBuffer = ble_glue_spare_event_buff;
-    tl_mm_config.p_AsynchEvtPool = ble_event_pool;
-    tl_mm_config.AsynchEvtPoolSize = POOL_SIZE;
-    TL_MM_Init(&tl_mm_config);
-    TL_Enable();
-
-    /*
-     * From now, the application is waiting for the ready event ( VS_HCI_C2_Ready )
-     * received on the system channel before starting the Stack
-     * This system event is received with ble_sys_user_event_callback()
-     */
+        tl_mm_config.p_BleSpareEvtBuffer = ble_spare_event_buff;
+        tl_mm_config.p_SystemSpareEvtBuffer = ble_glue_spare_event_buff;
+        tl_mm_config.p_AsynchEvtPool = ble_event_pool;
+        tl_mm_config.AsynchEvtPoolSize = POOL_SIZE;
+        TL_MM_Init(&tl_mm_config);
+        TL_Enable();
+        return ResumablePhaseStepAdvance;
+    }
+    case BleGlueInitPhaseComplete:
+        return ResumablePhaseStepComplete;
+    }
+    furi_crash();
 }
 
 const BleGlueC2Info* ble_glue_get_c2_info(void) {
@@ -235,7 +289,6 @@ bool ble_glue_start(void) {
     if(!ble_app_init()) {
         FURI_LOG_E(TAG, "Radio stack startup failed");
         ble_glue->status = BleGlueStatusRadioStackMissing;
-        ble_app_deinit();
         return false;
     }
 
@@ -244,19 +297,78 @@ bool ble_glue_start(void) {
     return true;
 }
 
-void ble_glue_stop(void) {
-    furi_check(ble_glue);
+bool ble_glue_stop_bounded(uint32_t timeout) {
+    if(!ble_glue) return true;
 
-    ble_event_thread_stop();
-    // Free resources
+    BleGluePhaseContext context = {.timeout = timeout};
+    if(!resumable_phase_machine_run(&ble_glue->stop, ble_glue_stop_step, &context)) return false;
+
+    ble_event_thread_free_stopped();
     furi_mutex_free(ble_glue->shci_mtx);
     ble_glue->shci_mtx = NULL;
-    furi_timer_free(ble_glue->hardfault_check_timer);
-    ble_glue->hardfault_check_timer = NULL;
-
     ble_glue_clear_shared_memory();
     free(ble_glue);
     ble_glue = NULL;
+    return true;
+}
+
+static void ble_glue_timer_stop_fence(void* context, uint32_t arg) {
+    UNUSED(arg);
+    BleGlue* instance = context;
+    instance->timer_stop_fence_complete = true;
+}
+
+static bool ble_glue_wait_for_timer_stop_fence(uint32_t timeout) {
+    uint32_t waited = 0;
+    while(!ble_glue->timer_stop_fence_complete) {
+        if(waited >= timeout) return false;
+        furi_delay_tick(1);
+        waited++;
+    }
+    return true;
+}
+
+static ResumablePhaseStepResult ble_glue_stop_step(void* context, uint8_t phase) {
+    BleGluePhaseContext* phase_context = context;
+    switch((BleGlueStopPhase)phase) {
+    case BleGlueStopPhaseTimerStop:
+        return furi_timer_stop_bounded(ble_glue->hardfault_check_timer, phase_context->timeout) ==
+                       FuriStatusOk ?
+                   ResumablePhaseStepAdvance :
+                   ResumablePhaseStepRetry;
+    case BleGlueStopPhaseTimerFenceSubmit:
+        return furi_timer_pending_callback_bounded(
+                   ble_glue_timer_stop_fence,
+                   ble_glue,
+                   0,
+                   phase_context->timeout) == FuriStatusOk ?
+                   ResumablePhaseStepAdvance :
+                   ResumablePhaseStepRetry;
+    case BleGlueStopPhaseTimerFenceAwait:
+        return ble_glue_wait_for_timer_stop_fence(phase_context->timeout) ?
+                   ResumablePhaseStepAdvance :
+                   ResumablePhaseStepRetry;
+    case BleGlueStopPhaseEventThreadQuiesce:
+        return ble_event_thread_quiesce_bounded(phase_context->timeout) ?
+                   ResumablePhaseStepAdvance :
+                   ResumablePhaseStepRetry;
+    case BleGlueStopPhaseTimerDelete:
+        if(furi_timer_free_bounded(
+               ble_glue->hardfault_check_timer,
+               &ble_glue->timer_delete,
+               phase_context->timeout) != FuriStatusOk) {
+            return ResumablePhaseStepRetry;
+        }
+        ble_glue->hardfault_check_timer = NULL;
+        return ResumablePhaseStepAdvance;
+    case BleGlueStopPhaseComplete:
+        return ResumablePhaseStepComplete;
+    }
+    furi_crash();
+}
+
+void ble_glue_stop(void) {
+    furi_check(ble_glue_stop_bounded(BLE_GLUE_STOP_TIMEOUT_MS));
 }
 
 bool ble_glue_is_alive(void) {
@@ -313,13 +425,19 @@ BleGlueCommandResult ble_glue_force_c2_mode(BleGlueC2Mode desired_mode) {
 static void ble_sys_status_not_callback(SHCI_TL_CmdStatus_t status) {
     switch(status) {
     case SHCI_TL_CmdBusy:
-        furi_check(
-            furi_mutex_acquire(
-                ble_glue->shci_mtx, furi_kernel_is_running() ? FuriWaitForever : 0) ==
-            FuriStatusOk);
+        if(furi_mutex_acquire(
+               ble_glue->shci_mtx,
+               furi_kernel_is_running() ? BLE_GLUE_SHCI_MUTEX_TIMEOUT_MS : 0) == FuriStatusOk) {
+            ble_glue->shci_lock_held = true;
+        } else {
+            ble_glue->shci_lock_failed = true;
+        }
         break;
     case SHCI_TL_CmdAvailable:
-        furi_check(furi_mutex_release(ble_glue->shci_mtx) == FuriStatusOk);
+        if(ble_glue->shci_lock_held) {
+            ble_glue->shci_lock_held = false;
+            furi_check(furi_mutex_release(ble_glue->shci_mtx) == FuriStatusOk);
+        }
         break;
     default:
         break;
@@ -377,7 +495,20 @@ static void ble_glue_clear_shared_memory(void) {
 }
 
 bool ble_glue_reinit_c2(void) {
-    return SHCI_C2_Reinit() == SHCI_Success;
+    bool completed = false;
+    return ble_glue_reinit_c2_bounded(&completed);
+}
+
+bool ble_glue_reinit_c2_bounded(bool* completed) {
+    furi_check(ble_glue);
+    furi_check(completed);
+    ble_glue->shci_lock_failed = false;
+    const SHCI_CmdStatus_t status = SHCI_C2_Reinit();
+    /* A transport timeout poisons this command attempt just like a controller
+     * error: do not replay it against a possibly-late response. Advance into
+     * glue teardown and rebuild the transport before any retry. */
+    *completed = true;
+    return status == SHCI_Success && !ble_glue->shci_lock_failed;
 }
 
 BleGlueCommandResult ble_glue_fus_stack_delete(void) {

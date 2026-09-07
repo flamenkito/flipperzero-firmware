@@ -7,7 +7,10 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
-BOOTSTRAP = WEB / "bootstrap.js"
+BOOTSTRAPS = (
+    (WEB / "bootstrap.js", 1200),
+    (WEB / "bootstrap-ble.js", 16 * 1024),
+)
 BUNDLES = (
     ("chat-usb.html", "app-usb.html", "WebHIDAdapter"),
     ("chat-ble.html", "app-ble.html", "WebBluetoothAdapter"),
@@ -78,9 +81,20 @@ def gzip_deterministic(data: bytes) -> bytes:
     return gzip.compress(data, compresslevel=9, mtime=0)
 
 
-def main() -> None:
-    output_dir = ROOT / "dist"
-    output_dir.mkdir(parents=True, exist_ok=True)
+def normalize_bootstrap(data: bytes, path: Path) -> bytes:
+    normalized = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").rstrip(b"\n")
+    for offset, value in enumerate(normalized):
+        if value < 0x20 or value > 0x7E:
+            char = chr(value) if value < 0x80 else f"\\x{value:02x}"
+            message = f"{path.relative_to(ROOT)} contains non-US-ASCII byte "
+            message += f"0x{value:02X} ({char!r}) at offset {offset}"
+            raise ValueError(message)
+    return normalized
+
+
+def build_bundle() -> dict[str, bytes]:
+    """Build all bundles in memory, returning {output_name: raw_bytes}."""
+    bundles: dict[str, bytes] = {}
     for page_name, output_name, adapter_name in BUNDLES:
         page = (WEB / page_name).read_text(encoding="utf-8")
         page = inline_ui_css(page)
@@ -112,9 +126,32 @@ def main() -> None:
             raise ValueError("bundle still contains UI module import")
         if "import " in page or 'type="module"' in page:
             raise ValueError("bundle still contains module syntax")
+        bundles[output_name] = page.encode("utf-8")
+    return bundles
 
+
+def bundle_matches_source() -> bool:
+    """True when every on-disk dist bundle (.html and .html.gz) is fresh.
+
+    The .html must be byte-identical to a fresh build; the .gz must decompress
+    to that same content (compressed bytes are not compared directly because
+    gzip output varies across Python/zlib versions)."""
+    output_dir = ROOT / "dist"
+    for name, raw in build_bundle().items():
+        on_disk = (output_dir / name).read_bytes()
+        if on_disk != raw:
+            return False
+        on_disk_gz = (output_dir / (name + ".gz")).read_bytes()
+        if gzip.decompress(on_disk_gz) != raw:
+            return False
+    return True
+
+
+def main() -> None:
+    output_dir = ROOT / "dist"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for output_name, raw in build_bundle().items():
         output = output_dir / output_name
-        raw = page.encode("utf-8")
         _ = output.write_bytes(raw)
         compressed = gzip_deterministic(raw)
         compressed_output = output.with_suffix(output.suffix + ".gz")
@@ -132,11 +169,16 @@ def main() -> None:
             )
         )
 
-    bootstrap = BOOTSTRAP.read_text(encoding="ascii")
-    if len(bootstrap) > 1200:
-        raise ValueError(f"{BOOTSTRAP.relative_to(ROOT)} exceeds 1200 chars: {len(bootstrap)}")
-    print(f"{BOOTSTRAP.relative_to(ROOT)}: {len(bootstrap)} chars")
+    for bootstrap_path, max_chars in BOOTSTRAPS:
+        bootstrap = normalize_bootstrap(bootstrap_path.read_bytes(), bootstrap_path)
+        if len(bootstrap) > max_chars:
+            message = f"{bootstrap_path.relative_to(ROOT)} exceeds {max_chars} chars: "
+            message += str(len(bootstrap))
+            raise ValueError(message)
+        if bootstrap != bootstrap_path.read_bytes():
+            _ = bootstrap_path.write_bytes(bootstrap)
+        print(f"{bootstrap_path.relative_to(ROOT)}: {len(bootstrap)} chars")
 
 
 if __name__ == "__main__":
-    main()
+    _ = main()
