@@ -23,12 +23,9 @@ typedef struct {
     uint32_t consumed_sequence;
     uint32_t consumed_connect_count;
     uint32_t implicit_connect_credit;
-    bool deploy_request_accepted;
-    uint32_t ble_waiting_last_pump_tick;
     uint32_t ble_bridge_last_watchdog_tick;
 } AirbridgeBle;
 
-void airbridge_ble_set_hids_adv(AirbridgeBle* ble, bool enable);
 void airbridge_ble_ensure_serial_adv(AirbridgeBle* ble);
 void airbridge_ble_service_pending(AirbridgeBle* ble);
 void airbridge_ble_note_rx(AirbridgeBle* ble, uint32_t tick);

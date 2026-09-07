@@ -143,21 +143,16 @@ void airbridge_relay_set_usb_connected(AirbridgeRelay* relay, bool connected) {
     FURI_CRITICAL_EXIT();
 }
 
-void airbridge_relay_handle(
+AirbridgeRelayResult airbridge_relay_handle(
     AirbridgeRelay* relay,
     BridgeEvent* be,
-    AirbridgeScreen screen,
-    AirbridgeRelayStartStreamCallback start_stream,
-    AirbridgeRelayShowErrorCallback show_error,
-    AirbridgeApp* app) {
-    const bool deploy_request = (be->len == 1) && (be->data[0] == 0x42);
+    AirbridgeScreen screen) {
+    const bool deploy_request = be->to_ble && (be->len == 1) && (be->data[0] == 0x42);
     if(deploy_request && screen == AirbridgeScreenWaiting) {
-        start_stream(app);
-        return;
+        return AirbridgeRelayDeployRequested;
     }
     if(deploy_request && screen != AirbridgeScreenBridge) {
-        show_error(app, "DEPLOY NOT ARMED");
-        return;
+        return AirbridgeRelayDeployNotArmed;
     }
     if(be->to_ble) {
         if(bt_serial_tx(be->data, be->len)) {
@@ -174,4 +169,5 @@ void airbridge_relay_handle(
             airbridge_relay_increment(&relay->metrics.tx_errors);
         }
     }
+    return AirbridgeRelayHandled;
 }

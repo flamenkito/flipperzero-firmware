@@ -31,7 +31,7 @@ Write logs and screenshots under:
    python3 /Users/asutov/projects/flipperzero-firmware/airbridge/tools/build_bundle.py
    ```
 
-   Expected outputs include `airbridge/dist/app-usb.html.gz`, `airbridge/dist/app-ble.html.gz`, raw and gzip SHA-256 values, and `airbridge/web/bootstrap.js: 1196 chars`.
+   Expected outputs include `airbridge/dist/app-usb.html.gz`, raw and bundle SHA-256 values, the normalized `airbridge/web/bootstrap.js` size and SHA-256, and regenerated `applications_user/pocket_airbridge/airbridge_assets_digest.h`.
 
 2. Build the live FAP from the same repository:
 
@@ -40,14 +40,12 @@ Write logs and screenshots under:
    ./fbt build APPSRC=applications_user/pocket_airbridge
    ```
 
-3. With the Flipper exited to desktop and unlocked, upload the FAP, bootstraps, and gzip app assets to the canonical paths:
+3. With the Flipper exited to desktop and unlocked, upload the FAP, bootstrap, and USB app asset to the canonical paths:
 
    ```bash
    /ext/apps/USB/pocket_airbridge.fap
    /ext/apps_data/pocket_airbridge/bootstrap.js
-   /ext/apps_data/pocket_airbridge/bootstrap-ble.js
    /ext/apps_data/pocket_airbridge/app-usb.html.gz
-   /ext/apps_data/pocket_airbridge/app-ble.html.gz
    ```
 
 4. Before launch, run `python3 scripts/storage.py -p <port> list /ext/apps | grep -i airbridge`. It must return exactly `/ext/apps/USB/pocket_airbridge.fap`; remove every stray copy before continuing.
@@ -72,11 +70,11 @@ Write logs and screenshots under:
 
 ## Compressed Deploy demo
 
-1. From the Bridge screen, use LEFT or RIGHT to select USB Deploy or BLE Deploy.
+1. From the Bridge screen, use LEFT or RIGHT to select USB Deploy.
 2. Open `https://blank.org` on the target PC, open DevTools, and click into the console.
-3. Press OK on the Flipper. The screen shows `TYPING via USB` or `TYPING via BLE`; BACK aborts immediately.
+3. Press OK on the Flipper. The screen shows `TYPING via USB`; BACK aborts immediately.
 4. The typed bootstrap paints a landing page. Click **Connect**.
-5. The FAP streams `app-usb.html.gz` or `app-ble.html.gz`. The bootstrap verifies compressed bytes, requires `DecompressionStream("gzip")`, inflates the app, and replaces the page.
+5. The FAP first verifies the bundle container's `ABND` magic, version, gzip marker, pinned size, and SHA-256, then streams its gzip payload. The bootstrap verifies the wire checksum, requires `DecompressionStream("gzip")`, inflates the app, and replaces the page.
 6. If the browser lacks gzip streaming support, expect `Transfer unsupported - retry` before a picker opens.
 
 ## Caveats to state if asked

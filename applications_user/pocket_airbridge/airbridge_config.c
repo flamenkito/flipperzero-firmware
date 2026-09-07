@@ -2,19 +2,11 @@
 
 #include <furi.h>
 #include <furi_hal_usb_airbridge.h>
-#include <furi_hal_version.h>
 #include <toolbox/stream/file_stream.h>
 #include <toolbox/stream/stream.h>
 
 #include "airbridge_types.h"
 
-#define BLE_DEFAULT_NAME           "HP 725 K+M"
-#define BLE_DEFAULT_APPEARANCE     0x0000
-#define BLE_DEFAULT_MFG_COMPANY    0x0065
-#define BLE_DEFAULT_DIS_MFR        "HP"
-#define BLE_DEFAULT_DIS_MODEL      "HP 725 K+M"
-#define BLE_DEFAULT_DIS_SERIAL     "HP5341KBD01"
-#define BLE_DEFAULT_DIS_PNP        0x0126
 #define BLE_SCAN_RESPONSE_OVERHEAD 27U
 
 static bool app_find_profile(const char* label, uint8_t* profile_index) {
@@ -28,22 +20,6 @@ static bool app_find_profile(const char* label, uint8_t* profile_index) {
     return false;
 }
 
-static const AirbridgeBleIdentityParams app_ble_identity_default = {
-    .device_name = BLE_DEFAULT_NAME,
-    .mac_address = {0x3C, 0x52, 0x82, 0x00, 0x00, 0x01},
-    .appearance = BLE_DEFAULT_APPEARANCE,
-    .manufacturer_data =
-        {
-            BLE_DEFAULT_MFG_COMPANY & 0xFF,
-            BLE_DEFAULT_MFG_COMPANY >> 8,
-        },
-    .manufacturer_data_len = 2,
-    .dis_manufacturer = BLE_DEFAULT_DIS_MFR,
-    .dis_model = BLE_DEFAULT_DIS_MODEL,
-    .dis_serial = BLE_DEFAULT_DIS_SERIAL,
-    .dis_pnp_version = BLE_DEFAULT_DIS_PNP,
-};
-
 static const uint8_t app_hp_ouis[][3] = {
     {0x3C, 0x52, 0x82},
     {0x48, 0x0F, 0xCF},
@@ -54,34 +30,6 @@ static const uint8_t app_hp_ouis[][3] = {
     {0xA0, 0xD3, 0xC1},
     {0x40, 0xB0, 0x34},
 };
-
-static uint32_t app_ble_serial_hash(void) {
-    const uint8_t* uid = furi_hal_version_uid();
-    size_t uid_size = furi_hal_version_uid_size();
-    if(uid == NULL || uid_size == 0) return 0;
-
-    uint32_t hash = 2166136261U;
-    for(size_t index = 0; index < uid_size; index++) {
-        hash ^= uid[index];
-        hash *= 16777619U;
-    }
-    return hash;
-}
-
-void airbridge_config_set_defaults(AirbridgeConfig* config) {
-    config->usb_profile_index = FuriHalUsbAirbridgeProfileHpKbdVendor;
-    memcpy(&config->ble_identity, &app_ble_identity_default, sizeof(config->ble_identity));
-    config->identity_warning = false;
-
-    const uint32_t serial_hash = app_ble_serial_hash();
-    if(serial_hash == 0) return;
-
-    snprintf(
-        config->ble_identity.dis_serial,
-        sizeof(config->ble_identity.dis_serial),
-        "HP%08lX",
-        (unsigned long)serial_hash);
-}
 
 static bool app_config_key_matches(const char* key, size_t key_len, const char* expected) {
     return (strlen(expected) == key_len) && (strncmp(key, expected, key_len) == 0);

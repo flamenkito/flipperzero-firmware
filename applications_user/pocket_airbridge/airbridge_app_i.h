@@ -1,0 +1,25 @@
+#pragma once
+
+#include <storage/storage.h>
+
+#include "airbridge_ble.h"
+#include "airbridge_config.h"
+#include "airbridge_relay.h"
+#include "airbridge_screens.h"
+#include "airbridge_stream.h"
+#include "airbridge_typing.h"
+#include "airbridge_ui.h"
+
+typedef struct AirbridgeApp {
+    bool running;
+    volatile bool exit_requested;
+    uint32_t last_heartbeat;
+    Storage* storage;
+    AirbridgeBle ble;
+    AirbridgeConfig config;
+    AirbridgeRelay relay;
+    AirbridgeStream stream;
+    AirbridgeTyping typing;
+    AirbridgeScreens* screens;
+    AirbridgeUi* ui;
+} AirbridgeApp;

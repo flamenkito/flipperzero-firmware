@@ -1,25 +1,27 @@
 #pragma once
 
 #include <stdbool.h>
-#include <stdatomic.h>
+#include <stdint.h>
+
+#define AIRBRIDGE_EXIT_POLL_INTERVAL_MS 10U
 
 typedef struct {
-    atomic_bool requested;
+    uint32_t requested;
 } AirbridgeExitLatch;
 
 #define AIRBRIDGE_EXIT_LATCH_INITIALIZER \
-    { .requested = ATOMIC_VAR_INIT(false) }
+    { .requested = 0U }
 
 static inline void airbridge_exit_latch_reset(AirbridgeExitLatch* latch) {
-    atomic_store_explicit(&latch->requested, false, memory_order_relaxed);
+    __atomic_store_n(&latch->requested, 0U, __ATOMIC_RELAXED);
 }
 
 static inline void airbridge_exit_latch_request(AirbridgeExitLatch* latch) {
-    atomic_store_explicit(&latch->requested, true, memory_order_relaxed);
+    __atomic_store_n(&latch->requested, 1U, __ATOMIC_RELAXED);
 }
 
 static inline bool airbridge_exit_latch_requested(AirbridgeExitLatch* latch) {
-    return atomic_load_explicit(&latch->requested, memory_order_relaxed);
+    return __atomic_load_n(&latch->requested, __ATOMIC_RELAXED) != 0U;
 }
 
 typedef struct {

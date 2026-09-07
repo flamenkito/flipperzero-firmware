@@ -16,10 +16,11 @@ typedef struct {
     bool usb_connected;
 } AirbridgeRelayMetrics;
 
-typedef struct AirbridgeApp AirbridgeApp;
-
-typedef bool (*AirbridgeRelayStartStreamCallback)(AirbridgeApp* app);
-typedef void (*AirbridgeRelayShowErrorCallback)(AirbridgeApp* app, const char* message);
+typedef enum {
+    AirbridgeRelayHandled,
+    AirbridgeRelayDeployRequested,
+    AirbridgeRelayDeployNotArmed,
+} AirbridgeRelayResult;
 
 typedef struct {
     FuriMessageQueue* event_queue;
@@ -43,10 +44,7 @@ void airbridge_relay_count_drop(AirbridgeRelay* relay);
 void airbridge_relay_metrics_snapshot(
     AirbridgeRelay* relay,
     AirbridgeRelayMetrics* snapshot);
-void airbridge_relay_handle(
+AirbridgeRelayResult airbridge_relay_handle(
     AirbridgeRelay* relay,
     BridgeEvent* event,
-    AirbridgeScreen screen,
-    AirbridgeRelayStartStreamCallback start_stream,
-    AirbridgeRelayShowErrorCallback show_error,
-    AirbridgeApp* app);
+    AirbridgeScreen screen);

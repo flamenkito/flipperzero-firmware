@@ -9,7 +9,6 @@ typedef struct {
     uint32_t* last_rx_tick;
     uint32_t* desync_since;
     uint32_t* generation;
-    bool* deploy_request_accepted;
 } AirbridgeBleLinkStateRefs;
 
 static inline bool airbridge_ble_link_apply_connected(
@@ -23,6 +22,5 @@ static inline bool airbridge_ble_link_apply_connected(
     *state.connected_since = tick;
     *state.last_rx_tick = 0;
     *state.desync_since = 0;
-    *state.deploy_request_accepted = false;
     return true;
 }

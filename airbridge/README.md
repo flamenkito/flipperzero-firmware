@@ -55,7 +55,7 @@ This is BadUSB-shaped by design. Keyboard emulation is the whole point: it is th
 - Keystrokes are emitted only from an explicit deploy prompt on the Flipper (reached with LEFT/RIGHT from the Bridge screen), and only after you place the cursor and press OK to confirm.
 - The Flipper screen shows `TYPING…` for the entire emission; pressing BACK aborts instantly.
 - No keyboard report is ever sent in Bridge mode or on any data path. Typing exists only inside the Deploy flow.
-- The typed payload is a fixed, reviewable, ASCII-only artifact: [`bootstrap.js`](web/bootstrap.js). It fetches a gzip-compressed app bundle and requires browser support for `DecompressionStream("gzip")`; unsupported browsers show `Transfer unsupported - retry` before WebHID selection.
+- The typed payload is a fixed, reviewable, ASCII-only artifact: [`bootstrap.js`](web/bootstrap.js). The FAP verifies its build-time-pinned SHA-256 before typing. It fetches a gzip-compressed app bundle whose versioned SD container is also SHA-256 pinned; unsupported browsers show `Transfer unsupported - retry` before WebHID selection.
 - The whole thing requires physical possession of the Flipper plus explicit on-device actions. Task 8 adds small bounded typing jitter, but typing still exists only inside the explicit Deploy flow.
 
 ### Steps
@@ -67,9 +67,9 @@ Run these commands from the monorepo root,
    ```bash
    python3 airbridge/tools/build_bundle.py
    ```
-   This inlines the shared JS modules into self-contained app pages and writes deterministic gzip companions: `airbridge/dist/app-usb.html.gz` and `airbridge/dist/app-ble.html.gz`.
+   This inlines the shared JS modules into the self-contained USB deploy page, writes the authenticated `airbridge/dist/app-usb.html.gz` container, and regenerates `applications_user/pocket_airbridge/airbridge_assets_digest.h`.
 2. **Deploy the bootstrap and the bundle to the Flipper SD card** (exact commands in [docs/firmware-guide.md](docs/firmware-guide.md)).
-3. **Launch Pocket AirBridge** on the Flipper. The app opens on the Bridge relay screen; press **RIGHT** to reach the USB Deploy prompt. (LEFT/RIGHT cycle Bridge → USB Deploy → BLE Deploy → Bridge; a short BACK returns to Bridge, a long BACK exits the app. The relay keeps running in the background on every screen.) The prompt asks you to place the cursor, then press OK.
+3. **Launch Pocket AirBridge** on the Flipper. The app opens on the Bridge relay screen; press **RIGHT** or **LEFT** to reach the USB Deploy prompt. (LEFT/RIGHT toggle Bridge ↔ USB Deploy; a short BACK returns to Bridge, a long BACK exits the app. The relay keeps running in the background on every screen.) The prompt asks you to place the cursor, then press OK.
 4. **On the target PC**, open a browser tab at `https://blank.org`, open DevTools (F12), and click into the console. Any `https://` page works; `about:blank` is possible but verify first — on some Chrome builds `window.isSecureContext === false` there, which blocks WebHID. Run `console.log(window.isSecureContext)` to confirm before proceeding.
 5. **Press OK on the Flipper.** The bootstrap types itself into the console while the screen shows `TYPING…` (BACK aborts). Once executed, it paints a minimal landing page with a Connect button.
 6. **Click Connect.** Your real click supplies the user activation WebHID needs; pick the device in the browser prompt. The Flipper streams the compressed app from its SD card, the bootstrap inflates it with `DecompressionStream("gzip")`, and the page replaces itself with the full app. Unsupported browsers show `Transfer unsupported - retry` before a picker opens.
@@ -158,7 +158,7 @@ use `chat-usb.html` and `chat-ble.html` instead.
 
 | Gap | Mitigation for Demo |
 |-----|---------------------|
-| Custom BLE profile built | AirBridge composite profile with Battery, DIS, HIDS, and custom serial UUID family (`7b871228-baf0-c5b4-5f46-9c2613d627a3` / TX `87825ec0-7398-8cb7-3242-b083eaa34f27` / RX `152f7eeb-e3b7-5898-ba41-7ff66121c98d`); TX uses NOTIFY (not INDICATE). Static firmware config supports a local ATT MTU maximum of 414, enables DLE, prefers 2M PHY, and requests a 7.5 to 45 ms interval; negotiated runtime values remain peer-driven and need hardware evidence. |
+| Custom BLE profile built | AirBridge profile with Battery, DIS, and the custom serial UUID family (`7b871228-baf0-c5b4-5f46-9c2613d627a3` / TX `87825ec0-7398-8cb7-3242-b083eaa34f27` / RX `152f7eeb-e3b7-5898-ba41-7ff66121c98d`); TX uses NOTIFY (not INDICATE). Static firmware config supports a local ATT MTU maximum of 414, enables DLE, prefers 2M PHY, and requests a 7.5 to 45 ms interval; negotiated runtime values remain peer-driven and need hardware evidence. |
 | Custom HID descriptor registration | May need to patch `furi_hal_usb_hid` or use a community plugin template |
 | BLE service UUID hiding | Deferred. The serial UUID is still advertised and the browser still uses the service-filtered picker until `acceptAllDevices:true` with `optionalServices` is proven on hardware. |
 | 59-byte chunks | Slow but simple; works for files < 50 KB in reasonable time |
@@ -179,7 +179,7 @@ use `chat-usb.html` and `chat-ble.html` instead.
 This custom firmware and apps repository contains two custom profiles:
 
 - **USB HID**: `usb_airbridge` — a vendor-defined HID profile using usage page `0xFF00` for bidirectional 64-byte reports. USB identity is selected at app start from `/ext/apps_data/pocket_airbridge/config` (default `hp_kbd_vendor`, HP VID `0x03F0` PID `0x5341`) and held for the session lifetime. Composite-to-composite reconfiguration is not attempted.
-- **BLE GATT**: `airbridge_profile` — a custom composite GATT profile (`lib/ble_profile/extra_profiles/airbridge_profile.c`) advertising the AirBridge serial UUID family: service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27` (NOTIFY, not INDICATE), and RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery, DIS, and HIDS are also included in the composite.
+- **BLE GATT**: `airbridge_profile` — a custom GATT profile (`lib/ble_profile/extra_profiles/airbridge_profile.c`) advertising the AirBridge serial UUID family: service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27` (NOTIFY, not INDICATE), and RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery and DIS are also included; the profile has no HIDS service.
 
 Static BLE tuning evidence records configured ATT MTU 414, DLE enabled, 2M PHY preference, requested 7.5 to 45 ms connection interval, and 244-byte serial value capacity. Runtime negotiated MTU/PHY/DLE/interval and throughput remain unclaimed unless a hardware evidence run records them.
 

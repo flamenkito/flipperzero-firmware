@@ -20,12 +20,11 @@ static void bt_statusbar_update(Bt* bt);
 #define BT_RPC_EVENT_DISCONNECTED (1UL << 1)
 #define BT_RPC_EVENT_ALL          (BT_RPC_EVENT_BUFF_SENT | BT_RPC_EVENT_DISCONNECTED)
 
-#define ICON_SPACER 2
-#define BT_PROFILE_RETRY_DELAY_MS (250U)
+#define ICON_SPACER                      2
+#define BT_PROFILE_RETRY_DELAY_MS        (250U)
 #define BT_PROFILE_QUIESCENCE_TIMEOUT_MS (1000U)
-#define BT_PROFILE_MUTEX_TIMEOUT_MS (50U)
-#define BT_STATUS_CALLBACK_TIMEOUT_MS (100U)
-#define BT_PRODUCER_QUEUE_TIMEOUT_MS (100U)
+#define BT_PROFILE_MUTEX_TIMEOUT_MS      (50U)
+#define BT_PRODUCER_QUEUE_TIMEOUT_MS     (100U)
 
 /* Pocket AirBridge raw serial passthrough hook */
 static BtRawSerialCallback bt_raw_serial_cb = NULL;
@@ -54,9 +53,8 @@ static bool bt_publish_current_profile_bounded(Bt* bt, FuriHalBleProfileBase* pr
     return true;
 }
 
-static bool bt_unpublish_current_profile_bounded(
-    Bt* bt,
-    FuriHalBleProfileBase** previous_profile) {
+static bool
+    bt_unpublish_current_profile_bounded(Bt* bt, FuriHalBleProfileBase** previous_profile) {
     if(furi_mutex_acquire(bt->current_profile_mutex, BT_PROFILE_MUTEX_TIMEOUT_MS) !=
        FuriStatusOk) {
         return false;
@@ -356,6 +354,7 @@ static void bt_battery_level_changed_callback(const void* _event, void* context)
 Bt* bt_alloc(void) {
     Bt* bt = malloc(sizeof(Bt));
     bt->current_profile_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+    bt->status_dispatch_mutex = furi_mutex_alloc(FuriMutexTypeRecursive);
     bt->status_callback_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
     bt->status_changed_cb = NULL;
     bt->status_changed_ctx = NULL;
@@ -438,8 +437,8 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
         }
         ret = rpc_session_get_available_size(bt->rpc_session);
     } else if(event.event == SerialServiceEventTypeDataSent) {
-        bool raw_callback_invoked =
-            bt->current_profile_is_airbridge && bt_raw_serial_invoke(NULL, 0, &ret);
+        bool raw_callback_invoked = bt->current_profile_is_airbridge &&
+                                    bt_raw_serial_invoke(NULL, 0, &ret);
         if(!raw_callback_invoked) {
             furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
         }
@@ -453,8 +452,8 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
                 .data.profile.params = NULL,
                 .data.profile.template = ble_profile_serial,
             };
-            if(furi_message_queue_put(
-                   bt->message_queue, &message, BT_PRODUCER_QUEUE_TIMEOUT_MS) != FuriStatusOk) {
+            if(furi_message_queue_put(bt->message_queue, &message, BT_PRODUCER_QUEUE_TIMEOUT_MS) !=
+               FuriStatusOk) {
                 FURI_LOG_W(TAG, "BLE restart request queue saturated");
             }
         }
@@ -707,16 +706,9 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
 }
 
 static bool bt_gap_mailbox_deliver_status(Bt* bt, BtStatus status) {
-    if(furi_mutex_acquire(bt->status_callback_mutex, BT_STATUS_CALLBACK_TIMEOUT_MS) !=
-       FuriStatusOk) {
-        return false;
-    }
-    bt->flushed_status = status;
-    if(bt->status_changed_cb) {
-        bt->status_changed_cb(status, bt->status_changed_ctx);
-    }
-    furi_check(furi_mutex_release(bt->status_callback_mutex) == FuriStatusOk);
-    return true;
+    const BtStatusRegistration registration = bt_status_registration_make(bt);
+    return bt_status_callback_deliver_bounded(
+        &registration, status, BT_STATUS_CALLBACK_TIMEOUT_MS);
 }
 
 static void bt_gap_mailbox_flush(Bt* bt) {
@@ -777,12 +769,11 @@ static void bt_gap_mailbox_flush(Bt* bt) {
     if(pin_code_dirty) bt_pin_code_show(bt, pin_code);
     return;
 
-delivery_deferred:
-    {
-        FURI_CRITICAL_ENTER();
-        bt->gap_mailbox.status_dirty = true;
-        FURI_CRITICAL_EXIT();
-    }
+delivery_deferred: {
+    FURI_CRITICAL_ENTER();
+    bt->gap_mailbox.status_dirty = true;
+    FURI_CRITICAL_EXIT();
+}
 }
 
 static void bt_on_key_storage_change_callback(uint8_t* addr, uint16_t size, void* context) {
@@ -985,10 +976,10 @@ static FuriHalBleProfileBase* bt_load_keys(Bt* bt) {
 static void bt_start_application(Bt* bt, FuriHalBleProfileBase* previous_profile) {
     const BtMessage retry_message = {
         .type = BtMessageTypeSetProfile,
-        .data.profile.template =
-            bt->reload_profile_is_airbridge ? ble_profile_airbridge : ble_profile_serial,
-        .data.profile.params =
-            bt->reload_profile_is_airbridge ? &bt->reload_airbridge_params : NULL,
+        .data.profile.template = bt->reload_profile_is_airbridge ? ble_profile_airbridge :
+                                                                   ble_profile_serial,
+        .data.profile.params = bt->reload_profile_is_airbridge ? &bt->reload_airbridge_params :
+                                                                 NULL,
     };
     bool profile_start_needed = false;
     if(!bt_current_profile_is_null_bounded(bt, &profile_start_needed)) {
@@ -1096,9 +1087,10 @@ int32_t bt_srv(void* p) {
     BtMessage message;
 
     while(1) {
-        const uint32_t queue_timeout =
-            bt->profile_retry_pending ? BT_PROFILE_RETRY_DELAY_MS : FuriWaitForever;
-        FuriStatus queue_status = furi_message_queue_get(bt->message_queue, &message, queue_timeout);
+        const uint32_t queue_timeout = bt->profile_retry_pending ? BT_PROFILE_RETRY_DELAY_MS :
+                                                                   FuriWaitForever;
+        FuriStatus queue_status =
+            furi_message_queue_get(bt->message_queue, &message, queue_timeout);
         if(queue_status == FuriStatusErrorTimeout && bt->profile_retry_pending) {
             message = (BtMessage){
                 .type = BtMessageTypeSetProfile,

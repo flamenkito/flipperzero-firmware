@@ -1,8 +1,9 @@
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
-#define REQUIRE(condition) \
-    do {                   \
+#define REQUIRE(condition)                 \
+    do {                                   \
         if(!(condition)) __builtin_trap(); \
     } while(false)
 
@@ -71,57 +72,117 @@ static bool stuck_reader_returns_within_bound(void) {
 }
 
 typedef struct {
-    bool locked;
+    uint32_t dispatch_depth;
+    bool status_locked;
     bool callback_observed_lock;
+    uint32_t callback_count;
     BtStatus current_status;
     BtStatus delivered_status;
     BtStatusChangedCallback callback;
     void* callback_context;
+    BtStatusRegistration registration;
 } StatusFixture;
 
-static void lock_status(void* context) {
+static bool acquire_dispatch(void* context, uint32_t timeout) {
+    (void)timeout;
     StatusFixture* fixture = context;
-    REQUIRE(!fixture->locked);
-    fixture->locked = true;
+    fixture->dispatch_depth++;
+    return true;
 }
 
-static void unlock_status(void* context) {
+static void release_dispatch(void* context) {
     StatusFixture* fixture = context;
-    REQUIRE(fixture->locked);
-    fixture->locked = false;
+    REQUIRE(fixture->dispatch_depth > 0);
+    fixture->dispatch_depth--;
+}
+
+static bool acquire_status(void* context, uint32_t timeout) {
+    (void)timeout;
+    StatusFixture* fixture = context;
+    REQUIRE(fixture->dispatch_depth > 0);
+    REQUIRE(!fixture->status_locked);
+    fixture->status_locked = true;
+    return true;
+}
+
+static void release_status(void* context) {
+    StatusFixture* fixture = context;
+    REQUIRE(fixture->status_locked);
+    fixture->status_locked = false;
 }
 
 static BtStatus snapshot_status(void* context) {
     StatusFixture* fixture = context;
-    REQUIRE(fixture->locked);
+    REQUIRE(fixture->status_locked);
+    REQUIRE(fixture->callback != NULL);
+    REQUIRE(fixture->callback_context == fixture);
     return fixture->current_status;
 }
 
 static void record_status(BtStatus status, void* context) {
     StatusFixture* fixture = context;
-    fixture->callback_observed_lock = fixture->locked;
+    fixture->callback_count++;
+    fixture->callback_observed_lock = fixture->status_locked;
     fixture->delivered_status = status;
 }
 
-static bool snapshot_delivery_is_ordered_under_lock(void) {
+static bool snapshot_delivery_is_ordered_outside_lock(void) {
     StatusFixture fixture = {.current_status = BtStatusConnected};
-    const BtStatusRegistration registration = {
+    fixture.registration = (BtStatusRegistration){
         .context = &fixture,
-        .lock = lock_status,
-        .unlock = unlock_status,
+        .acquire_dispatch = acquire_dispatch,
+        .release_dispatch = release_dispatch,
+        .acquire_status = acquire_status,
+        .release_status = release_status,
         .snapshot = snapshot_status,
         .callback_slot = &fixture.callback,
         .callback_context_slot = &fixture.callback_context,
     };
 
-    BtStatus delivered =
-        bt_status_register_and_deliver_ordered(&registration, record_status, &fixture);
+    BtStatus delivered;
+    REQUIRE(bt_status_register_and_deliver_ordered(
+        &fixture.registration, record_status, &fixture, 1U, &delivered));
     REQUIRE(delivered == BtStatusConnected);
-    REQUIRE(fixture.callback_observed_lock);
+    REQUIRE(!fixture.callback_observed_lock);
+    REQUIRE(fixture.callback_count == 1);
     REQUIRE(fixture.delivered_status == BtStatusConnected);
     REQUIRE(fixture.callback == record_status);
     REQUIRE(fixture.callback_context == &fixture);
-    REQUIRE(!fixture.locked);
+    REQUIRE(fixture.dispatch_depth == 0);
+    REQUIRE(!fixture.status_locked);
+    return true;
+}
+
+static void self_unregister_status(BtStatus status, void* context) {
+    StatusFixture* fixture = context;
+    record_status(status, context);
+    REQUIRE(bt_status_callback_set_bounded(&fixture->registration, NULL, NULL, 1U));
+}
+
+static bool callback_can_unregister_itself(void) {
+    StatusFixture fixture = {.current_status = BtStatusAdvertising};
+    fixture.registration = (BtStatusRegistration){
+        .context = &fixture,
+        .acquire_dispatch = acquire_dispatch,
+        .release_dispatch = release_dispatch,
+        .acquire_status = acquire_status,
+        .release_status = release_status,
+        .snapshot = snapshot_status,
+        .callback_slot = &fixture.callback,
+        .callback_context_slot = &fixture.callback_context,
+    };
+
+    BtStatus delivered;
+    REQUIRE(bt_status_register_and_deliver_ordered(
+        &fixture.registration, self_unregister_status, &fixture, 1U, &delivered));
+    REQUIRE(delivered == BtStatusAdvertising);
+    REQUIRE(!fixture.callback_observed_lock);
+    REQUIRE(fixture.callback_count == 1);
+    REQUIRE(fixture.delivered_status == BtStatusAdvertising);
+    REQUIRE(fixture.callback == NULL);
+    REQUIRE(fixture.callback_context == NULL);
+    REQUIRE(fixture.dispatch_depth == 0);
+    REQUIRE(!fixture.status_locked);
     return true;
 }
 
@@ -204,8 +265,7 @@ static ResumablePhaseStepResult run_teardown_phase(void* context, uint8_t phase)
         return ResumablePhaseStepAdvance;
     case TeardownPhaseFence:
         fixture->fence_attempts++;
-        return fixture->fence_attempts == 1 ? ResumablePhaseStepRetry :
-                                             ResumablePhaseStepAdvance;
+        return fixture->fence_attempts == 1 ? ResumablePhaseStepRetry : ResumablePhaseStepAdvance;
     case TeardownPhaseFree:
         fixture->resource_frees++;
         return ResumablePhaseStepAdvance;
@@ -234,7 +294,8 @@ static bool partial_teardown_retry_does_not_reexecute_completed_phases(void) {
 int main(void) {
     if(!mutex_timeout_returns_within_bound()) return 1;
     if(!stuck_reader_returns_within_bound()) return 1;
-    if(!snapshot_delivery_is_ordered_under_lock()) return 1;
+    if(!snapshot_delivery_is_ordered_outside_lock()) return 1;
+    if(!callback_can_unregister_itself()) return 1;
     if(!stale_advfast_is_discarded_during_stop()) return 1;
     if(!timer_delete_timeout_resumes_without_resubmission()) return 1;
     if(!partial_teardown_retry_does_not_reexecute_completed_phases()) return 1;

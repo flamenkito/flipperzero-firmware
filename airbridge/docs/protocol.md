@@ -13,21 +13,18 @@ The FAP reads `ble_name`, `ble_mac`, `ble_appearance`, `ble_mfg_company`,
 `ble_mfg_hex`, `ble_dis_mfr`, `ble_dis_model`, `ble_dis_serial`, and
 `ble_dis_pnp` from `/ext/apps_data/pocket_airbridge/config`. These values set
 the advertising identity and DIS values for the AirBridge BLE profile. The
-profile includes Battery, DIS, HIDS, and AirBridge serial; Web Bluetooth uses
-only the serial service. HIDS exists for explicit BLE Deploy typing and carries
-no Bridge-mode keyboard traffic.
+profile includes Battery, DIS, and AirBridge serial. It has no HIDS service;
+Web Bluetooth uses the serial service for chat and attachment relay traffic.
 
 If `ble_dis_serial` is omitted, the FAP derives a stable default DIS serial from
 an FNV-1a hash of the local firmware UID and formats it as `HP` plus eight
 uppercase hex digits. Explicit config still wins, and the raw Flipper UID is not
 copied into the DIS string.
 
-Setup briefly clears the HIDS advertising latch after profile installation. In the
-normal active state, the Bridge watchdog re-arms serial plus HIDS every 2.5 seconds
-and restarts advertising only when GAP is idle, without disconnecting an active link.
-Advertising HIDS is not keyboard activity: Bridge mode and bridge data paths emit no
-keyboard reports. Keyboard reports remain limited to the explicit, user-confirmed
-Deploy typing flow. Bonding is enabled: each host's first pairing uses MITM numeric
+The Bridge watchdog reasserts serial-only advertising every 2.5 seconds and
+restarts advertising only when GAP is idle, without disconnecting an active link.
+The BLE profile cannot emit keyboard reports. Deploy typing is available only
+through the explicit USB Deploy prompt. Bonding is enabled: each host's first pairing uses MITM numeric
 comparison, and later reconnects use the stored bond silently. The serial service's
 additional UUIDs are flow control notify
 `d2d968bf-cbd8-568f-d24c-5bbddb824f25` and status notify/read/write
@@ -312,26 +309,45 @@ PC-A (USB)      Bridge          PC-B (BLE)
 
 ## Bootstrap Stream Protocol (Deploy Flow)
 
-This is a separate, deliberately simpler protocol from the chat protocol above. It exists for the Deploy flow: a one-shot, download-only transfer of the app bundle from the Flipper to a just-typed bootstrap page on the target PC. The selected deploy transport routes each bootstrap to its matching bundle:
+This is a separate, deliberately simpler protocol from the chat protocol above. It exists for USB Deploy: a one-shot, download-only transfer of the app bundle from the Flipper to a just-typed bootstrap page on the target PC.
 
 | Deploy control | Typed bootstrap | Bundle | Delivery channel |
 |---|---|---|---|
 | **LEFT/RIGHT → USB Deploy, then OK** | `bootstrap.js` | `app-usb.html.gz` | USB vendor HID |
-| **LEFT/RIGHT → BLE Deploy, then OK** | `bootstrap-ble.js` | `app-ble.html.gz` | AirBridge serial TX notify |
 
-The FAP loads the matching pair from `/ext/apps_data/pocket_airbridge/`. No
-per-chunk ACK is used for the bootstrap stream; USB interrupt IN reports are
-hardware-reliable and BLE retries transient notification congestion.
+The FAP loads this pair from `/ext/apps_data/pocket_airbridge/`. No per-chunk
+ACK is used for the bootstrap stream; USB interrupt IN reports are hardware-reliable.
 
-1. **Request (bootstrap → FAP):** byte 0 = `0x42` (`'B'`, bundle request), sent as a 64-byte USB report or a BLE RX write.
-2. **Header (FAP → bootstrap):** the first response carries a 4-byte little-endian `total_len` (bundle size in bytes) followed by a 4-byte little-endian `checksum` (the additive uint32 sum of all file bytes). USB pads the report to 64 bytes; BLE sends the eight header bytes directly on TX notify.
-3. **Data (FAP → bootstrap):** the bundle bytes follow in order, in up-to-64-byte units. USB uses zero-padded 64-byte reports; BLE sends raw notification payloads.
+Before typing or streaming, the FAP authenticates both SD-loaded executable
+assets against SHA-256 values generated into
+`applications_user/pocket_airbridge/airbridge_assets_digest.h`. The bootstrap
+digest covers the normalized, newline-free printable ASCII bytes. The bundle
+digest covers its complete on-SD container:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 4 | Magic `ABND` |
+| 4 | 1 | Bundle format version (`1`) |
+| 5 | 3 | Reserved zero bytes |
+| 8 | 4 | Little-endian decompressed HTML size |
+| 12 | remaining | Gzip payload, beginning `1F 8B` |
+
+The FAP rejects the container unless its magic, version, reserved bytes,
+decompressed size, gzip magic, size cap, and pinned SHA-256 all match. It then
+strips the 12-byte container header and sends only the gzip payload, preserving
+the browser-facing stream format below.
+
+1. **Request (bootstrap → FAP):** byte 0 = `0x42` (`'B'`, bundle request), sent as a 64-byte USB report.
+2. **Header (FAP → bootstrap):** the first response carries a 4-byte little-endian `total_len` (bundle size in bytes) followed by a 4-byte little-endian `checksum` (the additive uint32 sum of all file bytes). USB pads the report to 64 bytes.
+3. **Data (FAP → bootstrap):** the bundle bytes follow in order in zero-padded 64-byte USB reports.
 4. **Verify, inflate, and load:** the bootstrap accumulates exactly `total_len` compressed bytes, recomputes the additive checksum, inflates the gzip with `DecompressionStream("gzip")`, and boots the transferred HTML only when the values match.
 5. **Failure:** if `DecompressionStream("gzip")` is unavailable, the landing page shows `Transfer unsupported - retry` before device selection. On checksum mismatch it shows `Transfer corrupt - retry`; if no stream begins or completes before the bootstrap timeout, it shows `Transfer timed out - retry`. In each case the Connect button re-arms, so the user can click Connect again to restart the download.
 
 The FAP only treats `0x42` as a bundle request while the screen is the post-consent Deploy waiting state. In Bridge mode, a report whose first byte is `0x42` remains ordinary relay data and cannot start Deploy streaming. In other non-waiting Deploy states, the FAP shows `DEPLOY NOT ARMED` instead of silently hanging the operator in an ambiguous state.
 
-The additive checksum exists to catch profile-switch race bytes at the start of the stream. It is not a security measure; the trust boundary is physical delivery from the user's own Flipper.
+The additive wire checksum detects stream corruption for the bootstrap. It is
+not the SD trust mechanism; the FAP's pinned SHA-256 authenticates the complete
+bundle container before any payload byte is streamed.
 
 ## Known Limitations (MVP)
 

@@ -22,7 +22,8 @@
 
 #include "bt_keys_filename.h"
 
-#define BT_KEYS_STORAGE_PATH INT_PATH(BT_KEYS_STORAGE_FILE_NAME)
+#define BT_KEYS_STORAGE_PATH          INT_PATH(BT_KEYS_STORAGE_FILE_NAME)
+#define BT_STATUS_CALLBACK_TIMEOUT_MS (100U)
 
 typedef enum {
     BtMessageTypeUpdateStatus,
@@ -130,7 +131,57 @@ struct Bt {
     RpcSession* rpc_session;
     FuriEventFlag* rpc_event;
     FuriEventFlag* api_event;
+    /* Callback serialization lock order is always:
+     * status_dispatch_mutex -> status_callback_mutex.
+     * status_dispatch_mutex is recursive so a callback may unregister itself.
+     * Application code runs only with the dispatch mutex held; the status mutex
+     * protects callback/context snapshots and is released before invocation. */
+    FuriMutex* status_dispatch_mutex;
     FuriMutex* status_callback_mutex;
     BtStatusChangedCallback status_changed_cb;
     void* status_changed_ctx;
 };
+
+#include "bt_status_registration.h"
+
+static inline bool bt_status_dispatch_acquire(void* context, uint32_t timeout) {
+    Bt* bt = context;
+    return furi_mutex_acquire(bt->status_dispatch_mutex, timeout) == FuriStatusOk;
+}
+
+static inline void bt_status_dispatch_release(void* context) {
+    Bt* bt = context;
+    furi_check(furi_mutex_release(bt->status_dispatch_mutex) == FuriStatusOk);
+}
+
+static inline bool bt_status_callback_acquire(void* context, uint32_t timeout) {
+    Bt* bt = context;
+    return furi_mutex_acquire(bt->status_callback_mutex, timeout) == FuriStatusOk;
+}
+
+static inline void bt_status_callback_release(void* context) {
+    Bt* bt = context;
+    furi_check(furi_mutex_release(bt->status_callback_mutex) == FuriStatusOk);
+}
+
+static inline BtStatus bt_status_callback_snapshot(void* context) {
+    Bt* bt = context;
+    FURI_CRITICAL_ENTER();
+    BtStatus status = bt->status;
+    FURI_CRITICAL_EXIT();
+    return status;
+}
+
+static inline BtStatusRegistration bt_status_registration_make(Bt* bt) {
+    return (BtStatusRegistration){
+        .context = bt,
+        .acquire_dispatch = bt_status_dispatch_acquire,
+        .release_dispatch = bt_status_dispatch_release,
+        .acquire_status = bt_status_callback_acquire,
+        .release_status = bt_status_callback_release,
+        .snapshot = bt_status_callback_snapshot,
+        .callback_slot = &bt->status_changed_cb,
+        .callback_context_slot = &bt->status_changed_ctx,
+        .delivered_status_slot = &bt->flushed_status,
+    };
+}

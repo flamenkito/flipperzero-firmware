@@ -100,6 +100,10 @@ bool bt_airbridge_serial_client_subscribed(Bt* bt);
 
 /** Set callback for Bluetooth status change notification
  *
+ * Callback invocation is serialized with registration changes. The bounded
+ * variant leaves the existing registration unchanged when its timeout expires.
+ * Unregistering from inside the callback is supported.
+ *
  * @param bt        Bt instance
  * @param callback  BtStatusChangedCallback instance
  * @param context   pointer to context
@@ -113,8 +117,8 @@ bool bt_set_status_changed_callback_bounded(
 
 /** Register the AirBridge status callback and deliver a race-free status snapshot.
  *
- * The known-safe AirBridge callback is invoked with the current status before
- * releasing the callback mutex, totally ordering it before later deliveries.
+ * The initial callback runs outside the callback-state mutex but inside the
+ * recursive dispatch mutex, totally ordering it before later deliveries.
  *
  * @param bt        Bt instance
  * @param callback  BtStatusChangedCallback instance

@@ -1117,6 +1117,8 @@ export class ItemReceiver {
     this.expectedFrame = null;
     this.expectedFrameTimer = null;
     this.pendingDone = null;
+    this.itemGeneration = 0;
+    this.doneValidation = null;
     this.resetItem();
   }
 
@@ -1205,12 +1207,18 @@ export class ItemReceiver {
   }
 
   resetItem() {
+    this.advanceItemGeneration();
     this.clearExpectedFrame();
     this.meta = null;
     this.metaFragments = new Map();
     this.expectedMetaFragments = 0;
     this.chunks = new Map();
     this.pendingDone = null;
+  }
+
+  advanceItemGeneration() {
+    this.itemGeneration++;
+    this.doneValidation = null;
   }
 
   async handleHello(msg) {
@@ -1264,6 +1272,7 @@ export class ItemReceiver {
         await this.sendRecoverableNack(MSG.ITEM_META, msg.seq, NACK_REASON.MALFORMED);
         return;
       }
+      if (this.metaFragments.size === 0) this.advanceItemGeneration();
       this.metaFragments.set(msg.seq, msg.payload);
       this.emit('metaFragment', { seq: msg.seq, total, payload: msg.payload });
 
@@ -1331,6 +1340,7 @@ export class ItemReceiver {
   }
 
   async handleDone(msg) {
+    const generation = this.itemGeneration;
     try {
       if (msg.payload.length !== 0) {
         this.setExpectedFrame(MSG.ITEM_DONE, msg.seq, NACK_REASON.MALFORMED);
@@ -1340,12 +1350,14 @@ export class ItemReceiver {
       if (!this.meta) {
         if (this.expectedFrame?.type === MSG.ITEM_META) {
           await this.sendRecoverableNack(MSG.ITEM_META, this.expectedFrame.seq, NACK_REASON.MISSING);
+          if (generation !== this.itemGeneration) return;
           return;
         }
         throw new Error('No metadata received');
       }
       if (this.expectedFrame && this.expectedFrame.type !== MSG.ITEM_DATA && this.expectedFrame.type !== MSG.ITEM_DONE) {
         await this.sendRecoverableNack(this.expectedFrame.type, this.expectedFrame.seq, NACK_REASON.MISSING);
+        if (generation !== this.itemGeneration) return;
         return;
       }
       if (this.expectedFrame?.type === MSG.ITEM_DATA) {
@@ -1366,29 +1378,58 @@ export class ItemReceiver {
       }
 
       const data = concatChunks(ordered);
-      const hash = await sha256(data);
-      const expectedHash = normalizeHash(this.meta.kind === 'encrypted' ? this.meta.encryptedSha256 : this.meta.hash);
-      if (expectedHash && hash !== expectedHash) {
-        throw new Error(`Hash mismatch: expected ${expectedHash}, got ${hash}`);
+      const meta = this.meta;
+      let validation = this.doneValidation;
+      if (!validation || validation.generation !== generation || validation.seq !== msg.seq) {
+        const validator = this.itemValidator;
+        validation = {
+          generation,
+          seq: msg.seq,
+          promise: this.validateCompletedItem(meta, data, validator, generation),
+          shared: Boolean(validator),
+          emitted: false,
+        };
+        if (validator) this.doneValidation = validation;
       }
 
-      let item = { meta: this.meta, data, hash };
-      if (this.itemValidator) {
-        const validated = await this.itemValidator(item);
-        if (validated !== undefined) {
-          if (!validated || typeof validated !== 'object') throw new TypeError('Item validator must return item detail or undefined');
-          item = validated;
-        }
-      }
+      const item = await validation.promise;
+      if (generation !== this.itemGeneration || item === null) return;
       await this.sendAck(MSG.ITEM_DONE, msg.seq);
+      if (generation !== this.itemGeneration) return;
       this.clearExpectedFrame();
       this.emit('done', msg);
-      this.emit('item', item);
+      if (generation !== this.itemGeneration) return;
+      if (!validation.shared || !validation.emitted) {
+        validation.emitted = true;
+        this.emit('item', item);
+      }
     } catch (error) {
+      if (generation !== this.itemGeneration) return;
       this.emit('error', error);
+      if (generation !== this.itemGeneration) return;
       this.resetItem();
       await this.sendError(error.message || 'Item validation failed');
     }
+  }
+
+  async validateCompletedItem(meta, data, validator, generation) {
+    const hash = await sha256(data);
+    if (generation !== this.itemGeneration) return null;
+    const expectedHash = normalizeHash(meta.kind === 'encrypted' ? meta.encryptedSha256 : meta.hash);
+    if (expectedHash && hash !== expectedHash) {
+      throw new Error(`Hash mismatch: expected ${expectedHash}, got ${hash}`);
+    }
+
+    let item = { meta, data, hash };
+    if (validator) {
+      const validated = await validator(item);
+      if (generation !== this.itemGeneration) return null;
+      if (validated !== undefined) {
+        if (!validated || typeof validated !== 'object') throw new TypeError('Item validator must return item detail or undefined');
+        item = validated;
+      }
+    }
+    return item;
   }
 
   async sendAck(ackedType, seq) {

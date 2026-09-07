@@ -12,7 +12,6 @@ typedef struct {
     uint32_t ble_last_rx_tick;
     uint32_t ble_desync_since;
     uint32_t link_generation;
-    bool deploy_request_accepted;
 } AirbridgeBle;
 
 #include "../../applications_user/pocket_airbridge/airbridge_ble_state.h"
@@ -24,7 +23,6 @@ static AirbridgeBleLinkStateRefs link_state(AirbridgeBle* ble) {
         .last_rx_tick = &ble->ble_last_rx_tick,
         .desync_since = &ble->ble_desync_since,
         .generation = &ble->link_generation,
-        .deploy_request_accepted = &ble->deploy_request_accepted,
     };
 }
 
@@ -38,7 +36,6 @@ static void connected_initializes_link_state(void) {
     REQUIRE(ble.ble_connected_since == 100);
     REQUIRE(ble.ble_last_rx_tick == 0);
     REQUIRE(ble.ble_desync_since == 0);
-    REQUIRE(!ble.deploy_request_accepted);
 }
 
 static void coalesced_reconnect_resets_link_state(void) {
@@ -48,7 +45,6 @@ static void coalesced_reconnect_resets_link_state(void) {
         .ble_last_rx_tick = 20,
         .ble_desync_since = 30,
         .link_generation = 4,
-        .deploy_request_accepted = true,
     };
 
     REQUIRE(airbridge_ble_link_apply_connected(link_state(&ble), 100, 1));
@@ -58,7 +54,6 @@ static void coalesced_reconnect_resets_link_state(void) {
     REQUIRE(ble.ble_connected_since == 100);
     REQUIRE(ble.ble_last_rx_tick == 0);
     REQUIRE(ble.ble_desync_since == 0);
-    REQUIRE(!ble.deploy_request_accepted);
 }
 
 static void rx_before_status_preserves_established_link_state(void) {

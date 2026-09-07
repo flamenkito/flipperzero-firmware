@@ -110,7 +110,7 @@ const tests = [
   ['crypto encrypted attachment', testCryptoEncryptedAttachment],
   ['crypto SAS match unlock', testCryptoSasMatchUnlock],
   ['crypto SAS mismatch abort', testCryptoSasMismatchAbort],
-  ['crypto AES-GCM tamper failure', testCryptoTamperFailure],
+  ['crypto tamper ERROR before ITEM_DONE ACK', testCryptoTamperFailure],
   ['crypto plaintext pre-unlock fails closed', testCryptoPlaintextPreUnlockFailure],
   ['crypto reconnect clears keys', testCryptoReconnectClearsKeys],
   ['NACK recovers one dropped chunk', testNackRecoversDroppedChunk],
@@ -859,6 +859,7 @@ function createCryptoEndpoint(role) {
     retries: 2,
     onStateChange: status => endpoint.states.push(status),
   });
+  endpoint.itemReceiver.setItemValidator(({ meta, data }) => endpoint.session.decryptItem(meta, data));
   endpoint.send = async frame => {
     const copy = new Uint8Array(frame);
     endpoint.sent.push(parseMessage(copy));
@@ -899,13 +900,7 @@ function createCryptoEndpoint(role) {
       endpoint.errors.push(error.message || String(error));
     }
   };
-  endpoint.itemReceiver.on('item', async ({ meta, data }) => {
-    try {
-      endpoint.received.push(await endpoint.session.decryptItem(meta, data));
-    } catch (error) {
-      endpoint.errors.push(error.message || String(error));
-    }
-  });
+  endpoint.itemReceiver.on('item', detail => endpoint.received.push(detail));
   endpoint.itemReceiver.on('error', error => endpoint.errors.push(error.message || String(error)));
   return endpoint;
 }
@@ -1154,13 +1149,21 @@ async function testCryptoTamperFailure() {
   const tampered = encrypted.data.slice();
   tampered[0] ^= 0x80;
   const tamperedMeta = { ...encrypted.meta, encryptedSha256: await sha256Hex(tampered) };
-  let failed = false;
+  await usb.itemSender.sendHello(meta.itemId);
+  await usb.itemSender.sendItemMeta(tamperedMeta);
+  await usb.itemSender.sendItemData(chunkBytes(tampered));
+  let failure = null;
   try {
-    await ble.session.decryptItem(tamperedMeta, tampered);
+    await usb.itemSender.sendItemDone();
   } catch (error) {
-    failed = /AES-GCM authentication failed/.test(error.message);
+    failure = error;
   }
-  assert(failed, 'AES-GCM tamper did not fail closed');
+  assert(failure?.name === 'PeerProtocolError', 'sender did not fail from receiver ERROR');
+  assert(/AES-GCM authentication failed/.test(failure.message), 'sender did not receive AES-GCM failure reason');
+  assert(ble.sent.some(message => message.type === MSG.ERROR), 'tampered ciphertext did not produce ERROR');
+  assert(!ble.sent.some(message => message.type === MSG.ACK && readAck(message.payload).type === MSG.DONE), 'tampered ciphertext ACKed ITEM_DONE');
+  assert(ble.received.length === 0, 'tampered ciphertext emitted an item');
+  assert(ble.itemReceiver.meta === null && ble.itemReceiver.chunks.size === 0, 'validator failure did not reset receiver item state');
 }
 
 async function testCryptoPlaintextPreUnlockFailure() {

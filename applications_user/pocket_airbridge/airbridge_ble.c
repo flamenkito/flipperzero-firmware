@@ -12,11 +12,6 @@
 #define TAG "AirBridge"
 #define AIRBRIDGE_BLE_DETACH_TIMEOUT_MS (250U)
 
-void airbridge_ble_set_hids_adv(AirbridgeBle* ble, bool enable) {
-    if(!ble->ble_profile_installed) return;
-    furi_hal_bt_set_adv_hids(enable);
-}
-
 void airbridge_ble_ensure_serial_adv(AirbridgeBle* ble) {
     if(!ble->ble_profile_installed) return;
     /* Chat and attachment transport uses only the AirBridge serial service.
@@ -49,7 +44,6 @@ static void
         .last_rx_tick = &ble->ble_last_rx_tick,
         .desync_since = &ble->ble_desync_since,
         .generation = &ble->link_generation,
-        .deploy_request_accepted = &ble->deploy_request_accepted,
     };
     if(airbridge_ble_link_apply_connected(state, tick, generation_advance)) {
         FURI_LOG_D(
@@ -66,7 +60,6 @@ static void airbridge_ble_apply_disconnected(AirbridgeBle* ble) {
     ble->ble_connected = false;
     ble->ble_last_rx_tick = 0;
     ble->ble_desync_since = 0;
-    ble->deploy_request_accepted = false;
     ble->restart_adv_pending = true;
 }
 

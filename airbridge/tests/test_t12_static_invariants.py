@@ -4,12 +4,20 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+FAP_SOURCE_DIR = ROOT / "applications_user/pocket_airbridge"
+AIRBRIDGE_C_SOURCES = tuple(sorted(FAP_SOURCE_DIR.glob("*.c")))
 GAP_SOURCE = ROOT / "targets/f7/ble_glue/gap.c"
 BT_SOURCE = ROOT / "applications/services/bt/bt_service/bt.c"
 BT_API_SOURCE = ROOT / "applications/services/bt/bt_service/bt_api.c"
 BT_HAL_SOURCE = ROOT / "targets/f7/furi_hal/furi_hal_bt.c"
 AIRBRIDGE_BLE_SOURCE = ROOT / "applications_user/pocket_airbridge/airbridge_ble.c"
 AIRBRIDGE_RELAY_SOURCE = ROOT / "applications_user/pocket_airbridge/airbridge_relay.c"
+AIRBRIDGE_TYPING_SOURCE = ROOT / "applications_user/pocket_airbridge/airbridge_typing.c"
+AIRBRIDGE_STREAM_SOURCE = ROOT / "applications_user/pocket_airbridge/airbridge_stream.c"
+AIRBRIDGE_UI_INTERNAL = ROOT / "applications_user/pocket_airbridge/airbridge_ui_i.h"
+AIRBRIDGE_SCREENS_SOURCE = (
+    ROOT / "applications_user/pocket_airbridge/airbridge_screens.c"
+)
 POCKET_APP_SOURCE = ROOT / "applications_user/pocket_airbridge/pocket_airbridge.c"
 USB_HAL_SOURCE = ROOT / "targets/f7/furi_hal/furi_hal_usb.c"
 APP_CONF = ROOT / "targets/f7/ble_glue/app_conf.h"
@@ -22,16 +30,36 @@ class T12StaticInvariantTest(unittest.TestCase):
 
         self.assertNotIn("status_changed_cb(bt->status", body)
 
-    def test_exit_callback_detach_does_not_wait_for_btsrv(self) -> None:
+    def test_exit_callback_detach_drains_via_dispatch_mutex(self) -> None:
+        """Unregister must drain in-flight callbacks (bounded), not return early.
+
+        R11 contract: bt_set_status_changed_callback_bounded delegates to
+        bt_status_callback_set_bounded, which acquires the recursive dispatch
+        mutex BEFORE touching callback slots — so it cannot return while a
+        delivery holds dispatch mid-invocation. No api_lock/message_queue
+        round-trips, no unbounded waits.
+        """
         source = BT_API_SOURCE.read_text(encoding="utf-8")
         body = source.split("bool bt_set_status_changed_callback_bounded(", 1)[1].split(
             "\n}", 1
         )[0]
 
-        self.assertIn("status_callback_mutex", body)
+        self.assertIn("bt_status_callback_set_bounded", body)
         self.assertNotIn("message_queue", body)
         self.assertNotIn("api_lock", body)
         self.assertNotIn("FuriWaitForever", body)
+
+        registration_header = (
+            ROOT
+            / "applications/services/bt/bt_service/bt_status_registration.h"
+        ).read_text(encoding="utf-8")
+        helper = registration_header.split(
+            "static inline bool bt_status_callback_set_bounded(", 1
+        )[1].split("\n}", 1)[0]
+
+        self.assertLess(helper.index("acquire_dispatch"), helper.index("callback_slot ="))
+        self.assertIn("release_dispatch", helper)
+        self.assertNotIn("FuriWaitForever", helper)
 
     def test_active_link_disconnect_does_not_hold_profile_reader_across_service_cleanup(
         self,
@@ -139,6 +167,97 @@ class T12StaticInvariantTest(unittest.TestCase):
 
         self.assertNotIn("airbridge_ble_set_hids_adv", teardown)
         self.assertNotIn("airbridge_typing_drain_release", teardown)
+
+    def test_deploy_is_usb_only(self) -> None:
+        sources = "\n".join(
+            path.read_text(encoding="utf-8") for path in AIRBRIDGE_C_SOURCES
+        )
+
+        self.assertNotIn("AirbridgeTypingTransportBle", sources)
+        self.assertNotIn("bootstrap-ble.js", sources)
+        self.assertNotIn("app-ble.html.gz", sources)
+        self.assertNotIn("bt_airbridge_kb_report", sources)
+        self.assertNotIn("airbridge_stream_step_ble", sources)
+
+    def test_fap_implementation_modules_stay_below_250_lines(self) -> None:
+        oversized = {
+            source.name: len(source.read_text(encoding="utf-8").splitlines())
+            for source in AIRBRIDGE_C_SOURCES
+            if len(source.read_text(encoding="utf-8").splitlines()) >= 250
+        }
+
+        self.assertEqual({}, oversized)
+
+    def test_ui_owns_no_domain_module_pointer(self) -> None:
+        ui_state = AIRBRIDGE_UI_INTERNAL.read_text(encoding="utf-8")
+
+        for domain_type in (
+            "AirbridgeApp*",
+            "AirbridgeBle*",
+            "AirbridgeConfig*",
+            "AirbridgeRelay*",
+            "AirbridgeStream*",
+            "AirbridgeTyping*",
+            "AirbridgeScreen*",
+            "AirbridgeError*",
+        ):
+            self.assertNotIn(domain_type, ui_state)
+
+    def test_screen_state_writes_are_confined_to_screen_policy(self) -> None:
+        other_sources = "\n".join(
+            source.read_text(encoding="utf-8")
+            for source in AIRBRIDGE_C_SOURCES
+            if source != AIRBRIDGE_SCREENS_SOURCE
+        )
+        screen_policy = AIRBRIDGE_SCREENS_SOURCE.read_text(encoding="utf-8")
+
+        self.assertNotIn("AirbridgeScreen*", other_sources)
+        self.assertNotIn("->screen =", other_sources)
+        self.assertNotIn("screens->current =", other_sources)
+        self.assertIn("screens->current =", screen_policy)
+
+    def test_deploy_assets_are_authenticated_before_use(self) -> None:
+        typing = AIRBRIDGE_TYPING_SOURCE.read_text(encoding="utf-8")
+        stream = AIRBRIDGE_STREAM_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("AIRBRIDGE_BOOTSTRAP_SHA256", typing)
+        self.assertLess(
+            typing.index("airbridge_digest_matches"),
+            typing.index("for(size_t offset = 0; offset < typing->bootstrap_len"),
+        )
+        self.assertIn("airbridge_bundle_validate_header", stream)
+        self.assertIn("AIRBRIDGE_APP_USB_BUNDLE_SHA256", stream)
+        self.assertIn("AIRBRIDGE_BUNDLE_HEADER_SIZE", stream)
+
+    def test_generated_digest_header_matches_dist_assets(self) -> None:
+        """fbt does not track the generated digest header; catch drift here.
+
+        After running build_bundle.py the FAP must be force-rebuilt
+        (touch applications_user/pocket_airbridge/airbridge_assets.c) because
+        scons does not rescan the generated include.
+        """
+        import hashlib
+        import re
+
+        header = (FAP_SOURCE_DIR / "airbridge_assets_digest.h").read_text(
+            encoding="utf-8"
+        )
+
+        def header_digest(name: str) -> bytes:
+            match = re.search(name + r"\[32\] = \{([^}]+)\}", header)
+            self.assertIsNotNone(match, name)
+            return bytes(int(token, 16) for token in match.group(1).split(","))
+
+        bundle_path = ROOT / "airbridge/dist/app-usb.html.gz"
+        bootstrap_path = ROOT / "airbridge/web/bootstrap.js"
+        self.assertEqual(
+            header_digest("AIRBRIDGE_APP_USB_BUNDLE_SHA256"),
+            hashlib.sha256(bundle_path.read_bytes()).digest(),
+        )
+        self.assertEqual(
+            header_digest("AIRBRIDGE_BOOTSTRAP_SHA256"),
+            hashlib.sha256(bootstrap_path.read_bytes()).digest(),
+        )
 
     def test_profile_restore_is_queued_only_after_fap_cleanup(self) -> None:
         app_source = POCKET_APP_SOURCE.read_text(encoding="utf-8")
