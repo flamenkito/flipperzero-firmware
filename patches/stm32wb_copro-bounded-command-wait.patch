@@ -1,0 +1,397 @@
+From 94971272a46fa4dbed39bf5cdee9ba1d3914b9a2 Mon Sep 17 00:00:00 2001
+From: flamenkito <flamenkito@users.noreply.github.com>
+Date: Mon, 7 Sep 2026 16:16:25 +0200
+Subject: [PATCH] ble_thread: bound SHCI/HCI command-response waits, propagate
+ timeout status
+
+shci_send/hci_send return bool (false on bounded wait timeout) instead of
+waiting forever; SHCI call sites return SHCI_ERR_TIMEOUT rather than
+consuming an unanswered response buffer. Local-only commit for Pocket
+AirBridge production hardening; patch exported at patches/stm32wb_copro-bounded-command-wait.patch
+---
+ .../interface/patterns/ble_thread/shci/shci.c | 47 ++++++++++-------
+ .../interface/patterns/ble_thread/shci/shci.h |  1 +
+ .../ble_thread/tl/command_response_wait.h     | 21 ++++++++
+ .../interface/patterns/ble_thread/tl/hci_tl.c | 44 ++++++++++++++--
+ .../interface/patterns/ble_thread/tl/hci_tl.h |  7 +--
+ .../patterns/ble_thread/tl/shci_tl.c          | 50 +++++++++++++++----
+ .../patterns/ble_thread/tl/shci_tl.h          |  9 ++--
+ 7 files changed, 140 insertions(+), 39 deletions(-)
+ create mode 100644 wpan/interface/patterns/ble_thread/tl/command_response_wait.h
+
+diff --git a/wpan/interface/patterns/ble_thread/shci/shci.c b/wpan/interface/patterns/ble_thread/shci/shci.c
+index 727a9e6..b6a8850 100644
+--- a/wpan/interface/patterns/ble_thread/shci/shci.c
++++ b/wpan/interface/patterns/ble_thread/shci/shci.c
+@@ -290,11 +290,14 @@ SHCI_CmdStatus_t SHCI_C2_BLE_Init( SHCI_C2_Ble_Init_Cmd_Packet_t *pCmdPacket )
+ 
+   p_rsp = (TL_EvtPacket_t *)local_buffer;
+ 
+- shci_send( SHCI_OPCODE_C2_BLE_INIT,
+-            sizeof( SHCI_C2_Ble_Init_Cmd_Param_t ),
+-            (uint8_t*)&pCmdPacket->Param,
+-            p_rsp );
+- 
++  if (!shci_send( SHCI_OPCODE_C2_BLE_INIT,
++                  sizeof( SHCI_C2_Ble_Init_Cmd_Param_t ),
++                  (uint8_t*)&pCmdPacket->Param,
++                  p_rsp ))
++  {
++    return SHCI_ERR_TIMEOUT;
++  }
++
+   return (SHCI_CmdStatus_t)(((TL_CcEvt_t*)(p_rsp->evtserial.evt.payload))->payload[0]);
+ }
+ 
+@@ -555,10 +558,13 @@ SHCI_CmdStatus_t SHCI_C2_Reinit( void )
+ 
+   p_rsp = (TL_EvtPacket_t *)local_buffer;
+ 
+-  shci_send( SHCI_OPCODE_C2_REINIT,
+-             0,
+-             0,
+-             p_rsp );
++  if (!shci_send( SHCI_OPCODE_C2_REINIT,
++                  0,
++                  0,
++                  p_rsp ))
++  {
++    return SHCI_ERR_TIMEOUT;
++  }
+ 
+   return (SHCI_CmdStatus_t)(((TL_CcEvt_t*)(p_rsp->evtserial.evt.payload))->payload[0]);
+ }
+@@ -600,10 +606,13 @@ SHCI_CmdStatus_t SHCI_C2_SetFlashActivityControl(SHCI_C2_SET_FLASH_ACTIVITY_CONT
+ 
+   local_buffer[0] = (uint8_t)Source;
+ 
+-  shci_send( SHCI_OPCODE_C2_SET_FLASH_ACTIVITY_CONTROL,
+-             1,
+-             local_buffer,
+-             p_rsp );
++  if (!shci_send( SHCI_OPCODE_C2_SET_FLASH_ACTIVITY_CONTROL,
++                  1,
++                  local_buffer,
++                  p_rsp ))
++  {
++    return SHCI_ERR_TIMEOUT;
++  }
+ 
+   return (SHCI_CmdStatus_t)(((TL_CcEvt_t*)(p_rsp->evtserial.evt.payload))->payload[0]);
+ }
+@@ -618,10 +627,13 @@ SHCI_CmdStatus_t SHCI_C2_Config(SHCI_C2_CONFIG_Cmd_Param_t *pCmdPacket)
+ 
+   p_rsp = (TL_EvtPacket_t *)local_buffer;
+ 
+-  shci_send( SHCI_OPCODE_C2_CONFIG,
+-             sizeof(SHCI_C2_CONFIG_Cmd_Param_t),
+-             (uint8_t*)pCmdPacket,
+-             p_rsp );
++  if (!shci_send( SHCI_OPCODE_C2_CONFIG,
++                  sizeof(SHCI_C2_CONFIG_Cmd_Param_t),
++                  (uint8_t*)pCmdPacket,
++                  p_rsp ))
++  {
++    return SHCI_ERR_TIMEOUT;
++  }
+ 
+   return (SHCI_CmdStatus_t)(((TL_CcEvt_t*)(p_rsp->evtserial.evt.payload))->payload[0]);
+ }
+@@ -759,4 +771,3 @@ SHCI_CmdStatus_t SHCI_GetWirelessFwInfo( WirelessFwInfo_t* pWirelessInfo )
+ 
+   return (SHCI_Success);
+ }
+-
+diff --git a/wpan/interface/patterns/ble_thread/shci/shci.h b/wpan/interface/patterns/ble_thread/shci/shci.h
+index 6b9da0d..f084daa 100644
+--- a/wpan/interface/patterns/ble_thread/shci/shci.h
++++ b/wpan/interface/patterns/ble_thread/shci/shci.h
+@@ -168,6 +168,7 @@ extern "C" {
+     SHCI_ERR_INVALID_HCI_CMD_PARAMS = 0x12,
+     SHCI_ERR_INVALID_PARAMS = 0x42,    /* only used for release < v1.13.0 */
+     SHCI_ERR_INVALID_PARAMS_V2 = 0x92, /* available for release >= v1.13.0 */
++    SHCI_ERR_TIMEOUT = 0xFE,
+     SHCI_FUS_CMD_NOT_SUPPORTED = 0xFF,
+   } SHCI_CmdStatus_t;
+ 
+diff --git a/wpan/interface/patterns/ble_thread/tl/command_response_wait.h b/wpan/interface/patterns/ble_thread/tl/command_response_wait.h
+new file mode 100644
+index 0000000..1da0862
+--- /dev/null
++++ b/wpan/interface/patterns/ble_thread/tl/command_response_wait.h
+@@ -0,0 +1,21 @@
++#pragma once
++
++#include <stdbool.h>
++#include <stdint.h>
++
++typedef struct {
++    void* context;
++    bool (*is_released)(void* context);
++    uint32_t (*now)(void* context);
++    void (*wait_step)(void* context);
++} BleCommandResponseWaitOps;
++
++static inline bool
++    ble_command_response_wait_bounded(const BleCommandResponseWaitOps* ops, uint32_t timeout) {
++    const uint32_t started = ops->now(ops->context);
++    while(!ops->is_released(ops->context)) {
++        if(ops->now(ops->context) - started >= timeout) return false;
++        ops->wait_step(ops->context);
++    }
++    return true;
++}
+diff --git a/wpan/interface/patterns/ble_thread/tl/hci_tl.c b/wpan/interface/patterns/ble_thread/tl/hci_tl.c
+index 2786e14..fba5708 100644
+--- a/wpan/interface/patterns/ble_thread/tl/hci_tl.c
++++ b/wpan/interface/patterns/ble_thread/tl/hci_tl.c
+@@ -24,6 +24,7 @@
+ #include "stm_list.h"
+ #include "tl.h"
+ #include "hci_tl.h"
++#include "command_response_wait.h"
+ 
+ /* Private typedef -----------------------------------------------------------*/
+ typedef enum
+@@ -60,6 +61,9 @@ static volatile HCI_TL_CmdRespStatus_t CmdRspStatusFlag;
+ 
+ /* Private function prototypes -----------------------------------------------*/
+ static void NotifyCmdStatus(HCI_TL_CmdStatus_t hcicmdstatus);
++static bool Cmd_Response_Released(void *context);
++static uint32_t Cmd_Response_Now(void *context);
++static void Cmd_Response_Wait_Step(void *context);
+ static void SendCmd(uint16_t opcode, uint8_t plen, void *param);
+ static void TlEvtReceived(TL_EvtPacket_t *hcievt);
+ static void TlInit( TL_CmdPacket_t * p_cmdbuffer );
+@@ -167,7 +171,11 @@ int hci_send_req(struct hci_request *p_cmd, uint8_t async)
+ 
+   while(local_cmd_status == HCI_TL_CmdBusy)
+   {
+-    hci_cmd_resp_wait(HCI_TL_DEFAULT_TIMEOUT);
++    if (!hci_cmd_resp_wait(HCI_TL_DEFAULT_TIMEOUT))
++    {
++      NotifyCmdStatus(HCI_TL_CmdAvailable);
++      return -1;
++    }
+ 
+     /**
+      * Process Cmd Event
+@@ -289,13 +297,39 @@ static void TlEvtReceived(TL_EvtPacket_t *hcievt)
+ }
+ 
+ /* Weak implementation ----------------------------------------------------------------*/
+-__WEAK void hci_cmd_resp_wait(uint32_t timeout)
++__WEAK bool hci_cmd_resp_wait(uint32_t timeout)
+ {
+-  (void)timeout;
++  /* R0: never dereference an unregistered io hook. If GetTick was not
++   * registered, fail OPEN (return false) instead of hanging or faulting. */
++  if (hciContext.io.GetTick == 0)
++  {
++    return false;
++  }
+ 
+-  while(CmdRspStatusFlag != HCI_TL_CMD_RESP_RELEASE);
++  const BleCommandResponseWaitOps ops = {
++    .context = NULL,
++    .is_released = Cmd_Response_Released,
++    .now = Cmd_Response_Now,
++    .wait_step = Cmd_Response_Wait_Step,
++  };
++  return ble_command_response_wait_bounded(&ops, timeout);
++}
+ 
+-  return;
++static bool Cmd_Response_Released(void *context)
++{
++  (void)context;
++  return CmdRspStatusFlag == HCI_TL_CMD_RESP_RELEASE;
++}
++
++static uint32_t Cmd_Response_Now(void *context)
++{
++  (void)context;
++  return (uint32_t)hciContext.io.GetTick();
++}
++
++static void Cmd_Response_Wait_Step(void *context)
++{
++  (void)context;
+ }
+ 
+ __WEAK void hci_cmd_resp_release(uint32_t flag)
+diff --git a/wpan/interface/patterns/ble_thread/tl/hci_tl.h b/wpan/interface/patterns/ble_thread/tl/hci_tl.h
+index c43c9e0..b0ecbc2 100644
+--- a/wpan/interface/patterns/ble_thread/tl/hci_tl.h
++++ b/wpan/interface/patterns/ble_thread/tl/hci_tl.h
+@@ -27,6 +27,7 @@ extern "C" {
+ 
+ #include "stm32_wpan_common.h"
+ #include "tl.h"
++#include <stdbool.h>
+ 
+ /* Exported defines -----------------------------------------------------------*/
+ typedef enum
+@@ -85,7 +86,7 @@ typedef struct
+ /**
+  * @brief  Register IO bus services.
+  * @param  fops The HCI IO structure managing the IO BUS
+- * @retval None
++ * @retval true when the response was received before timeout
+  */
+ void hci_register_io_bus(tHciIO* fops);
+ 
+@@ -121,9 +122,9 @@ void hci_resume_flow(void);
+  *         - It may use a semaphore when using cmsis_os interface
+  *
+  * @param  timeout: Waiting timeout
+- * @retval None
++ * @retval true when the response was received before timeout
+  */
+-void hci_cmd_resp_wait(uint32_t timeout);
++bool hci_cmd_resp_wait(uint32_t timeout);
+ 
+ /**
+  * @brief  This function is called when an ACI/HCI command response is received from the CPU2.
+diff --git a/wpan/interface/patterns/ble_thread/tl/shci_tl.c b/wpan/interface/patterns/ble_thread/tl/shci_tl.c
+index 0936f32..6eede82 100644
+--- a/wpan/interface/patterns/ble_thread/tl/shci_tl.c
++++ b/wpan/interface/patterns/ble_thread/tl/shci_tl.c
+@@ -22,6 +22,7 @@
+ 
+ #include "stm_list.h"
+ #include "shci_tl.h"
++#include "command_response_wait.h"
+ 
+ /* Private typedef -----------------------------------------------------------*/
+ typedef enum
+@@ -60,6 +61,9 @@ static void Cmd_SetStatus(SHCI_TL_CmdStatus_t shcicmdstatus);
+ static void TlCmdEvtReceived(TL_EvtPacket_t *shcievt);
+ static void TlUserEvtReceived(TL_EvtPacket_t *shcievt);
+ static void TlInit( TL_CmdPacket_t * p_cmdbuffer );
++static bool Cmd_Response_Released(void *context);
++static uint32_t Cmd_Response_Now(void *context);
++static void Cmd_Response_Wait_Step(void *context);
+ 
+ /* Interface ------- ---------------------------------------------------------*/
+ void shci_init(void(* UserEvtRx)(void* pData), void* pConf)
+@@ -144,7 +148,7 @@ void shci_resume_flow( void )
+   return;
+ }
+ 
+-void shci_send( uint16_t cmd_code, uint8_t len_cmd_payload, uint8_t * p_cmd_payload, TL_EvtPacket_t * p_rsp )
++bool shci_send( uint16_t cmd_code, uint8_t len_cmd_payload, uint8_t * p_cmd_payload, TL_EvtPacket_t * p_rsp )
+ {
+   Cmd_SetStatus(SHCI_TL_CmdBusy);
+ 
+@@ -155,7 +159,11 @@ void shci_send( uint16_t cmd_code, uint8_t len_cmd_payload, uint8_t * p_cmd_payl
+   CmdRspStatusFlag = SHCI_TL_CMD_RESP_WAIT;
+   shciContext.io.Send(0,0);
+ 
+-  shci_cmd_resp_wait(SHCI_TL_DEFAULT_TIMEOUT);
++  if (!shci_cmd_resp_wait(SHCI_TL_DEFAULT_TIMEOUT))
++  {
++    Cmd_SetStatus(SHCI_TL_CmdAvailable);
++    return false;
++  }
+ 
+   /**
+    * The command complete of a system command does not have the header
+@@ -165,7 +173,7 @@ void shci_send( uint16_t cmd_code, uint8_t len_cmd_payload, uint8_t * p_cmd_payl
+ 
+   Cmd_SetStatus(SHCI_TL_CmdAvailable);
+ 
+-  return;
++  return true;
+ }
+ 
+ /* Private functions ---------------------------------------------------------*/
+@@ -233,13 +241,39 @@ static void TlUserEvtReceived(TL_EvtPacket_t *shcievt)
+ }
+ 
+ /* Weak implementation ----------------------------------------------------------------*/
+-__WEAK void shci_cmd_resp_wait(uint32_t timeout)
++__WEAK bool shci_cmd_resp_wait(uint32_t timeout)
+ {
+-  (void)timeout;
++  /* R0: never dereference an unregistered io hook. If GetTick was not
++   * registered, fail OPEN (return false) instead of hanging or faulting. */
++  if (shciContext.io.GetTick == 0)
++  {
++    return false;
++  }
+ 
+-  while(CmdRspStatusFlag != SHCI_TL_CMD_RESP_RELEASE);
++  const BleCommandResponseWaitOps ops = {
++    .context = NULL,
++    .is_released = Cmd_Response_Released,
++    .now = Cmd_Response_Now,
++    .wait_step = Cmd_Response_Wait_Step,
++  };
++  return ble_command_response_wait_bounded(&ops, timeout);
++}
+ 
+-  return;
++static bool Cmd_Response_Released(void *context)
++{
++  (void)context;
++  return CmdRspStatusFlag == SHCI_TL_CMD_RESP_RELEASE;
++}
++
++static uint32_t Cmd_Response_Now(void *context)
++{
++  (void)context;
++  return (uint32_t)shciContext.io.GetTick();
++}
++
++static void Cmd_Response_Wait_Step(void *context)
++{
++  (void)context;
+ }
+ 
+ __WEAK void shci_cmd_resp_release(uint32_t flag)
+@@ -250,5 +284,3 @@ __WEAK void shci_cmd_resp_release(uint32_t flag)
+ 
+   return;
+ }
+-
+-
+diff --git a/wpan/interface/patterns/ble_thread/tl/shci_tl.h b/wpan/interface/patterns/ble_thread/tl/shci_tl.h
+index 74d0ff3..43ffee9 100644
+--- a/wpan/interface/patterns/ble_thread/tl/shci_tl.h
++++ b/wpan/interface/patterns/ble_thread/tl/shci_tl.h
+@@ -24,6 +24,7 @@ extern "C" {
+ #endif
+ 
+ #include "tl.h"
++#include <stdbool.h>
+ 
+ /* Exported defines -----------------------------------------------------------*/
+ typedef enum
+@@ -87,9 +88,9 @@ typedef struct
+   * @param : len_cmd_payload = Length of the command payload
+   * @param : p_cmd_payload = Address of the command payload
+   * @param : p_rsp_status = Address of the full buffer holding the command complete event
+-  * @retval : None
++ * @retval : true when a fresh command response was copied
+   */
+-void shci_send( uint16_t cmd_code, uint8_t len_cmd_payload, uint8_t * p_cmd_payload, TL_EvtPacket_t * p_rsp_status );
++bool shci_send( uint16_t cmd_code, uint8_t len_cmd_payload, uint8_t * p_cmd_payload, TL_EvtPacket_t * p_rsp_status );
+  
+ /**
+  * @brief  Register IO bus services.
+@@ -127,9 +128,9 @@ void shci_resume_flow(void);
+  *         - It may use a semaphore when using cmsis_os interface
+  *
+  * @param  timeout: Waiting timeout
+- * @retval None
++ * @retval true when the response was received before timeout
+  */
+-void shci_cmd_resp_wait(uint32_t timeout);
++bool shci_cmd_resp_wait(uint32_t timeout);
+ 
+ /**
+  * @brief  This function is called when an System HCI command is received from the CPU2.
+-- 
+2.39.5 (Apple Git-154)
+
