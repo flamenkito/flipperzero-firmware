@@ -1,7 +1,7 @@
 #include "airbridge_config.h"
 
 #include <furi.h>
-#include <furi_hal_usb_airbridge.h>
+#include "airbridge_usb.h"
 #include <toolbox/stream/file_stream.h>
 #include <toolbox/stream/stream.h>
 
@@ -10,8 +10,8 @@
 #define BLE_SCAN_RESPONSE_OVERHEAD 27U
 
 static bool app_find_profile(const char* label, uint8_t* profile_index) {
-    for(uint8_t index = 0; index < furi_hal_usb_airbridge_profile_count(); index++) {
-        const char* candidate = furi_hal_usb_airbridge_profile_label(index);
+    for(uint8_t index = 0; index < airbridge_usb_profile_count(); index++) {
+        const char* candidate = airbridge_usb_profile_label(index);
         if(candidate != NULL && strcmp(label, candidate) == 0) {
             *profile_index = index;
             return true;

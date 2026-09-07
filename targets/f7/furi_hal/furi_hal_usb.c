@@ -152,20 +152,6 @@ bool furi_hal_usb_set_config(FuriHalUsbInterface* new_if, void* ctx) {
     return return_data.bool_value;
 }
 
-bool furi_hal_usb_set_config_async(FuriHalUsbInterface* new_if, void* ctx) {
-    const UsbApiEventMessage message = {
-        .type = UsbApiEventTypeSetConfig,
-        .data.interface =
-            {
-                .interface = new_if,
-                .context = ctx,
-            },
-    };
-    if(furi_message_queue_put(usb.queue, &message, 100U) != FuriStatusOk) return false;
-    furi_thread_flags_set(furi_thread_get_id(usb.thread), UsbEventMessage);
-    return true;
-}
-
 FuriHalUsbInterface* furi_hal_usb_get_config(void) {
     UsbApiEventReturnData return_data = {
         .void_value = NULL,
@@ -417,12 +403,10 @@ static void usb_process_enable(bool enable) {
 
 static void usb_process_message(UsbApiEventMessage* message) {
     switch(message->type) {
-    case UsbApiEventTypeSetConfig: {
-        const bool result = usb_process_set_config(
+    case UsbApiEventTypeSetConfig:
+        message->return_data->bool_value = usb_process_set_config(
             message->data.interface.interface, message->data.interface.context);
-        if(message->return_data) message->return_data->bool_value = result;
         break;
-    }
     case UsbApiEventTypeGetConfig:
         message->return_data->void_value = usb.interface;
         break;
@@ -452,7 +436,7 @@ static void usb_process_message(UsbApiEventMessage* message) {
         break;
     }
 
-    if(message->lock) api_lock_unlock(message->lock);
+    api_lock_unlock(message->lock);
 }
 
 static int32_t furi_hal_usb_thread(void* context) {

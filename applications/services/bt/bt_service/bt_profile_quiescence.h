@@ -12,9 +12,8 @@ typedef struct {
     BtProfileQuiescenceWait wait_one_step;
 } BtProfileQuiescenceOps;
 
-static inline bool bt_profile_wait_quiescent_bounded(
-    const BtProfileQuiescenceOps* ops,
-    uint32_t max_wait_steps) {
+static inline bool
+    bt_profile_wait_quiescent_bounded(const BtProfileQuiescenceOps* ops, uint32_t max_wait_steps) {
     for(uint32_t waited = 0;; waited++) {
         uint32_t readers;
         if(!ops->readers_snapshot(ops->context, &readers)) return false;

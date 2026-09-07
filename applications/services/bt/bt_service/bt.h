@@ -5,14 +5,6 @@
 #include <furi_ble/profile_interface.h>
 #include <core/common_defines.h>
 
-/** Raw serial callback.
- * @note For data deliveries len > 0 and data points to the received bytes.
- * @note A TX-confirmation sentinel is delivered as data == NULL and len == 0.
- *       It is NOT a data packet; consumers must ignore it for relay/input parsing
- *       and use it only to pace outgoing BLE serial transmissions.
- */
-typedef uint16_t (*BtRawSerialCallback)(const uint8_t* data, uint16_t len, void* context);
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -53,23 +45,14 @@ FURI_WARN_UNUSED FuriHalBleProfileBase* bt_profile_start(
  */
 bool bt_profile_restore_default(Bt* bt);
 
-/** Queue restoration of the default profile without waiting for radio teardown.
- * The request owns no caller memory and is safe to complete after the caller exits.
- *
- * @param bt        Bt instance
- *
- * @return          true if the request was queued
- */
-FURI_WARN_UNUSED bool bt_profile_restore_default_async(Bt* bt);
-
 /** Disconnect from Central
  *
  * @param bt        Bt instance
  */
 void bt_disconnect(Bt* bt);
 
-/** True while a pairing ceremony (PIN show/numeric comparison) is in
- * progress on the current link. Written on the GAP event thread.
+/** True while pairing awaits user input (shown PIN or numeric comparison).
+ * Written on the GAP event thread; cleared after comparison or link completion.
  *
  * @param bt        Bt instance
  *
@@ -77,26 +60,14 @@ void bt_disconnect(Bt* bt);
  */
 bool bt_pairing_in_progress(Bt* bt);
 
-/** Send an AirBridge keyboard input report through the current BLE profile.
- *
- * The Bt service holds a reader reference for the entire report operation, so
- * profile replacement cannot free the profile while the report is in flight.
- *
- * @param bt        Bt instance
- * @param data      eight-byte keyboard report
- * @param len       report length
- * @return          false on success, true on error
+/** Borrow the current profile across direct service operations.
+ * Returns NULL if no profile is available. Every non-NULL result must be
+ * released. Do not hold a reference across bt_profile_start, bt_disconnect,
+ * UI waits, or other Bt service queue operations. Profile replacement waits
+ * for references to drain before running the profile destructor.
  */
-bool bt_airbridge_kb_report(Bt* bt, uint8_t* data, uint16_t len);
-
-/** Query whether the current AirBridge serial client subscribed to TX.
- *
- * The service/profile pair remains reader-referenced for the whole query.
- *
- * @param bt        Bt instance
- * @return          true only for a live AirBridge profile with a subscribed client
- */
-bool bt_airbridge_serial_client_subscribed(Bt* bt);
+FuriHalBleProfileBase* bt_current_profile_acquire(Bt* bt);
+void bt_current_profile_release(Bt* bt);
 
 /** Set callback for Bluetooth status change notification
  *
@@ -115,7 +86,7 @@ bool bt_set_status_changed_callback_bounded(
     void* context,
     uint32_t timeout);
 
-/** Register the AirBridge status callback and deliver a race-free status snapshot.
+/** Register a status callback and deliver a race-free status snapshot.
  *
  * The initial callback runs outside the callback-state mutex but inside the
  * recursive dispatch mutex, totally ordering it before later deliveries.
@@ -125,7 +96,7 @@ bool bt_set_status_changed_callback_bounded(
  * @param context   pointer to context
  * @return          status delivered during registration
  */
-BtStatus bt_airbridge_set_status_changed_callback(
+BtStatus bt_set_status_changed_callback_with_snapshot(
     Bt* bt,
     BtStatusChangedCallback callback,
     void* context);
@@ -149,21 +120,6 @@ void bt_keys_storage_set_storage_path(Bt* bt, const char* keys_storage_path);
  * @param bt                    Bt instance
  */
 void bt_keys_storage_set_default_path(Bt* bt);
-
-/** Set raw serial callback for AirBridge passthrough
- *
- * @param cb    callback invoked on every BLE serial RX packet
- * @param ctx   context passed to callback
- */
-void bt_set_raw_serial_callback(BtRawSerialCallback cb, void* ctx);
-
-/** Send raw bytes over BLE Serial (AirBridge TX)
- *
- * @param data  bytes to send
- * @param len   number of bytes
- * @return      true on success
- */
-bool bt_serial_tx(const uint8_t* data, uint16_t len);
 
 #ifdef __cplusplus
 }

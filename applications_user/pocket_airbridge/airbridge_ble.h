@@ -5,10 +5,14 @@
 
 #include <furi.h>
 #include <bt/bt_service/bt.h>
-#include <extra_profiles/airbridge_identity_params.h>
+#include "airbridge_profile.h"
+
+#define BLE_BRIDGE_ADV_WATCHDOG_MS 2500
+#define BLE_SQUATTER_KICK_MS       15000
 
 typedef struct {
     Bt* bt;
+    AirbridgeBleProfileParams profile_params;
     bool ble_profile_installed;
     bool ble_connected;
     bool restart_adv_pending;
@@ -26,12 +30,16 @@ typedef struct {
     uint32_t ble_bridge_last_watchdog_tick;
 } AirbridgeBle;
 
-void airbridge_ble_ensure_serial_adv(AirbridgeBle* ble);
+bool airbridge_ble_ensure_serial_adv(AirbridgeBle* ble);
 void airbridge_ble_service_pending(AirbridgeBle* ble);
 void airbridge_ble_note_rx(AirbridgeBle* ble, uint32_t tick);
 void airbridge_ble_force_reconnect(AirbridgeBle* ble);
 void airbridge_ble_bridge_adv_watchdog(AirbridgeBle* ble);
 void airbridge_ble_squatter_watchdog(AirbridgeBle* ble);
-bool airbridge_ble_configure(AirbridgeBle* ble, AirbridgeBleIdentityParams* identity);
-bool airbridge_ble_prepare_restore(AirbridgeBle* ble, Bt** restore_bt);
-void airbridge_ble_queue_restore(Bt* bt);
+bool airbridge_ble_configure(
+    AirbridgeBle* ble,
+    const AirbridgeBleIdentityParams* identity,
+    AirbridgeSerialServiceEventCallback callback,
+    void* context);
+bool airbridge_ble_send(AirbridgeBle* ble, uint8_t* data, uint16_t len);
+bool airbridge_ble_restore(AirbridgeBle* ble);

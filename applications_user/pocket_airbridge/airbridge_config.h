@@ -5,7 +5,7 @@
 
 #include <storage/storage.h>
 
-#include <extra_profiles/airbridge_profile.h>
+#include "airbridge_profile.h"
 
 typedef struct {
     uint8_t usb_profile_index;

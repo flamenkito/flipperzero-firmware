@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <furi_hal_usb_airbridge.h>
+#include "airbridge_usb.h"
 #include <furi_hal_version.h>
 
 #define BLE_DEFAULT_NAME        "HP 725 K+M"
@@ -44,11 +44,9 @@ static uint32_t airbridge_config_serial_hash(void) {
 }
 
 void airbridge_config_set_defaults(AirbridgeConfig* config) {
-    config->usb_profile_index = FuriHalUsbAirbridgeProfileHpKbdVendor;
+    config->usb_profile_index = AirbridgeUsbProfileHpKbdVendor;
     memcpy(
-        &config->ble_identity,
-        &airbridge_config_default_identity,
-        sizeof(config->ble_identity));
+        &config->ble_identity, &airbridge_config_default_identity, sizeof(config->ble_identity));
     config->identity_warning = false;
 
     const uint32_t serial_hash = airbridge_config_serial_hash();

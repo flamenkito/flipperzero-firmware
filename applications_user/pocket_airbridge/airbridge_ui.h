@@ -5,6 +5,7 @@
 
 #include "airbridge_relay.h"
 #include "airbridge_types.h"
+#include "airbridge_operation.h"
 
 typedef struct AirbridgeUi AirbridgeUi;
 
@@ -32,6 +33,8 @@ typedef struct {
     uint64_t stream_sent;
     uint64_t stream_total;
     AirbridgeError error;
+    bool closing;
+    AirbridgeOperationStatus operation;
 } AirbridgeUiSnapshot;
 
 AirbridgeUi* airbridge_ui_alloc(AirbridgeUiIntentCallback intent_callback, void* context);
@@ -41,6 +44,8 @@ void airbridge_ui_add_view(AirbridgeUi* ui);
 void airbridge_ui_update(AirbridgeUi* ui, const AirbridgeUiSnapshot* snapshot);
 void airbridge_ui_resume_input(AirbridgeUi* ui);
 void airbridge_ui_service_input(AirbridgeUi* ui);
+void airbridge_ui_show_closing(AirbridgeUi* ui);
+void airbridge_ui_set_operation_status(AirbridgeUi* ui, AirbridgeOperationStatus status);
 void airbridge_ui_remove_view(AirbridgeUi* ui);
 void airbridge_ui_close_gui(void);
 void airbridge_ui_free_view(AirbridgeUi* ui);

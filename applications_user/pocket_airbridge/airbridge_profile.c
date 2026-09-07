@@ -1,8 +1,8 @@
 #include "airbridge_profile.h"
 
-#include <services/airbridge_dev_info_service.h>
-#include <services/airbridge_serial_service.h>
-#include <services/airbridge_serial_uuid.h>
+#include "airbridge_dev_info_service.h"
+#include "airbridge_serial_service.h"
+#include "airbridge_serial_uuid.h"
 #include <services/battery_service.h>
 
 #include <furi.h>
@@ -41,8 +41,8 @@ static const AirbridgeBleIdentityParams airbridge_default_identity = {
 
 static const AirbridgeBleIdentityParams*
     ble_profile_airbridge_get_identity(FuriHalBleProfileParams profile_params) {
-    const AirbridgeBleIdentityParams* identity = (const AirbridgeBleIdentityParams*)profile_params;
-    return identity ? identity : &airbridge_default_identity;
+    const AirbridgeBleProfileParams* params = profile_params;
+    return params ? &params->identity : &airbridge_default_identity;
 }
 
 static void ble_profile_airbridge_free(BleProfileAirbridge* profile) {
@@ -93,6 +93,12 @@ static FuriHalBleProfileBase* ble_profile_airbridge_start(FuriHalBleProfileParam
         goto error;
     }
 
+    const AirbridgeBleProfileParams* params = profile_params;
+    if(params) {
+        ble_svc_airbridge_serial_set_callbacks(
+            profile->serial_svc, 8U * 64U, params->callback, params->context);
+    }
+
     return &profile->base;
 
 error:
@@ -107,32 +113,15 @@ static void ble_profile_airbridge_stop(FuriHalBleProfileBase* profile) {
     ble_profile_airbridge_free((BleProfileAirbridge*)profile);
 }
 
-static bool ble_profile_airbridge_report(
-    FuriHalBleProfileBase* profile,
-    uint8_t* data,
-    uint16_t len) {
-    furi_check(profile && (profile->config == ble_profile_airbridge));
-    UNUSED(data);
-    UNUSED(len);
-    return true;
+bool airbridge_profile_send(FuriHalBleProfileBase* profile, uint8_t* data, uint16_t len) {
+    if(!profile || profile->config != ble_profile_airbridge) return false;
+    return ble_svc_airbridge_serial_update_tx(
+        ((BleProfileAirbridge*)profile)->serial_svc, data, len);
 }
 
-bool ble_profile_airbridge_kb_report(FuriHalBleProfileBase* profile, uint8_t* data, uint16_t len) {
-    return ble_profile_airbridge_report(profile, data, len);
-}
-
-bool ble_profile_airbridge_mouse_report(
-    FuriHalBleProfileBase* profile,
-    uint8_t* data,
-    uint16_t len) {
-    return ble_profile_airbridge_report(profile, data, len);
-}
-
-bool ble_profile_airbridge_consumer_report(
-    FuriHalBleProfileBase* profile,
-    uint8_t* data,
-    uint16_t len) {
-    return ble_profile_airbridge_report(profile, data, len);
+bool airbridge_profile_subscribed(FuriHalBleProfileBase* profile) {
+    if(!profile || profile->config != ble_profile_airbridge) return false;
+    return ble_svc_airbridge_serial_client_subscribed(((BleProfileAirbridge*)profile)->serial_svc);
 }
 
 // AN5289: 4.7, in order to use flash controller interval must be at least 25ms + advertisement, which is 30 ms
@@ -169,9 +158,8 @@ static void
     memcpy(config, &template_config, sizeof(GapConfig));
 
     memcpy(config->mac_address, identity->mac_address, sizeof(config->mac_address));
-    config->mac_address[5] =
-        (config->mac_address[5] & ~AIRBRIDGE_SERIAL_IDENTITY_VERSION_MASK) |
-        AIRBRIDGE_SERIAL_IDENTITY_VERSION;
+    config->mac_address[5] = (config->mac_address[5] & ~AIRBRIDGE_SERIAL_IDENTITY_VERSION_MASK) |
+                             AIRBRIDGE_SERIAL_IDENTITY_VERSION;
     /* The BLE transport is serial-only on air. Never let an SD-configured HID
      * appearance recruit the host HID daemon onto the single peripheral link. */
     config->appearance_char = GAP_APPEARANCE_UNKNOWN;

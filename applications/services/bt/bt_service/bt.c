@@ -9,8 +9,6 @@
 #include <gui/elements.h>
 #include <assets_icons.h>
 #include <profiles/serial_profile.h>
-#include <extra_profiles/airbridge_profile.h>
-#include <services/airbridge_serial_service.h>
 
 #define TAG "BtSrv"
 
@@ -26,21 +24,11 @@ static void bt_statusbar_update(Bt* bt);
 #define BT_PROFILE_MUTEX_TIMEOUT_MS      (50U)
 #define BT_PRODUCER_QUEUE_TIMEOUT_MS     (100U)
 
-/* Pocket AirBridge raw serial passthrough hook */
-static BtRawSerialCallback bt_raw_serial_cb = NULL;
-static void* bt_raw_serial_ctx = NULL;
-static Bt* bt_instance = NULL;
-
-static bool bt_profile_is_airbridge(FuriHalBleProfileBase* profile) {
-    return profile && furi_hal_bt_check_profile_type(profile, ble_profile_airbridge);
-}
-
 /* Publish a new current_profile and refresh the cached type flags.
  * Always called with bt->current_profile_mutex held, only from the BtSrv thread. */
 static void bt_publish_current_profile(Bt* bt, FuriHalBleProfileBase* profile) {
     bt->current_profile = profile;
     bt->current_profile_is_serial = furi_hal_bt_check_profile_type(profile, ble_profile_serial);
-    bt->current_profile_is_airbridge = bt_profile_is_airbridge(profile);
 }
 
 static bool bt_publish_current_profile_bounded(Bt* bt, FuriHalBleProfileBase* profile) {
@@ -86,7 +74,7 @@ static bool bt_current_profile_is_null_bounded(Bt* bt, bool* is_null) {
  * serial service alive across the blocking call: the writer publishes NULL
  * first (so no new readers can start), waits for quiescence, and only then
  * lets furi_hal_bt_change_app free the old profile. */
-static FuriHalBleProfileBase* bt_current_profile_acquire(Bt* bt) {
+FuriHalBleProfileBase* bt_current_profile_acquire(Bt* bt) {
     if(furi_mutex_acquire(bt->current_profile_mutex, BT_PROFILE_MUTEX_TIMEOUT_MS) !=
        FuriStatusOk) {
         return NULL;
@@ -99,7 +87,7 @@ static FuriHalBleProfileBase* bt_current_profile_acquire(Bt* bt) {
     return profile;
 }
 
-static void bt_current_profile_release(Bt* bt) {
+void bt_current_profile_release(Bt* bt) {
     furi_check(
         furi_mutex_acquire(bt->current_profile_mutex, BT_PROFILE_MUTEX_TIMEOUT_MS) ==
         FuriStatusOk);
@@ -140,82 +128,9 @@ static bool bt_current_profile_wait_quiescent(Bt* bt) {
     return bt_profile_wait_quiescent_bounded(&ops, BT_PROFILE_QUIESCENCE_TIMEOUT_MS);
 }
 
-void bt_set_raw_serial_callback(BtRawSerialCallback cb, void* ctx) {
-    FURI_CRITICAL_ENTER();
-    if(cb) {
-        bt_raw_serial_ctx = ctx;
-        bt_raw_serial_cb = cb;
-    } else {
-        bt_raw_serial_cb = NULL;
-        bt_raw_serial_ctx = NULL;
-    }
-    FURI_CRITICAL_EXIT();
-}
-
-static bool bt_raw_serial_invoke(const uint8_t* data, uint16_t size, uint16_t* result) {
-    bool invoked = false;
-    FURI_CRITICAL_ENTER();
-    if(bt_raw_serial_cb) {
-        *result = bt_raw_serial_cb(data, size, bt_raw_serial_ctx);
-        invoked = true;
-    }
-    FURI_CRITICAL_EXIT();
-    return invoked;
-}
-
 bool bt_pairing_in_progress(Bt* bt) {
     furi_check(bt);
     return bt->pairing_in_progress;
-}
-
-bool bt_airbridge_kb_report(Bt* bt, uint8_t* data, uint16_t len) {
-    if(!bt) return true;
-
-    bool error = true;
-    FuriHalBleProfileBase* profile = bt_current_profile_acquire(bt);
-    if(bt_profile_is_airbridge(profile)) {
-        error = ble_profile_airbridge_kb_report(profile, data, len);
-    }
-    if(profile) {
-        bt_current_profile_release(bt);
-    }
-    return error;
-}
-
-bool bt_airbridge_serial_client_subscribed(Bt* bt) {
-    if(!bt) return false;
-
-    bool subscribed = false;
-    FuriHalBleProfileBase* profile = bt_current_profile_acquire(bt);
-    if(bt_profile_is_airbridge(profile)) {
-        BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
-        subscribed = serial_svc && ble_svc_airbridge_serial_client_subscribed(serial_svc);
-    }
-    if(profile) {
-        bt_current_profile_release(bt);
-    }
-    return subscribed;
-}
-
-bool bt_serial_tx(const uint8_t* data, uint16_t len) {
-    if(!bt_instance) return false;
-
-    Bt* bt = bt_instance;
-    bool ret = false;
-    /* Reader ref, never the mutex, across the blocking aci_* TX call; the
-     * snapshot type check is a pure pointer comparison. */
-    FuriHalBleProfileBase* profile = bt_current_profile_acquire(bt);
-    if(profile) {
-        if(bt_profile_is_airbridge(profile)) {
-            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
-            ret = serial_svc &&
-                  ble_svc_airbridge_serial_update_tx(serial_svc, (uint8_t*)data, len);
-        } else {
-            ret = ble_profile_serial_tx(profile, (uint8_t*)data, len);
-        }
-        bt_current_profile_release(bt);
-    }
-    return ret;
 }
 
 static void bt_draw_statusbar_callback(Canvas* canvas, void* context) {
@@ -363,10 +278,7 @@ Bt* bt_alloc(void) {
     bt->current_profile = NULL;
     bt->current_profile_readers = 0;
     bt->current_profile_is_serial = false;
-    bt->current_profile_is_airbridge = false;
-    bt->reload_profile_is_airbridge = false;
     bt->profile_retry_pending = false;
-    bt->profile_retry_template = NULL;
     bt->pairing_in_progress = false;
     bt->status = BtStatusUnavailable;
     bt->gap_mailbox.status_dirty = false;
@@ -417,18 +329,8 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
     Bt* bt = context;
     uint16_t ret = 0;
 
-    /* The DataReceived path runs with the serial service's buff_size_mtx held,
-     * so this callback must NEVER acquire current_profile_mutex (the only
-     * allowed lock order is current_profile_mutex -> buff_size_mtx). It reads
-     * the cached type flags instead; a momentarily stale flag during a profile
-     * change is benign because the BLE link is being torn down in that window. */
+    /* Called with the serial buffer mutex held; do not acquire a profile here. */
     if(event.event == SerialServiceEventTypeDataReceived) {
-        if(bt_raw_serial_invoke(event.data.buffer, event.data.size, &ret)) {
-            return ret;
-        }
-        if(bt->current_profile_is_airbridge) {
-            return ret;
-        }
         size_t bytes_processed =
             rpc_session_feed(bt->rpc_session, event.data.buffer, event.data.size, 1000);
         if(bytes_processed != event.data.size) {
@@ -437,25 +339,17 @@ static uint16_t bt_serial_event_callback(SerialServiceEvent event, void* context
         }
         ret = rpc_session_get_available_size(bt->rpc_session);
     } else if(event.event == SerialServiceEventTypeDataSent) {
-        bool raw_callback_invoked = bt->current_profile_is_airbridge &&
-                                    bt_raw_serial_invoke(NULL, 0, &ret);
-        if(!raw_callback_invoked) {
-            furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
-        }
+        furi_event_flag_set(bt->rpc_event, BT_RPC_EVENT_BUFF_SENT);
     } else if(event.event == SerialServiceEventTypesBleResetRequest) {
-        if(bt->current_profile_is_airbridge) {
-            FURI_LOG_W(TAG, "Ignoring reset request for AirBridge profile");
-        } else {
-            FURI_LOG_I(TAG, "BLE restart request received");
-            BtMessage message = {
-                .type = BtMessageTypeSetProfile,
-                .data.profile.params = NULL,
-                .data.profile.template = ble_profile_serial,
-            };
-            if(furi_message_queue_put(bt->message_queue, &message, BT_PRODUCER_QUEUE_TIMEOUT_MS) !=
-               FuriStatusOk) {
-                FURI_LOG_W(TAG, "BLE restart request queue saturated");
-            }
+        FURI_LOG_I(TAG, "BLE restart request received");
+        BtMessage message = {
+            .type = BtMessageTypeSetProfile,
+            .data.profile.params = NULL,
+            .data.profile.template = ble_profile_serial,
+        };
+        if(furi_message_queue_put(bt->message_queue, &message, BT_PRODUCER_QUEUE_TIMEOUT_MS) !=
+           FuriStatusOk) {
+            FURI_LOG_W(TAG, "BLE restart request queue saturated");
         }
     }
     return ret;
@@ -567,20 +461,6 @@ static void bt_gap_mailbox_publish_pin_code(Bt* bt, uint32_t pin_code) {
 }
 
 static void bt_gap_profile_connected(Bt* bt) {
-    if(bt->current_profile_is_airbridge) {
-        FuriHalBleProfileBase* profile = bt_current_profile_acquire(bt);
-        if(bt_profile_is_airbridge(profile)) {
-            BleServiceAirbridgeSerial* serial_svc = ble_svc_airbridge_serial_get_active();
-            if(serial_svc) {
-                ble_svc_airbridge_serial_set_callbacks(
-                    serial_svc, RPC_BUFFER_SIZE, bt_serial_event_callback, bt);
-            } else {
-                FURI_LOG_E(TAG, "AirBridge serial service unavailable on connect");
-            }
-        }
-        if(profile) bt_current_profile_release(bt);
-    }
-
     if(bt->current_profile_is_serial) {
         bt->rpc_session = rpc_session_open(bt->rpc, RpcOwnerBle);
         if(bt->rpc_session) {
@@ -610,18 +490,12 @@ static void bt_gap_profile_connected(Bt* bt) {
 }
 
 static void bt_gap_profile_disconnected(Bt* bt) {
-    /* An AirBridge disconnect must not hold a profile reader while clearing
-     * service callbacks: profile replacement waits for readers, while GAP
-     * teardown can already own the service state. The profile destructor owns
-     * callback cleanup; a plain disconnect keeps them for the next link. */
-    if(!bt->current_profile_is_airbridge) {
-        FuriHalBleProfileBase* profile = bt_current_profile_acquire(bt);
-        if(furi_hal_bt_check_profile_type(profile, ble_profile_serial)) {
-            ble_profile_serial_set_rpc_active(profile, FuriHalBtSerialRpcStatusNotActive);
-            ble_profile_serial_set_event_callback(profile, 0, NULL, NULL);
-        }
-        if(profile) bt_current_profile_release(bt);
+    FuriHalBleProfileBase* profile = bt_current_profile_acquire(bt);
+    if(furi_hal_bt_check_profile_type(profile, ble_profile_serial)) {
+        ble_profile_serial_set_rpc_active(profile, FuriHalBtSerialRpcStatusNotActive);
+        ble_profile_serial_set_event_callback(profile, 0, NULL, NULL);
     }
+    if(profile) bt_current_profile_release(bt);
 
     if(bt->rpc_session) {
         FURI_LOG_I(TAG, "Close RPC connection");
@@ -686,6 +560,7 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
     } else if(event.type == GapEventTypePinCodeVerify) {
         bt->pairing_in_progress = true;
         ret = bt_pin_code_verify_event_handler(bt, event.data.pin_code);
+        bt->pairing_in_progress = false;
     } else if(event.type == GapEventTypeUpdateMTU) {
         bt->max_packet_size = event.data.max_packet_size;
         ret = true;
@@ -839,14 +714,8 @@ static void bt_close_rpc_connection(Bt* bt) {
 
 static void bt_schedule_profile_retry(Bt* bt, const BtMessage* message) {
     const FuriHalBleProfileTemplate* profile_template = message->data.profile.template;
-    if(profile_template != ble_profile_serial && profile_template != ble_profile_airbridge) return;
-
-    bt->profile_retry_template = profile_template;
-    if(profile_template == ble_profile_airbridge) {
-        furi_check(message->data.profile.params);
-        bt->profile_retry_airbridge_params =
-            *(const AirbridgeBleIdentityParams*)message->data.profile.params;
-    }
+    /* Never retain an external profile template or its caller-owned parameters. */
+    if(profile_template != ble_profile_serial) return;
     bt->profile_retry_pending = true;
 }
 
@@ -887,9 +756,6 @@ static void bt_change_profile(Bt* bt, BtMessage* message) {
             return;
         }
 
-        const bool requested_airbridge = message->data.profile.template == ble_profile_airbridge;
-        if(requested_airbridge) furi_check(message->data.profile.params);
-
         FuriHalBleProfileBase* new_profile = furi_hal_bt_change_app(
             message->data.profile.template,
             message->data.profile.params,
@@ -904,11 +770,6 @@ static void bt_change_profile(Bt* bt, BtMessage* message) {
         }
 
         if(new_profile) {
-            bt->reload_profile_is_airbridge = requested_airbridge;
-            if(requested_airbridge) {
-                bt->reload_airbridge_params =
-                    *(const AirbridgeBleIdentityParams*)message->data.profile.params;
-            }
             FURI_LOG_I(TAG, "Bt App started");
             if(bt->bt_settings.enabled) {
                 furi_hal_bt_start_advertising();
@@ -976,10 +837,8 @@ static FuriHalBleProfileBase* bt_load_keys(Bt* bt) {
 static void bt_start_application(Bt* bt, FuriHalBleProfileBase* previous_profile) {
     const BtMessage retry_message = {
         .type = BtMessageTypeSetProfile,
-        .data.profile.template = bt->reload_profile_is_airbridge ? ble_profile_airbridge :
-                                                                   ble_profile_serial,
-        .data.profile.params = bt->reload_profile_is_airbridge ? &bt->reload_airbridge_params :
-                                                                 NULL,
+        .data.profile.template = ble_profile_serial,
+        .data.profile.params = NULL,
     };
     bool profile_start_needed = false;
     if(!bt_current_profile_is_null_bounded(bt, &profile_start_needed)) {
@@ -1040,6 +899,9 @@ static void bt_handle_set_settings(Bt* bt, BtMessage* message) {
 }
 
 static void bt_handle_reload_keys_settings(Bt* bt) {
+    /* External profiles belong to their caller. Defer SD reload until the
+     * caller restores the default; bt_change_profile reloads keys/settings. */
+    if(bt->current_profile && !bt->current_profile_is_serial) return;
     FuriHalBleProfileBase* previous_profile = bt_load_keys(bt);
     bt_start_application(bt, previous_profile);
     bt_load_settings(bt);
@@ -1063,7 +925,6 @@ static void bt_init_keys_settings(Bt* bt) {
 int32_t bt_srv(void* p) {
     UNUSED(p);
     Bt* bt = bt_alloc();
-    bt_instance = bt;
 
     if(furi_hal_rtc_get_boot_mode() != FuriHalRtcBootModeNormal) {
         FURI_LOG_W(TAG, "Skipping start in special boot mode");
@@ -1094,10 +955,8 @@ int32_t bt_srv(void* p) {
         if(queue_status == FuriStatusErrorTimeout && bt->profile_retry_pending) {
             message = (BtMessage){
                 .type = BtMessageTypeSetProfile,
-                .data.profile.template = bt->profile_retry_template,
-                .data.profile.params = bt->profile_retry_template == ble_profile_airbridge ?
-                                           &bt->profile_retry_airbridge_params :
-                                           NULL,
+                .data.profile.template = ble_profile_serial,
+                .data.profile.params = NULL,
             };
             bt->profile_retry_pending = false;
             queue_status = FuriStatusOk;

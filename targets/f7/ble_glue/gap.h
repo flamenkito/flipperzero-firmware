@@ -5,8 +5,8 @@
 
 #include <furi_hal_version.h>
 
-#define GAP_MAC_ADDR_SIZE (6)
-#define GAP_KEY_SIZE      (0x10)
+#define GAP_MAC_ADDR_SIZE    (6)
+#define GAP_KEY_SIZE         (0x10)
 #define GAP_ADV_NAME_MAX_LEN (20U)
 
 /*

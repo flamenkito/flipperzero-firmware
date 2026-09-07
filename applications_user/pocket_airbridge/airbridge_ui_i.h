@@ -21,11 +21,17 @@ struct AirbridgeUi {
     AirbridgeUiIntentCallback intent_callback;
     void* intent_context;
     bool input_paused;
+    bool closing;
+    bool closing_rendered;
+    bool closing_committed;
+    FuriSemaphore* closing_frame;
+    AirbridgeOperationStatus operation;
 };
 
 void airbridge_ui_snapshot_copy(AirbridgeUi* ui, AirbridgeUiSnapshot* snapshot);
 void airbridge_ui_input_callback(InputEvent* input_event, void* context);
 void airbridge_ui_render_callback(Canvas* canvas, void* context);
+void airbridge_ui_closing_rendered(AirbridgeUi* ui);
 void airbridge_ui_render_bridge(Canvas* canvas, const AirbridgeUiSnapshot* snapshot);
 void airbridge_ui_render_deploy_prompt(Canvas* canvas, const AirbridgeUiSnapshot* snapshot);
 void airbridge_ui_render_typing(Canvas* canvas, const AirbridgeUiSnapshot* snapshot);
@@ -38,12 +44,5 @@ void airbridge_ui_render_message(
     const char* detail,
     const char* action);
 void airbridge_ui_render_fatal(Canvas* canvas, const AirbridgeUiSnapshot* snapshot);
-void airbridge_ui_draw_identity(
-    Canvas* canvas,
-    const AirbridgeUiSnapshot* snapshot,
-    uint8_t y);
-void airbridge_ui_draw_progress(
-    Canvas* canvas,
-    uint8_t y,
-    uint64_t position,
-    uint64_t total);
+void airbridge_ui_draw_identity(Canvas* canvas, const AirbridgeUiSnapshot* snapshot, uint8_t y);
+void airbridge_ui_draw_progress(Canvas* canvas, uint8_t y, uint64_t position, uint64_t total);

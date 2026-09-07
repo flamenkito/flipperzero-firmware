@@ -3,7 +3,7 @@
 
 #include "airbridge_relay.h"
 
-#include <furi_hal_usb_airbridge.h>
+#include "airbridge_usb.h"
 #include <furi_hal_usb_hid.h>
 
 #include <bt/bt_service/bt.h>
@@ -18,9 +18,7 @@ void airbridge_relay_count_drop(AirbridgeRelay* relay) {
     airbridge_relay_increment(&relay->metrics.dropped);
 }
 
-void airbridge_relay_metrics_snapshot(
-    AirbridgeRelay* relay,
-    AirbridgeRelayMetrics* snapshot) {
+void airbridge_relay_metrics_snapshot(AirbridgeRelay* relay, AirbridgeRelayMetrics* snapshot) {
     FURI_CRITICAL_ENTER();
     *snapshot = relay->metrics;
     FURI_CRITICAL_EXIT();
@@ -43,7 +41,7 @@ static void usb_event_callback(HidVendorEvent ev, void* context) {
             airbridge_relay_count_drop(relay);
         }
     } else if(ev == HidVendorRequest) {
-        uint32_t len = furi_hal_hid_vendor_get_request(be.data);
+        uint32_t len = airbridge_usb_vendor_get_request(be.data);
         if(len > 0 && len <= HID_VENDOR_PACKET_LEN) {
             be.type = EVENT_TYPE_RELAY;
             be.len = len;
@@ -55,7 +53,11 @@ static void usb_event_callback(HidVendorEvent ev, void* context) {
     }
 }
 
-static uint16_t ble_raw_serial_callback(const uint8_t* data, uint16_t len, void* context) {
+uint16_t airbridge_relay_ble_event(SerialServiceEvent event, void* context) {
+    /* Confirmation and legacy RPC-reset writes are not bridge data. */
+    if(event.event != SerialServiceEventTypeDataReceived) return 0;
+    const uint8_t* data = event.data.buffer;
+    const uint16_t len = event.data.size;
     AirbridgeRelay* relay = context;
     if(len > 0 && len <= HID_VENDOR_PACKET_LEN) {
         BridgeEvent be = {
@@ -77,7 +79,7 @@ static bool app_apply_profile(
     AirbridgeRelay* relay,
     uint8_t profile_index,
     uint8_t* selected_profile_index) {
-    FuriHalUsbInterface* profile = furi_hal_usb_airbridge_get_profile(profile_index);
+    FuriHalUsbInterface* profile = airbridge_usb_get_profile(profile_index);
     if(profile == NULL || !furi_hal_usb_set_config(profile, NULL)) {
         return false;
     }
@@ -91,7 +93,7 @@ bool airbridge_relay_configure_usb(
     AirbridgeRelay* relay,
     uint8_t profile_index,
     uint8_t* selected_profile_index) {
-    FuriHalUsbInterface* profile = furi_hal_usb_airbridge_get_profile(profile_index);
+    FuriHalUsbInterface* profile = airbridge_usb_get_profile(profile_index);
     if(profile == NULL) return false;
 
     if(furi_hal_usb_get_config() != profile) {
@@ -102,18 +104,16 @@ bool airbridge_relay_configure_usb(
         relay->usb_configured = true;
     }
 
-    furi_hal_hid_vendor_set_callback(usb_event_callback, relay);
-    bt_set_raw_serial_callback(ble_raw_serial_callback, relay);
+    airbridge_usb_vendor_set_callback(usb_event_callback, relay);
     return true;
 }
 
 bool airbridge_relay_restore_usb(AirbridgeRelay* relay) {
     if(!relay->usb_configured) return true;
 
-    bt_set_raw_serial_callback(NULL, NULL);
-    furi_hal_hid_vendor_set_callback(NULL, NULL);
-    bool restored = furi_hal_usb_set_config_async(relay->usb_mode_prev, NULL);
-    relay->usb_configured = false;
+    airbridge_usb_vendor_set_callback(NULL, NULL);
+    bool restored = furi_hal_usb_set_config(relay->usb_mode_prev, NULL);
+    if(restored) relay->usb_configured = false;
     return restored;
 }
 
@@ -130,10 +130,7 @@ void airbridge_relay_wake(AirbridgeRelay* relay) {
     (void)furi_message_queue_put(relay->event_queue, &event, 0);
 }
 
-FuriStatus airbridge_relay_poll(
-    AirbridgeRelay* relay,
-    BridgeEvent* event,
-    uint32_t timeout) {
+FuriStatus airbridge_relay_poll(AirbridgeRelay* relay, BridgeEvent* event, uint32_t timeout) {
     return furi_message_queue_get(relay->event_queue, event, timeout);
 }
 
@@ -145,6 +142,7 @@ void airbridge_relay_set_usb_connected(AirbridgeRelay* relay, bool connected) {
 
 AirbridgeRelayResult airbridge_relay_handle(
     AirbridgeRelay* relay,
+    AirbridgeBle* ble,
     BridgeEvent* be,
     AirbridgeScreen screen) {
     const bool deploy_request = be->to_ble && (be->len == 1) && (be->data[0] == 0x42);
@@ -155,7 +153,7 @@ AirbridgeRelayResult airbridge_relay_handle(
         return AirbridgeRelayDeployNotArmed;
     }
     if(be->to_ble) {
-        if(bt_serial_tx(be->data, be->len)) {
+        if(airbridge_ble_send(ble, be->data, be->len)) {
             airbridge_relay_increment(&relay->metrics.chunks_usb_to_ble);
         } else {
             airbridge_relay_increment(&relay->metrics.tx_errors);
@@ -163,7 +161,7 @@ AirbridgeRelayResult airbridge_relay_handle(
     } else {
         uint8_t report[HID_VENDOR_PACKET_LEN] = {0};
         memcpy(report, be->data, be->len);
-        if(furi_hal_hid_vendor_send_response(report, HID_VENDOR_PACKET_LEN)) {
+        if(airbridge_usb_vendor_send_response(report, HID_VENDOR_PACKET_LEN)) {
             airbridge_relay_increment(&relay->metrics.chunks_ble_to_usb);
         } else {
             airbridge_relay_increment(&relay->metrics.tx_errors);

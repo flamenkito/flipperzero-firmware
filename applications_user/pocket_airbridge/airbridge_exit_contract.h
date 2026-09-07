@@ -9,8 +9,7 @@ typedef struct {
     uint32_t requested;
 } AirbridgeExitLatch;
 
-#define AIRBRIDGE_EXIT_LATCH_INITIALIZER \
-    { .requested = 0U }
+#define AIRBRIDGE_EXIT_LATCH_INITIALIZER {.requested = 0U}
 
 static inline void airbridge_exit_latch_reset(AirbridgeExitLatch* latch) {
     __atomic_store_n(&latch->requested, 0U, __ATOMIC_RELAXED);
@@ -25,23 +24,30 @@ static inline bool airbridge_exit_latch_requested(AirbridgeExitLatch* latch) {
 }
 
 typedef struct {
-    bool callback_detached;
+    bool ble_detached;
+    bool usb_detached;
 } AirbridgeExitContract;
 
 static inline AirbridgeExitContract airbridge_exit_contract_initial(void) {
-    return (AirbridgeExitContract){.callback_detached = false};
+    return (AirbridgeExitContract){.ble_detached = false};
 }
 
 static inline bool
-    airbridge_exit_contract_record_detach(AirbridgeExitContract* contract, bool detached) {
-    contract->callback_detached = detached;
+    airbridge_exit_contract_record_ble_detach(AirbridgeExitContract* contract, bool detached) {
+    contract->ble_detached = detached;
     return detached;
 }
 
 static inline bool airbridge_exit_contract_owner_retained(const AirbridgeExitContract* contract) {
-    return !contract->callback_detached;
+    return !contract->ble_detached || !contract->usb_detached;
 }
 
 static inline bool airbridge_exit_contract_may_destroy(const AirbridgeExitContract* contract) {
-    return contract->callback_detached;
+    return !airbridge_exit_contract_owner_retained(contract);
+}
+
+static inline bool
+    airbridge_exit_contract_record_usb_detach(AirbridgeExitContract* contract, bool detached) {
+    contract->usb_detached = detached;
+    return detached;
 }

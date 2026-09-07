@@ -4,23 +4,29 @@
 #include <furi.h>
 #include <furi_hal_bt.h>
 
-#include <extra_profiles/airbridge_profile.h>
+#include "airbridge_profile.h"
 
 #include "airbridge_time.h"
-#include "airbridge_types.h"
 
-#define TAG "AirBridge"
+#define TAG                             "AirBridge"
 #define AIRBRIDGE_BLE_DETACH_TIMEOUT_MS (250U)
 
-void airbridge_ble_ensure_serial_adv(AirbridgeBle* ble) {
-    if(!ble->ble_profile_installed) return;
+bool airbridge_ble_ensure_serial_adv(AirbridgeBle* ble) {
+    if(!ble->ble_profile_installed) return false;
     /* Chat and attachment transport uses only the AirBridge serial service.
      * Do not advertise HIDS: a bonded host HID daemon otherwise claims the
      * single BLE link before Web Bluetooth can subscribe to serial TX. */
-    furi_hal_bt_set_adv_hids(false);
-    if(!furi_hal_bt_is_active()) {
+    if(gap_get_state() == GapStateIdle) {
         furi_hal_bt_start_advertising();
     }
+    /* Starting advertising only queues work. Keep the operation supervised
+     * until the GAP worker completes it, including blocked interval refreshes. */
+    GapState state;
+    do {
+        state = gap_get_state();
+        if(state == GapStateStartingAdv || state == GapStateDisconnecting) furi_delay_ms(25);
+    } while(state == GapStateStartingAdv || state == GapStateDisconnecting);
+    return state == GapStateAdvFast || state == GapStateAdvLowPower || state == GapStateConnected;
 }
 
 static void app_ble_status_changed_callback(BtStatus status, void* context) {
@@ -47,15 +53,14 @@ static void
     };
     if(airbridge_ble_link_apply_connected(state, tick, generation_advance)) {
         FURI_LOG_D(
-            TAG,
-            "BLE central connected (generation %lu)",
-            (unsigned long)ble->link_generation);
+            TAG, "BLE central connected (generation %lu)", (unsigned long)ble->link_generation);
     }
 }
 
 static void airbridge_ble_apply_disconnected(AirbridgeBle* ble) {
     if(ble->ble_connected) {
-        FURI_LOG_D(TAG, "BLE central disconnected (generation %lu)", (unsigned long)ble->link_generation);
+        FURI_LOG_D(
+            TAG, "BLE central disconnected (generation %lu)", (unsigned long)ble->link_generation);
     }
     ble->ble_connected = false;
     ble->ble_last_rx_tick = 0;
@@ -85,7 +90,7 @@ void airbridge_ble_service_pending(AirbridgeBle* ble) {
         ble->consumed_connect_count = published_connect_count;
         ble->consumed_sequence = published_sequence;
 
-        const bool gap_connected = furi_hal_bt_is_connected();
+        const bool gap_connected = (gap_get_state() == GapStateConnected);
         if(published_connected && gap_connected) {
             airbridge_ble_apply_connected(ble, published_tick, generation_advance);
         } else if(!published_connected && !gap_connected) {
@@ -93,15 +98,16 @@ void airbridge_ble_service_pending(AirbridgeBle* ble) {
         }
     }
 
-    if(!ble->restart_adv_pending) return;
-    ble->restart_adv_pending = false;
-    if(!ble->ble_connected) {
-        airbridge_ble_ensure_serial_adv(ble);
+    if(ble->restart_adv_pending) {
+        ble->restart_adv_pending = false;
+        if(!ble->ble_connected) airbridge_ble_ensure_serial_adv(ble);
     }
+    /* GAP interval changes also run while a Deploy prompt is waiting for input. */
+    airbridge_ble_bridge_adv_watchdog(ble);
 }
 
 void airbridge_ble_note_rx(AirbridgeBle* ble, uint32_t tick) {
-    if(!ble->ble_profile_installed || !furi_hal_bt_is_connected()) return;
+    if(!ble->ble_profile_installed || !(gap_get_state() == GapStateConnected)) return;
     if(ble->ble_connected && airbridge_u32_before(tick, ble->ble_connected_since)) return;
     if(!ble->ble_connected) ble->implicit_connect_credit++;
     airbridge_ble_apply_connected(ble, tick, !ble->ble_connected);
@@ -127,8 +133,6 @@ void airbridge_ble_bridge_adv_watchdog(AirbridgeBle* ble) {
     if(now - ble->ble_bridge_last_watchdog_tick < BLE_BRIDGE_ADV_WATCHDOG_MS) return;
     ble->ble_bridge_last_watchdog_tick = now;
 
-    /* Reassert serial-only advertising every tick. gap_set_adv_hids early-outs
-     * when already clear, so this is free unless another path changed it. */
     airbridge_ble_ensure_serial_adv(ble);
 
     if(furi_hal_bt_is_active()) return;
@@ -152,7 +156,10 @@ void airbridge_ble_squatter_watchdog(AirbridgeBle* ble) {
      * but is deliberately not consulted here. */
     if(ble->ble_connected) {
         if(now - ble->ble_connected_since < BLE_SQUATTER_KICK_MS) return;
-        if(bt_airbridge_serial_client_subscribed(ble->bt)) return;
+        FuriHalBleProfileBase* profile = bt_current_profile_acquire(ble->bt);
+        const bool subscribed = airbridge_profile_subscribed(profile);
+        if(profile) bt_current_profile_release(ble->bt);
+        if(subscribed) return;
         FURI_LOG_W(
             TAG,
             "BLE squatter kick: unsubscribed link held %lu ms",
@@ -184,50 +191,52 @@ void airbridge_ble_squatter_watchdog(AirbridgeBle* ble) {
     airbridge_ble_force_reconnect(ble);
 }
 
-bool airbridge_ble_configure(AirbridgeBle* ble, AirbridgeBleIdentityParams* identity) {
+bool airbridge_ble_configure(
+    AirbridgeBle* ble,
+    const AirbridgeBleIdentityParams* identity,
+    AirbridgeSerialServiceEventCallback callback,
+    void* context) {
     if(ble->ble_profile_installed) return true;
 
     ble->bt = furi_record_open(RECORD_BT);
+    ble->profile_params = (AirbridgeBleProfileParams){
+        .identity = *identity,
+        .callback = callback,
+        .context = context,
+    };
     ble->ble_profile_installed =
-        bt_profile_start(ble->bt, ble_profile_airbridge, (void*)identity) != NULL;
+        bt_profile_start(ble->bt, ble_profile_airbridge, &ble->profile_params) != NULL;
     if(ble->ble_profile_installed) {
-        bt_airbridge_set_status_changed_callback(
+        bt_set_status_changed_callback_with_snapshot(
             ble->bt, app_ble_status_changed_callback, ble);
-        airbridge_ble_ensure_serial_adv(ble);
+        if(!airbridge_ble_ensure_serial_adv(ble)) return false;
     }
     return ble->ble_profile_installed;
 }
 
-bool airbridge_ble_prepare_restore(AirbridgeBle* ble, Bt** restore_bt) {
-    furi_check(restore_bt);
+bool airbridge_ble_send(AirbridgeBle* ble, uint8_t* data, uint16_t len) {
+    if(!ble->bt || !ble->ble_profile_installed) return false;
+    FuriHalBleProfileBase* profile = bt_current_profile_acquire(ble->bt);
+    const bool sent = airbridge_profile_send(profile, data, len);
+    if(profile) bt_current_profile_release(ble->bt);
+    return sent;
+}
+
+bool airbridge_ble_restore(AirbridgeBle* ble) {
     if(ble->bt == NULL) {
         ble->ble_profile_installed = false;
-        *restore_bt = NULL;
         return true;
     }
 
     Bt* bt = ble->bt;
-    if(!bt_set_status_changed_callback_bounded(
-           bt, NULL, NULL, AIRBRIDGE_BLE_DETACH_TIMEOUT_MS)) {
+    if(!bt_set_status_changed_callback_bounded(bt, NULL, NULL, AIRBRIDGE_BLE_DETACH_TIMEOUT_MS)) {
         return false;
     }
+    if(!bt_profile_restore_default(bt)) return false;
     airbridge_ble_apply_disconnected(ble);
 
     ble->ble_profile_installed = false;
     furi_record_close(RECORD_BT);
     ble->bt = NULL;
-    *restore_bt = bt;
     return true;
-}
-
-void airbridge_ble_queue_restore(Bt* bt) {
-    if(bt == NULL) return;
-
-    /* BtSrv is a firmware-lifetime service, so its pointer remains valid after
-     * releasing the FAP's record holder. Queueing is deliberately the final
-     * FAP operation: profile teardown must not overlap destruction of callback
-     * contexts, queues, views, or other FAP-owned resources. */
-    if(!bt_profile_restore_default_async(bt)) {
-        FURI_LOG_E(TAG, "Failed to queue default BLE profile restore");
-    }
 }

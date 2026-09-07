@@ -7,8 +7,8 @@ This one local custom firmware and apps repository is rooted at
 live under `airbridge/`; firmware changes and FAP sources live beside the rest of
 the firmware tree. It includes:
 
-1. **New USB HID profile** `usb_airbridge` (bidirectional 64-byte vendor HID, based on the U2F profile)
-2. **AirBridge BLE impersonation profile** (Battery + DIS + AirBridge serial), config-driven identity, and `bt_service` routing so the FAP can intercept raw serial data
+1. **App-owned USB HID profiles** in `airbridge_usb.c` (bidirectional 64-byte vendor HID)
+2. **App-owned BLE impersonation profile** (Battery + DIS + AirBridge serial), config-driven identity, and direct FAP serial routing
 3. **FAP** `pocket_airbridge` in `applications_user/pocket_airbridge/`, including `icon.png` wired through `fap_icon`
 
 The firmware changes and FAP are canonical in-tree sources. Edit and build them
@@ -38,36 +38,32 @@ plaintext, session keys, decrypted names, or decrypted files.
 ## Key Files Changed
 
 ```
-flipperzero-firmware/
-├── applications_user/
-│   └── pocket_airbridge/
-│       ├── application.fam
-│       ├── icon.png
-│       └── pocket_airbridge.c
-├── targets/f7/furi_hal/
-│   └── furi_hal_usb_airbridge.c          (NEW)
-├── targets/furi_hal_include/
-│   ├── furi_hal_usb.h                    (add usb_airbridge extern)
-│   └── furi_hal_usb_airbridge.h        (NEW)
-├── applications/services/bt/bt_service/
-│   ├── bt.c                              (AirBridge raw serial routing)
-│   └── bt.h                              (public API declarations)
-├── lib/ble_profile/extra_profiles/
-│   └── airbridge_profile.c               (Battery + DIS + serial BLE profile)
-├── targets/f7/ble_glue/services/
-│   ├── airbridge_dev_info_service.c      (config-driven DIS)
-│   └── airbridge_serial_service.c        (AirBridge serial notify service)
-└── targets/f7/api_symbols.csv          (export new symbols)
+applications_user/pocket_airbridge/
+    pocket_airbridge.c             supervisor and I/O worker lifetime
+    airbridge_operation.h          independent progress monitor
+    airbridge_usb.c                USB descriptors, endpoints, keyboard reports
+    airbridge_profile.c            Battery + DIS + serial BLE profile
+    airbridge_dev_info_service.c   config-driven DIS
+    airbridge_serial_service.c     serial GATT notifications and receive events
+    airbridge_serial_uuid.h        canonical UUID values
+    airbridge_ble.c                connection and recovery policy
+    airbridge_relay.c              eight-slot frame queue and forwarding
 ```
 
 ## Build
 
 ```bash
 cd /Users/asutov/projects/flipperzero-firmware
-./fbt build APPSRC=applications_user/pocket_airbridge
+./fbt
+./fbt fap_pocket_airbridge
+python3 airbridge/tests/run_tests.py
 ```
 
-If this is the first build after adding the USB profile, the firmware will detect new API symbols. The build script will update `api_symbols.csv` with `?` markers. Change them to `+` and re-run the build command (this was already done during setup).
+Firmware and FAP must be rebuilt together at API 87.14. Obsolete AirBridge exports
+were removed without changing the API major, by explicit local policy. Do not
+deploy an older AirBridge FAP against this firmware. Ordinary loader checks remain
+enabled. The remaining shared changes are documented in
+[firmware-boundary.md](firmware-boundary.md).
 
 ## Flashing Firmware
 
@@ -282,9 +278,10 @@ personalities and never exposes VID `0x0483` on the bus while running.
 
 ### BLE Side
 
-We patched `bt_service` to expose two new functions:
-- `bt_set_raw_serial_callback(cb, ctx)` — intercepts all BLE Serial RX data before the RPC system sees it
-- `bt_serial_tx(data, len)` — sends raw bytes over BLE Serial
+The app installs its own profile through `bt_profile_start` and receives serial
+events directly, without firmware RPC interception. Direct GATT operations borrow
+the current profile through `bt_current_profile_acquire/release`, preventing its
+destruction during a send. Firmware never retains an external profile for retries.
 
 The chat page connects to the AirBridge serial service using the on-air UUIDs
 generated in `airbridge/web/airbridge-identity.js`:
@@ -298,10 +295,11 @@ generated in `airbridge/web/airbridge-identity.js`:
 | Status (Notify/Read/Write) | `bebb7113-63db-bbae-bb45-37dbbf73b6b3` | Both |
 
 The firmware source keeps the controller-order values in
-`targets/f7/ble_glue/services/airbridge_serial_uuid.h`; the browser uses the
-byte-reversed on-air strings above. The Bridge watchdog reasserts serial-only
-advertising every 2.5 seconds and restarts advertising only when GAP is idle,
-without disconnecting an active link. The profile also includes Battery and DIS
+`applications_user/pocket_airbridge/airbridge_serial_uuid.h`; the browser uses the
+byte-reversed on-air strings above. The advertising watchdog runs every 2.5
+seconds across all screens, waits for queued GAP work to complete, and restarts
+advertising only when GAP is idle, without disconnecting an active link. The
+profile also includes Battery and DIS
 values from the FAP config; it does not include HIDS.
 Bonding is enabled: the
 first pairing uses MITM numeric comparison and stores a bond for silent later
@@ -310,7 +308,7 @@ reconnects.
 ### Bridge Logic (Inside the FAP)
 
 The FAP is a queue-driven, stateless byte relay. All forwarding happens in the
-FAP main loop; the USB and GAP callbacks never touch the other transport's HAL
+FAP I/O worker; the USB and GAP callbacks never touch the other transport's HAL
 directly.
 
 1. **Event queue** — a `FuriMessageQueue` of 8 `BridgeEvent` structs
@@ -318,16 +316,16 @@ directly.
 2. **USB callback** (`usb_event_callback`) — on a HID OUT report, copies the
    bytes into a `BridgeEvent` and enqueues it with timeout `0` (callback
    context must not block). Connect/disconnect events are posted the same way.
-3. **BLE callback** (`ble_raw_serial_callback`) — runs on the GAP thread,
+3. **BLE callback** (`airbridge_relay_ble_event`) — runs on the BLE event worker,
    copies inbound bytes into a `BridgeEvent` and enqueues with timeout `0`.
    Returns the remaining accept capacity (`64` on enqueue, `0` when the queue
    was full and the frame was dropped).
-4. **Main loop forwarding** — the only place transport HAL calls happen:
-   - USB→BLE: `bt_serial_tx(data, len)`. On failure the `TXERR` counter
+4. **I/O worker forwarding** — the only place transport HAL calls happen:
+   - USB→BLE: `airbridge_ble_send`. On failure the `TXERR` counter
      increments; there is no spin-retry (protocol-level ACK backpressure
      handles loss).
    - BLE→USB: the payload is copied into a zero-filled 64-byte buffer and sent
-     with `furi_hal_hid_vendor_send_response(report, 64)`. Host HID drivers
+     with `airbridge_usb_vendor_send_response(report, 64)`. Host HID drivers
      may not deliver short IN packets, so every response is padded to the full
      report size.
 5. **Drop accounting** — if either callback fails to enqueue (queue full), a

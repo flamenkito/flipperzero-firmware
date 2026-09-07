@@ -36,7 +36,7 @@ bool airbridge_typing_abort(AirbridgeTyping* typing) {
     typing->enter_pending = false;
     typing->enter_done = false;
     if(key_was_down) {
-        const bool release_ok = furi_hal_hid_airbridge_kb_release_all();
+        const bool release_ok = airbridge_usb_kb_release_all();
         if(!release_ok) {
             FURI_LOG_E(TAG, "release-all FAILED - tap a key on target");
         }
@@ -97,8 +97,7 @@ static bool airbridge_typing_load_bootstrap(AirbridgeTyping* typing) {
     AirbridgeSha256 sha256;
     uint8_t digest[AIRBRIDGE_ASSET_SHA256_SIZE];
     airbridge_sha256_init(&sha256);
-    airbridge_sha256_update(
-        &sha256, (const uint8_t*)typing->bootstrap, typing->bootstrap_len);
+    airbridge_sha256_update(&sha256, (const uint8_t*)typing->bootstrap, typing->bootstrap_len);
     airbridge_sha256_final(&sha256, digest);
     if(!airbridge_digest_matches(digest, AIRBRIDGE_BOOTSTRAP_SHA256)) {
         free(typing->bootstrap);
@@ -146,34 +145,36 @@ bool airbridge_typing_start(AirbridgeTyping* typing) {
 
 static bool airbridge_typing_press(AirbridgeTyping* typing, uint16_t key) {
     UNUSED(typing);
-    return furi_hal_hid_airbridge_kb_press(key);
+    return airbridge_usb_kb_press(key);
 }
 
 static bool airbridge_typing_release(AirbridgeTyping* typing, uint16_t key) {
     UNUSED(typing);
-    return furi_hal_hid_airbridge_kb_release(key);
+    return airbridge_usb_kb_release(key);
+}
+
+static void airbridge_typing_finish_key(AirbridgeTyping* typing) {
+    /* Never carry a held key into a potentially blocking BLE operation. Issue
+     * key-up after the 12-19 ms press delay on this same worker. */
+    furi_delay_ms(TYPE_PRESS_DELAY_MS + airbridge_typing_jitter_ms(typing));
+    if(!airbridge_typing_release(typing, typing->key)) {
+        airbridge_typing_abort(typing);
+        typing->show_error(typing->error_context, "KEYBOARD SEND ERROR");
+        return;
+    }
+    typing->key_down = false;
+    if(typing->enter_pending) {
+        typing->enter_pending = false;
+        typing->enter_done = true;
+    } else {
+        typing->position++;
+    }
+    typing->next_tick =
+        furi_get_tick() + TYPE_RELEASE_DELAY_MS + airbridge_typing_jitter_ms(typing);
 }
 
 bool airbridge_typing_step(AirbridgeTyping* typing) {
     if(!airbridge_tick_reached(furi_get_tick(), typing->next_tick)) return false;
-
-    if(typing->key_down) {
-        if(!airbridge_typing_release(typing, typing->key)) {
-            airbridge_typing_abort(typing);
-            typing->show_error(typing->error_context, "KEYBOARD SEND ERROR");
-            return false;
-        }
-        typing->key_down = false;
-        if(typing->enter_pending) {
-            typing->enter_pending = false;
-            typing->enter_done = true;
-        } else {
-            typing->position++;
-        }
-        uint32_t actual_release_delay = TYPE_RELEASE_DELAY_MS + airbridge_typing_jitter_ms(typing);
-        typing->next_tick = furi_get_tick() + actual_release_delay;
-        return false;
-    }
 
     if(typing->position < typing->bootstrap_len) {
         uint16_t key = HID_ASCII_TO_KEY(typing->bootstrap[typing->position]);
@@ -187,8 +188,7 @@ bool airbridge_typing_step(AirbridgeTyping* typing) {
         }
         typing->key = key;
         typing->key_down = true;
-        typing->next_tick =
-            furi_get_tick() + TYPE_PRESS_DELAY_MS + airbridge_typing_jitter_ms(typing);
+        airbridge_typing_finish_key(typing);
         return false;
     }
 
@@ -200,8 +200,7 @@ bool airbridge_typing_step(AirbridgeTyping* typing) {
         typing->key = HID_KEYBOARD_RETURN;
         typing->key_down = true;
         typing->enter_pending = true;
-        typing->next_tick =
-            furi_get_tick() + TYPE_PRESS_DELAY_MS + airbridge_typing_jitter_ms(typing);
+        airbridge_typing_finish_key(typing);
         return false;
     }
 

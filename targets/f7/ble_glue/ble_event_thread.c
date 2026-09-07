@@ -1,5 +1,6 @@
+#include "app_common.h"
+
 #include <core/check.h>
-#include <core/kernel.h>
 #include <core/thread.h>
 #include <core/log.h>
 
@@ -52,8 +53,7 @@ void shci_notify_asynch_evt(void* pdata) {
     }
 
     FuriThreadId thread_id = furi_thread_get_id(event_thread);
-    furi_assert(thread_id);
-    furi_thread_flags_set(thread_id, BLE_EVENT_THREAD_FLAG_SHCI_EVENT);
+    if(thread_id) furi_thread_flags_set(thread_id, BLE_EVENT_THREAD_FLAG_SHCI_EVENT);
 }
 
 void hci_notify_asynch_evt(void* pdata) {
@@ -66,46 +66,26 @@ void hci_notify_asynch_evt(void* pdata) {
     }
 
     FuriThreadId thread_id = furi_thread_get_id(event_thread);
-    furi_assert(thread_id);
-    furi_thread_flags_set(thread_id, BLE_EVENT_THREAD_FLAG_HCI_EVENT);
+    if(thread_id) furi_thread_flags_set(thread_id, BLE_EVENT_THREAD_FLAG_HCI_EVENT);
 }
 
-bool ble_event_thread_quiesce_bounded(uint32_t timeout) {
+void ble_event_thread_stop(void) {
     if(!event_thread) {
 #ifdef FURI_BLE_EXTRA_LOG
         FURI_LOG_E(TAG, "thread_stop: event_thread is NULL");
 #endif
-        return true;
+        return;
     }
 
     FuriThreadId thread_id = furi_thread_get_id(event_thread);
     furi_check(thread_id);
     furi_thread_flags_set(thread_id, BLE_EVENT_THREAD_FLAG_KILL_THREAD);
-    uint32_t waited = 0;
-    while(furi_thread_get_state(event_thread) != FuriThreadStateStopped) {
-        if(waited >= timeout) return false;
-        furi_delay_tick(1);
-        waited++;
-    }
-    return true;
-}
-
-void ble_event_thread_free_stopped(void) {
-    if(!event_thread) return;
-    furi_check(furi_thread_get_state(event_thread) == FuriThreadStateStopped);
     furi_thread_join(event_thread);
-    furi_thread_free(event_thread);
+    FURI_CRITICAL_ENTER();
+    FuriThread* stopped_thread = event_thread;
     event_thread = NULL;
-}
-
-bool ble_event_thread_stop_bounded(uint32_t timeout) {
-    if(!ble_event_thread_quiesce_bounded(timeout)) return false;
-    ble_event_thread_free_stopped();
-    return true;
-}
-
-void ble_event_thread_stop(void) {
-    furi_check(ble_event_thread_stop_bounded(FuriWaitForever));
+    FURI_CRITICAL_EXIT();
+    furi_thread_free(stopped_thread);
 }
 
 void ble_event_thread_start(void) {

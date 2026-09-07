@@ -20,12 +20,7 @@ MONOREPO_ROOT: Final = Path(__file__).resolve().parents[2]
 ROOT: Final = Path(__file__).resolve().parents[1]
 CONFIG_PATH: Final = ROOT / "config" / "pocket_airbridge.conf"
 UUID_HEADER_PATH: Final = (
-    MONOREPO_ROOT
-    / "targets"
-    / "f7"
-    / "ble_glue"
-    / "services"
-    / "airbridge_serial_uuid.h"
+    MONOREPO_ROOT / "applications_user" / "pocket_airbridge" / "airbridge_serial_uuid.h"
 )
 OUTPUT_PATH: Final = ROOT / "web" / "airbridge-identity.js"
 

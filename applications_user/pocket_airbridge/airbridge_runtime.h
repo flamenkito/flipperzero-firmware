@@ -1,6 +1,6 @@
 #pragma once
 
-#include <notification/notification_app.h>
+#include <notification/notification.h>
 
 #include "airbridge_app_i.h"
 #include "airbridge_exit_contract.h"

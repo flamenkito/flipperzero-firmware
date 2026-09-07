@@ -1,7 +1,7 @@
 #include "airbridge_stream.h"
 
 #include <furi.h>
-#include <furi_hal_usb_airbridge.h>
+#include "airbridge_usb.h"
 #include <furi_hal_usb_hid.h>
 
 #include "airbridge_assets.h"
@@ -131,7 +131,7 @@ bool airbridge_stream_step_usb(AirbridgeStream* stream) {
         report[5] = (stream->checksum >> 8) & 0xFF;
         report[6] = (stream->checksum >> 16) & 0xFF;
         report[7] = (stream->checksum >> 24) & 0xFF;
-        if(!furi_hal_hid_vendor_send_response_blocking(
+        if(!airbridge_usb_vendor_send_response_blocking(
                report, HID_VENDOR_PACKET_LEN, STREAM_TIMEOUT_MS)) {
             airbridge_stream_close(stream);
             stream->show_error(stream->error_context, "STREAM ERROR");
@@ -149,7 +149,7 @@ bool airbridge_stream_step_usb(AirbridgeStream* stream) {
     uint64_t remaining = stream->total_len - stream->sent;
     size_t expected = (size_t)MIN(remaining, sizeof(report));
     size_t read = storage_file_read(stream->file, report, expected);
-    if(read != expected || !furi_hal_hid_vendor_send_response_blocking(
+    if(read != expected || !airbridge_usb_vendor_send_response_blocking(
                                report, HID_VENDOR_PACKET_LEN, STREAM_TIMEOUT_MS)) {
         airbridge_stream_close(stream);
         stream->show_error(stream->error_context, "STREAM ERROR");

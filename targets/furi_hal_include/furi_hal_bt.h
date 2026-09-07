@@ -129,13 +129,6 @@ void furi_hal_bt_update_power_state(bool charging);
  */
 bool furi_hal_bt_is_active(void);
 
-/** Checks if a BLE link is physically up. Unlike furi_hal_bt_is_active, this is
- * false while merely advertising — true only in GAP Connected state.
- *
- * @return          true if a central is connected, false otherwise
- */
-bool furi_hal_bt_is_connected(void);
-
 /** Start advertising
  */
 void furi_hal_bt_start_advertising(void);
@@ -143,13 +136,6 @@ void furi_hal_bt_start_advertising(void);
 /** Stop advertising
  */
 void furi_hal_bt_stop_advertising(void);
-
-/** Set whether the HID service UUID is included in advertising.
- *
- * Active advertising is restarted with the current interval. Changes made while
- * connected apply when advertising starts next.
- */
-void furi_hal_bt_set_adv_hids(bool enable);
 
 /** Get BT/BLE system component state
  *

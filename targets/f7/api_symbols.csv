@@ -1,5 +1,5 @@
 entry,status,name,type,params
-Version,+,87.13,,
+Version,+,87.14,,
 Header,+,applications/drivers/subghz/cc1101_ext/cc1101_ext_interconnect.h,,
 Header,+,applications/services/bt/bt_service/bt.h,,
 Header,+,applications/services/bt/bt_service/bt_keys_storage.h,,
@@ -42,8 +42,6 @@ Header,+,applications/services/power/power_service/power.h,,
 Header,+,applications/services/rpc/rpc_app.h,,
 Header,+,applications/services/storage/storage.h,,
 Header,+,lib/bit_lib/bit_lib.h,,
-Header,+,lib/ble_profile/extra_profiles/airbridge_identity_params.h,,
-Header,+,lib/ble_profile/extra_profiles/airbridge_profile.h,,
 Header,+,lib/ble_profile/extra_profiles/hid_profile.h,,
 Header,+,lib/ble_profile/extra_services/hid_service.h,,
 Header,+,lib/datetime/datetime.h,,
@@ -267,9 +265,6 @@ Header,+,targets/f7/ble_glue/furi_ble/event_dispatcher.h,,
 Header,+,targets/f7/ble_glue/furi_ble/gatt.h,,
 Header,+,targets/f7/ble_glue/furi_ble/profile_interface.h,,
 Header,+,targets/f7/ble_glue/profiles/serial_profile.h,,
-Header,-,targets/f7/ble_glue/services/airbridge_dev_info_service.h,,
-Header,+,targets/f7/ble_glue/services/airbridge_serial_service.h,,
-Header,-,targets/f7/ble_glue/services/airbridge_serial_uuid.h,,
 Header,+,targets/f7/ble_glue/services/battery_service.h,,
 Header,+,targets/f7/ble_glue/services/dev_info_service.h,,
 Header,+,targets/f7/ble_glue/services/serial_service.h,,
@@ -319,7 +314,6 @@ Header,+,targets/furi_hal_include/furi_hal_sd.h,,
 Header,+,targets/furi_hal_include/furi_hal_speaker.h,,
 Header,+,targets/furi_hal_include/furi_hal_spi.h,,
 Header,+,targets/furi_hal_include/furi_hal_usb.h,,
-Header,+,targets/furi_hal_include/furi_hal_usb_airbridge.h,,
 Header,+,targets/furi_hal_include/furi_hal_usb_ccid.h,,
 Header,+,targets/furi_hal_include/furi_hal_usb_hid.h,,
 Header,+,targets/furi_hal_include/furi_hal_usb_hid_u2f.h,,
@@ -730,7 +724,6 @@ Function,+,bit_lib_test_parity_32,_Bool,"uint32_t, BitLibParity"
 Function,-,ble_app_deinit,void,
 Function,-,ble_app_get_key_storage_buff,void,"uint8_t**, uint16_t*"
 Function,-,ble_app_init,_Bool,
-Function,+,ble_app_take_hci_lock_failure,_Bool,
 Function,-,ble_event_app_notification,BleEventFlowStatus,void*
 Function,-,ble_event_dispatcher_init,void,
 Function,-,ble_event_dispatcher_process_event,BleEventFlowStatus,void*
@@ -751,19 +744,13 @@ Function,+,ble_glue_get_c2_info,const BleGlueC2Info*,
 Function,-,ble_glue_get_c2_status,BleGlueStatus,
 Function,-,ble_glue_get_hardfault_info,const BleGlueHardfaultInfo*,
 Function,+,ble_glue_init,void,
-Function,+,ble_glue_init_bounded,_Bool,uint32_t
 Function,+,ble_glue_is_alive,_Bool,
 Function,+,ble_glue_is_radio_stack_ready,_Bool,
 Function,+,ble_glue_reinit_c2,_Bool,
-Function,+,ble_glue_reinit_c2_bounded,_Bool,_Bool*
 Function,+,ble_glue_set_key_storage_changed_callback,void,"BleGlueKeyStorageChangedCallback, void*"
 Function,-,ble_glue_start,_Bool,
 Function,-,ble_glue_stop,void,
-Function,+,ble_glue_stop_bounded,_Bool,uint32_t
 Function,+,ble_glue_wait_for_c2_start,_Bool,int32_t
-Function,+,ble_profile_airbridge_consumer_report,_Bool,"FuriHalBleProfileBase*, uint8_t*, uint16_t"
-Function,+,ble_profile_airbridge_kb_report,_Bool,"FuriHalBleProfileBase*, uint8_t*, uint16_t"
-Function,+,ble_profile_airbridge_mouse_report,_Bool,"FuriHalBleProfileBase*, uint8_t*, uint16_t"
 Function,-,ble_profile_hid_consumer_key_press,_Bool,"FuriHalBleProfileBase*, uint16_t"
 Function,-,ble_profile_hid_consumer_key_release,_Bool,"FuriHalBleProfileBase*, uint16_t"
 Function,-,ble_profile_hid_consumer_key_release_all,_Bool,FuriHalBleProfileBase*
@@ -779,16 +766,6 @@ Function,+,ble_profile_serial_notify_buffer_is_empty,void,FuriHalBleProfileBase*
 Function,+,ble_profile_serial_set_event_callback,void,"FuriHalBleProfileBase*, uint16_t, FuriHalBtSerialCallback, void*"
 Function,+,ble_profile_serial_set_rpc_active,void,"FuriHalBleProfileBase*, _Bool"
 Function,+,ble_profile_serial_tx,_Bool,"FuriHalBleProfileBase*, uint8_t*, uint16_t"
-Function,-,ble_svc_airbridge_dev_info_start,BleServiceAirbridgeDevInfo*,const AirbridgeDisStrings*
-Function,-,ble_svc_airbridge_dev_info_stop,void,BleServiceAirbridgeDevInfo*
-Function,+,ble_svc_airbridge_serial_client_subscribed,_Bool,BleServiceAirbridgeSerial*
-Function,+,ble_svc_airbridge_serial_get_active,BleServiceAirbridgeSerial*,
-Function,-,ble_svc_airbridge_serial_notify_buffer_is_empty,void,BleServiceAirbridgeSerial*
-Function,-,ble_svc_airbridge_serial_set_callbacks,void,"BleServiceAirbridgeSerial*, uint16_t, AirbridgeSerialServiceEventCallback, void*"
-Function,-,ble_svc_airbridge_serial_set_rpc_active,void,"BleServiceAirbridgeSerial*, _Bool"
-Function,-,ble_svc_airbridge_serial_start,BleServiceAirbridgeSerial*,
-Function,-,ble_svc_airbridge_serial_stop,void,BleServiceAirbridgeSerial*
-Function,-,ble_svc_airbridge_serial_update_tx,_Bool,"BleServiceAirbridgeSerial*, uint8_t*, uint16_t"
 Function,+,ble_svc_battery_start,BleServiceBattery*,_Bool
 Function,+,ble_svc_battery_state_update,void,"uint8_t*, _Bool*"
 Function,+,ble_svc_battery_stop,void,BleServiceBattery*
@@ -808,9 +785,8 @@ Function,+,ble_svc_serial_start,BleServiceSerial*,
 Function,+,ble_svc_serial_stop,void,BleServiceSerial*
 Function,+,ble_svc_serial_update_tx,_Bool,"BleServiceSerial*, uint8_t*, uint16_t"
 Function,-,bsearch,void*,"const void*, const void*, size_t, size_t, __compar_fn_t"
-Function,+,bt_airbridge_kb_report,_Bool,"Bt*, uint8_t*, uint16_t"
-Function,+,bt_airbridge_serial_client_subscribed,_Bool,Bt*
-Function,+,bt_airbridge_set_status_changed_callback,BtStatus,"Bt*, BtStatusChangedCallback, void*"
+Function,+,bt_current_profile_acquire,FuriHalBleProfileBase*,Bt*
+Function,+,bt_current_profile_release,void,Bt*
 Function,+,bt_disconnect,void,Bt*
 Function,+,bt_forget_bonded_devices,void,Bt*
 Function,+,bt_keys_storage_alloc,BtKeysStorage*,const char*
@@ -826,12 +802,10 @@ Function,+,bt_keys_storage_set_storage_path,void,"Bt*, const char*"
 Function,+,bt_keys_storage_update,_Bool,"BtKeysStorage*, uint8_t*, uint32_t"
 Function,+,bt_pairing_in_progress,_Bool,Bt*
 Function,+,bt_profile_restore_default,_Bool,Bt*
-Function,+,bt_profile_restore_default_async,_Bool,Bt*
 Function,+,bt_profile_start,FuriHalBleProfileBase*,"Bt*, const FuriHalBleProfileTemplate*, FuriHalBleProfileParams"
-Function,+,bt_serial_tx,_Bool,"const uint8_t*, uint16_t"
-Function,+,bt_set_raw_serial_callback,void,"BtRawSerialCallback, void*"
 Function,+,bt_set_status_changed_callback,void,"Bt*, BtStatusChangedCallback, void*"
 Function,+,bt_set_status_changed_callback_bounded,_Bool,"Bt*, BtStatusChangedCallback, void*, uint32_t"
+Function,+,bt_set_status_changed_callback_with_snapshot,BtStatus,"Bt*, BtStatusChangedCallback, void*"
 Function,+,buffered_file_stream_alloc,Stream*,Storage*
 Function,+,buffered_file_stream_close,_Bool,Stream*
 Function,+,buffered_file_stream_get_error,FS_Error,Stream*
@@ -1354,14 +1328,12 @@ Function,+,furi_hal_bt_get_transmitted_packets,uint32_t,
 Function,-,furi_hal_bt_init,void,
 Function,+,furi_hal_bt_is_active,_Bool,
 Function,+,furi_hal_bt_is_alive,_Bool,
-Function,+,furi_hal_bt_is_connected,_Bool,
 Function,+,furi_hal_bt_is_gatt_gap_supported,_Bool,
 Function,+,furi_hal_bt_is_testing_supported,_Bool,
 Function,+,furi_hal_bt_lock_core2,void,
 Function,+,furi_hal_bt_nvm_sram_sem_acquire,void,
 Function,+,furi_hal_bt_nvm_sram_sem_release,void,
 Function,+,furi_hal_bt_reinit,void,
-Function,+,furi_hal_bt_set_adv_hids,void,_Bool
 Function,+,furi_hal_bt_set_key_storage_change_callback,void,"BleGlueKeyStorageChangedCallback, void*"
 Function,+,furi_hal_bt_start_advertising,void,
 Function,+,furi_hal_bt_start_app,FuriHalBleProfileBase*,"const FuriHalBleProfileTemplate*, FuriHalBleProfileParams, const GapRootSecurityKeys*, GapEventCallback, void*"
@@ -1451,9 +1423,6 @@ Function,+,furi_hal_gpio_init,void,"const GpioPin*, const GpioMode, const GpioPu
 Function,+,furi_hal_gpio_init_ex,void,"const GpioPin*, const GpioMode, const GpioPull, const GpioSpeed, const GpioAltFn"
 Function,+,furi_hal_gpio_init_simple,void,"const GpioPin*, const GpioMode"
 Function,+,furi_hal_gpio_remove_int_callback,void,const GpioPin*
-Function,+,furi_hal_hid_airbridge_kb_press,_Bool,uint16_t
-Function,+,furi_hal_hid_airbridge_kb_release,_Bool,uint16_t
-Function,+,furi_hal_hid_airbridge_kb_release_all,_Bool,
 Function,+,furi_hal_hid_consumer_key_press,_Bool,uint16_t
 Function,+,furi_hal_hid_consumer_key_release,_Bool,uint16_t
 Function,+,furi_hal_hid_consumer_key_release_all,_Bool,
@@ -1471,11 +1440,6 @@ Function,+,furi_hal_hid_u2f_get_request,uint32_t,uint8_t*
 Function,+,furi_hal_hid_u2f_is_connected,_Bool,
 Function,+,furi_hal_hid_u2f_send_response,void,"uint8_t*, uint8_t"
 Function,+,furi_hal_hid_u2f_set_callback,void,"HidU2fCallback, void*"
-Function,+,furi_hal_hid_vendor_get_request,uint32_t,uint8_t*
-Function,+,furi_hal_hid_vendor_is_connected,_Bool,
-Function,+,furi_hal_hid_vendor_send_response,_Bool,"uint8_t*, uint8_t"
-Function,+,furi_hal_hid_vendor_send_response_blocking,_Bool,"uint8_t*, uint8_t, uint32_t"
-Function,+,furi_hal_hid_vendor_set_callback,void,"HidVendorCallback, void*"
 Function,+,furi_hal_i2c_acquire,void,const FuriHalI2cBusHandle*
 Function,-,furi_hal_i2c_deinit_early,void,
 Function,-,furi_hal_i2c_init,void,
@@ -1782,13 +1746,6 @@ Function,+,furi_hal_subghz_stop_async_tx,void,
 Function,+,furi_hal_subghz_tx,_Bool,
 Function,+,furi_hal_subghz_write_packet,void,"const uint8_t*, uint8_t"
 Function,+,furi_hal_switch,void,void*
-Function,+,furi_hal_usb_airbridge_get_profile,FuriHalUsbInterface*,uint8_t
-Function,+,furi_hal_usb_airbridge_profile_count,uint8_t,
-Function,+,furi_hal_usb_airbridge_profile_has_keyboard,_Bool,uint8_t
-Function,+,furi_hal_usb_airbridge_profile_identity,const char*,uint8_t
-Function,+,furi_hal_usb_airbridge_profile_label,const char*,uint8_t
-Function,+,furi_hal_usb_airbridge_profile_pid,uint16_t,uint8_t
-Function,+,furi_hal_usb_airbridge_profile_vid,uint16_t,uint8_t
 Function,+,furi_hal_usb_ccid_insert_smartcard,void,
 Function,+,furi_hal_usb_ccid_remove_smartcard,void,
 Function,+,furi_hal_usb_ccid_set_callbacks,void,"CcidCallbacks*, void*"
@@ -1800,7 +1757,6 @@ Function,+,furi_hal_usb_is_locked,_Bool,
 Function,+,furi_hal_usb_lock,void,
 Function,+,furi_hal_usb_reinit,void,
 Function,+,furi_hal_usb_set_config,_Bool,"FuriHalUsbInterface*, void*"
-Function,+,furi_hal_usb_set_config_async,_Bool,"FuriHalUsbInterface*, void*"
 Function,+,furi_hal_usb_set_state_callback,void,"FuriHalUsbStateCallback, void*"
 Function,+,furi_hal_usb_unlock,void,
 Function,+,furi_hal_version_do_i_belong_here,_Bool,
@@ -2006,17 +1962,13 @@ Function,+,furi_thread_yield,void,
 Function,+,furi_timer_alloc,FuriTimer*,"FuriTimerCallback, FuriTimerType, void*"
 Function,+,furi_timer_flush,void,
 Function,+,furi_timer_free,void,FuriTimer*
-Function,+,furi_timer_free_bounded,FuriStatus,"FuriTimer*, FuriTimerDeleteState*, uint32_t"
 Function,+,furi_timer_get_expire_time,uint32_t,FuriTimer*
 Function,+,furi_timer_is_running,uint32_t,FuriTimer*
 Function,+,furi_timer_pending_callback,void,"FuriTimerPendigCallback, void*, uint32_t"
-Function,+,furi_timer_pending_callback_bounded,FuriStatus,"FuriTimerPendigCallback, void*, uint32_t, uint32_t"
 Function,+,furi_timer_restart,FuriStatus,"FuriTimer*, uint32_t"
 Function,+,furi_timer_set_thread_priority,void,FuriTimerThreadPriority
 Function,+,furi_timer_start,FuriStatus,"FuriTimer*, uint32_t"
-Function,+,furi_timer_start_bounded,FuriStatus,"FuriTimer*, uint32_t, uint32_t"
 Function,+,furi_timer_stop,FuriStatus,FuriTimer*
-Function,+,furi_timer_stop_bounded,FuriStatus,"FuriTimer*, uint32_t"
 Function,-,fwrite,size_t,"const void*, size_t, size_t, FILE*"
 Function,-,fwrite_unlocked,size_t,"const void*, size_t, size_t, FILE*"
 Function,-,gamma,double,double
@@ -2032,7 +1984,7 @@ Function,-,gap_extra_beacon_set_config,_Bool,const GapExtraBeaconConfig*
 Function,-,gap_extra_beacon_set_data,_Bool,"const uint8_t*, uint8_t"
 Function,-,gap_extra_beacon_start,_Bool,
 Function,-,gap_extra_beacon_stop,_Bool,
-Function,-,gap_get_state,GapState,
+Function,+,gap_get_state,GapState,
 Function,-,gap_init,_Bool,"GapConfig*, const GapRootSecurityKeys*, GapEventCallback, void*"
 Function,-,gap_start_advertising,void,
 Function,-,gap_stop_advertising,void,
@@ -3919,7 +3871,6 @@ Variable,+,_impure_data,_reent,
 Variable,+,_impure_ptr,_reent*,
 Variable,-,_sys_errlist,const char* const[],
 Variable,-,_sys_nerr,int,
-Variable,+,ble_profile_airbridge,const FuriHalBleProfileTemplate* const,
 Variable,-,ble_profile_hid,const FuriHalBleProfileTemplate*,
 Variable,+,ble_profile_serial,const FuriHalBleProfileTemplate* const,
 Variable,+,compress_config_heatshrink_default,const CompressConfigHeatshrink,
@@ -4209,7 +4160,6 @@ Variable,+,subghz_protocol_raw_decoder,const SubGhzProtocolDecoder,
 Variable,+,subghz_protocol_raw_encoder,const SubGhzProtocolEncoder,
 Variable,+,subghz_protocol_registry,const SubGhzProtocolRegistry,
 Variable,-,suboptarg,char*,
-Variable,+,usb_airbridge,FuriHalUsbInterface,
 Variable,+,usb_ccid,FuriHalUsbInterface,
 Variable,+,usb_cdc_dual,FuriHalUsbInterface,
 Variable,+,usb_cdc_single,FuriHalUsbInterface,

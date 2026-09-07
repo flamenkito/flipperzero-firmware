@@ -55,15 +55,18 @@ static AirbridgeUiIntent airbridge_ui_intent_for_key(InputKey key) {
 
 void airbridge_ui_input_callback(InputEvent* input_event, void* context) {
     AirbridgeUi* ui = context;
+    AirbridgeUiSnapshot snapshot;
+    airbridge_ui_snapshot_copy(ui, &snapshot);
+    if(snapshot.closing || snapshot.operation.stalled) return;
     if(input_event->key == InputKeyBack && input_event->type == InputTypeLong) {
         ui->input_paused = ui->intent_callback(ui->intent_context, AirbridgeUiIntentExit);
         return;
     }
 
-    const bool is_back =
-        (input_event->key == InputKeyBack) && (input_event->type == InputTypePress);
-    const bool is_short_non_back =
-        (input_event->key != InputKeyBack) && (input_event->type == InputTypeShort);
+    const bool is_back = (input_event->key == InputKeyBack) &&
+                         (input_event->type == InputTypePress);
+    const bool is_short_non_back = (input_event->key != InputKeyBack) &&
+                                   (input_event->type == InputTypeShort);
     if(!is_back && !is_short_non_back) return;
 
     BridgeEvent event = {
@@ -97,12 +100,11 @@ void airbridge_ui_service_input(AirbridgeUi* ui) {
         if(!ui->have_back_head && !ui->have_input_head) return;
 
         const bool take_back = ui->have_back_head &&
-                               (!ui->have_input_head ||
-                                airbridge_ui_event_before_values(
-                                    ui->back_head.tick,
-                                    ui->back_head.sequence,
-                                    ui->input_head.tick,
-                                    ui->input_head.sequence));
+                               (!ui->have_input_head || airbridge_ui_event_before_values(
+                                                            ui->back_head.tick,
+                                                            ui->back_head.sequence,
+                                                            ui->input_head.tick,
+                                                            ui->input_head.sequence));
         const BridgeEvent* event = take_back ? &ui->back_head : &ui->input_head;
         ui->input_paused =
             ui->intent_callback(ui->intent_context, airbridge_ui_intent_for_key(event->key));

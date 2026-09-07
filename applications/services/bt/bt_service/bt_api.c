@@ -31,18 +31,6 @@ bool bt_profile_restore_default(Bt* bt) {
     return bt_profile_start(bt, ble_profile_serial, NULL) != NULL;
 }
 
-bool bt_profile_restore_default_async(Bt* bt) {
-    furi_check(bt);
-
-    const BtMessage message = {
-        .type = BtMessageTypeSetProfile,
-        .data.profile.params = NULL,
-        .data.profile.template = ble_profile_serial,
-    };
-    const bool queued = furi_message_queue_put(bt->message_queue, &message, 100U) == FuriStatusOk;
-    return queued;
-}
-
 void bt_disconnect(Bt* bt) {
     furi_check(bt);
 
@@ -69,7 +57,7 @@ bool bt_set_status_changed_callback_bounded(
     return bt_status_callback_set_bounded(&registration, callback, context, timeout);
 }
 
-BtStatus bt_airbridge_set_status_changed_callback(
+BtStatus bt_set_status_changed_callback_with_snapshot(
     Bt* bt,
     BtStatusChangedCallback callback,
     void* context) {

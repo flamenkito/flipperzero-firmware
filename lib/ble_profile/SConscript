@@ -5,8 +5,6 @@ env.Append(
         "#/lib/ble_profile",
     ],
     SDK_HEADERS=[
-        File("extra_profiles/airbridge_identity_params.h"),
-        File("extra_profiles/airbridge_profile.h"),
         File("extra_profiles/hid_profile.h"),
         File("extra_services/hid_service.h"),
     ],

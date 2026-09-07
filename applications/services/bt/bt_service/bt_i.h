@@ -18,7 +18,6 @@
 
 #include <bt/bt_settings.h>
 #include <bt/bt_service/bt_keys_storage.h>
-#include <extra_profiles/airbridge_identity_params.h>
 
 #include "bt_keys_filename.h"
 
@@ -77,8 +76,6 @@ typedef struct {
     volatile uint32_t pin_code;
 } BtGapMailbox;
 
-/* BtRawSerialCallback, bt_set_raw_serial_callback, and bt_serial_tx are declared in bt.h */
-
 struct Bt {
     uint8_t* bt_keys_addr_start;
     uint16_t bt_keys_size;
@@ -87,8 +84,7 @@ struct Bt {
     BtKeysStorage* keys_storage;
     BtStatus status;
     bool beacon_active;
-    /* True while a pairing ceremony (PIN show/numeric comparison) is in
-     * progress on the current link; written on the GAP event thread. */
+    /* True while pairing awaits user input; written on the GAP event thread. */
     volatile bool pairing_in_progress;
     FuriHalBleProfileBase* current_profile;
     /* Deadlock-freedom invariant: this mutex is only ever held for
@@ -108,12 +104,7 @@ struct Bt {
      * Read without the mutex by bt_serial_event_callback, which runs under a
      * serial service's buff_size_mtx and therefore must never take it. */
     bool current_profile_is_serial;
-    bool current_profile_is_airbridge;
-    bool reload_profile_is_airbridge;
-    AirbridgeBleIdentityParams reload_airbridge_params;
     bool profile_retry_pending;
-    const FuriHalBleProfileTemplate* profile_retry_template;
-    AirbridgeBleIdentityParams profile_retry_airbridge_params;
     FuriMessageQueue* message_queue;
     BtGapMailbox gap_mailbox;
     uint32_t flushed_connect_count;

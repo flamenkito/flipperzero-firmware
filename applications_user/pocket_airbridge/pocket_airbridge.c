@@ -7,6 +7,7 @@
 
 #include "airbridge_app_i.h"
 #include "airbridge_exit_contract.h"
+#include "airbridge_lifecycle.h"
 #include "airbridge_runtime.h"
 
 #define TAG "AirBridge"
@@ -30,8 +31,7 @@ static AirbridgeApp* airbridge_app_alloc(void) {
     app->last_heartbeat = furi_get_tick();
     airbridge_relay_init(&app->relay);
 
-    app->screens =
-        airbridge_screens_alloc(airbridge_runtime_screen_actions(), app);
+    app->screens = airbridge_screens_alloc(airbridge_runtime_screen_actions(), app);
     if(app->screens == NULL) {
         airbridge_relay_deinit(&app->relay);
         free(app);
@@ -49,15 +49,12 @@ static AirbridgeApp* airbridge_app_alloc(void) {
 
 static void airbridge_app_init_services(AirbridgeApp* app) {
     app->storage = furi_record_open(RECORD_STORAGE);
-    airbridge_typing_init(
-        &app->typing, app->storage, airbridge_screens_show_error, app->screens);
-    airbridge_stream_init(
-        &app->stream, app->storage, airbridge_screens_show_error, app->screens);
+    airbridge_typing_init(&app->typing, app->storage, airbridge_screens_show_error, app->screens);
+    airbridge_stream_init(&app->stream, app->storage, airbridge_screens_show_error, app->screens);
     airbridge_ui_init_view(app->ui);
     airbridge_ui_open_gui(app->ui);
     airbridge_ui_add_view(app->ui);
     airbridge_config_load(&app->config, app->storage);
-    app->relay.usb_mode_prev = furi_hal_usb_get_config();
 }
 
 static void airbridge_app_free(AirbridgeApp* app) {
@@ -69,47 +66,89 @@ static void airbridge_app_free(AirbridgeApp* app) {
     free(app);
 }
 
+static void airbridge_app_show_closing(void* context) {
+    AirbridgeApp* app = context;
+    (void)airbridge_typing_abort(&app->typing);
+    airbridge_ui_show_closing(app->ui);
+    airbridge_stream_close(&app->stream);
+}
+
+static bool airbridge_app_restore_usb(void* context) {
+    return airbridge_relay_restore_usb(&((AirbridgeApp*)context)->relay);
+}
+
+static bool airbridge_app_restore_ble(void* context) {
+    return airbridge_ble_restore(&((AirbridgeApp*)context)->ble);
+}
+
+static uint32_t airbridge_app_now(void* context) {
+    UNUSED(context);
+    return furi_get_tick();
+}
+
+static void airbridge_app_wait(void* context) {
+    UNUSED(context);
+    furi_delay_ms(100);
+}
+
+static int32_t airbridge_app_worker(void* context) {
+    AirbridgeApp* app = context;
+    airbridge_operation_start(&app->operation, AirbridgeOperationUsbStart, furi_get_tick());
+    app->relay.usb_mode_prev = furi_hal_usb_get_config();
+    airbridge_operation_end(&app->operation);
+    bool startup_apply_pending = true;
+    airbridge_runtime_run(app, app->notifications, &startup_apply_pending, &app_exit_latch);
+
+    AirbridgeExitContract exit_contract = airbridge_exit_contract_initial();
+    const AirbridgeLifecycleOps lifecycle = {
+        .context = app,
+        .show_closing = airbridge_app_show_closing,
+        .restore_usb = airbridge_app_restore_usb,
+        .restore_ble = airbridge_app_restore_ble,
+        .now = airbridge_app_now,
+        .wait = airbridge_app_wait,
+    };
+    airbridge_lifecycle_close(&lifecycle, &app->operation, &exit_contract);
+    furi_check(airbridge_exit_contract_may_destroy(&exit_contract));
+    return 0;
+}
+
 int32_t pocket_airbridge_app(void* p) {
     UNUSED(p);
     AirbridgeApp* app = airbridge_app_alloc();
     if(app == NULL) return -1;
     airbridge_app_init_services(app);
-    NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
-
+    app->notifications = furi_record_open(RECORD_NOTIFICATION);
+    Bt* monitor_bt = furi_record_open(RECORD_BT);
     FuriThread* app_thread = furi_thread_get_current();
-    /* Reset only after initialization and while detached. The callback ignores
-     * context because callback/context publication is not atomic. */
     airbridge_exit_latch_reset(&app_exit_latch);
     furi_thread_set_signal_callback(app_thread, app_signal_callback, NULL);
 
-    bool startup_apply_pending = true;
-run_app:
-    airbridge_runtime_run(app, notifications, &startup_apply_pending, &app_exit_latch);
-
-    Bt* bt = NULL;
-    AirbridgeExitContract exit_contract = airbridge_exit_contract_initial();
-    if(!airbridge_exit_contract_record_detach(
-           &exit_contract, airbridge_ble_prepare_restore(&app->ble, &bt))) {
-        FURI_LOG_E(TAG, "BLE callback detach timed out; retaining app ownership");
-        app->exit_requested = false;
-        airbridge_exit_latch_reset(&app_exit_latch);
-        goto run_app;
+    FuriThread* worker = furi_thread_alloc_ex("AirBridgeIO", 4096, airbridge_app_worker, app);
+    furi_thread_start(worker);
+    bool reported_stall = false;
+    while(furi_thread_get_state(worker) != FuriThreadStateStopped) {
+        const AirbridgeOperationStatus status = airbridge_operation_observe(
+            &app->operation, furi_get_tick(), bt_pairing_in_progress(monitor_bt));
+        airbridge_ui_set_operation_status(app->ui, status);
+        if(status.stalled && !reported_stall) {
+            reported_stall = true;
+            FURI_LOG_E(TAG, "Operation %u stalled; retaining app until cleanup", status.operation);
+            airbridge_exit_latch_request(&app_exit_latch);
+        }
+        furi_delay_ms(25);
     }
-
-    furi_check(airbridge_exit_contract_may_destroy(&exit_contract));
+    furi_thread_join(worker);
+    furi_thread_free(worker);
+    airbridge_usb_free();
     furi_thread_set_signal_callback(app_thread, NULL, NULL);
-    airbridge_stream_close(&app->stream);
-    (void)airbridge_typing_abort(&app->typing);
-    if(!airbridge_relay_restore_usb(&app->relay)) {
-        FURI_LOG_E(TAG, "Failed to queue USB restore at teardown");
-    }
     airbridge_ui_remove_view(app->ui);
     airbridge_ui_close_gui();
     furi_record_close(RECORD_NOTIFICATION);
     airbridge_typing_release_file(&app->typing);
     airbridge_stream_deinit(&app->stream);
     furi_record_close(RECORD_STORAGE);
+    furi_record_close(RECORD_BT);
     airbridge_app_free(app);
-    airbridge_ble_queue_restore(bt);
     return 0;
 }

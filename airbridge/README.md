@@ -176,14 +176,19 @@ use `chat-usb.html` and `chat-ble.html` instead.
 
 ## Flipper Zero Firmware Notes
 
-This custom firmware and apps repository contains two custom profiles:
+The FAP owns both custom profiles in `applications_user/pocket_airbridge/`:
 
 - **USB HID**: `usb_airbridge` — a vendor-defined HID profile using usage page `0xFF00` for bidirectional 64-byte reports. USB identity is selected at app start from `/ext/apps_data/pocket_airbridge/config` (default `hp_kbd_vendor`, HP VID `0x03F0` PID `0x5341`) and held for the session lifetime. Composite-to-composite reconfiguration is not attempted.
-- **BLE GATT**: `airbridge_profile` — a custom GATT profile (`lib/ble_profile/extra_profiles/airbridge_profile.c`) advertising the AirBridge serial UUID family: service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27` (NOTIFY, not INDICATE), and RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery and DIS are also included; the profile has no HIDS service.
+- **BLE GATT**: `airbridge_profile.c` advertises the AirBridge serial UUID family: service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27` (NOTIFY, not INDICATE), and RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery and DIS are also included; the profile has no HIDS service.
 
 Static BLE tuning evidence records configured ATT MTU 414, DLE enabled, 2M PHY preference, requested 7.5 to 45 ms connection interval, and 244-byte serial value capacity. Runtime negotiated MTU/PHY/DLE/interval and throughput remain unclaimed unless a hardware evidence run records them.
 
 The custom FAP lives in `applications_user/pocket_airbridge/` and is built with this repository's full firmware build system.
+
+Rebuild firmware and the FAP together at API 87.14. Exit waits on a `Closing...`
+screen until both transports are restored. An independent supervisor reports
+stalled operations; it does not forcibly unload the app. See
+[firmware ownership and fault limits](docs/firmware-boundary.md).
 
 The original `flipper/bridge_app.c` pseudocode skeleton now lives at [`docs/attic/bridge_app.c`](docs/attic/bridge_app.c) and is superseded. The live FAP is `applications_user/pocket_airbridge/pocket_airbridge.c`.
 

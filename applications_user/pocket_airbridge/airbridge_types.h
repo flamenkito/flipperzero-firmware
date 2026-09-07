@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <furi_hal_usb_airbridge.h>
+#include "airbridge_usb.h"
 #include <input/input.h>
 
 #define EVENT_TYPE_INPUT (1 << 0)
@@ -15,9 +15,6 @@
 #define TYPE_RELEASE_DELAY_MS 18
 #define TYPE_JITTER_MAX_MS    7
 #define STREAM_TIMEOUT_MS     50
-
-#define BLE_BRIDGE_ADV_WATCHDOG_MS 2500
-#define BLE_SQUATTER_KICK_MS       15000
 
 #define BOOTSTRAP_MAX_SIZE (16U * 1024U)
 #define CONFIG_MAX_SIZE    (4U * 1024U)

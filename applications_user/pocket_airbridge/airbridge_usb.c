@@ -1,24 +1,31 @@
 #include <furi.h>
 #include <furi_hal_usb.h>
-#include <furi_hal_usb_airbridge.h>
+#include "airbridge_usb.h"
 #include <furi_hal_usb_hid.h>
-#include <furi_hal_usb_i.h>
 
 #include "usb.h"
 #include "usb_hid.h"
 
-#define HID_PAGE_VENDOR 0xFF00
-#define HID_VENDOR_USAGE 0x01
-#define HID_VENDOR_INPUT 0x20
+/* Descriptor indices and EP0 size are part of the existing USB HAL contract;
+ * its private header is not available to external applications. */
+#define USB_EP0_SIZE 8
+enum {
+    UsbDevManuf = 1,
+    UsbDevProduct = 2
+};
+
+#define HID_PAGE_VENDOR   0xFF00
+#define HID_VENDOR_USAGE  0x01
+#define HID_VENDOR_INPUT  0x20
 #define HID_VENDOR_OUTPUT 0x21
 
-#define HID_KBD_EP_IN         0x81
-#define HID_VENDOR_EP_IN      0x82
-#define HID_VENDOR_EP_OUT     0x03
-#define HID_VENDOR_ONLY_EP_IN 0x81
+#define HID_KBD_EP_IN          0x81
+#define HID_VENDOR_EP_IN       0x82
+#define HID_VENDOR_EP_OUT      0x03
+#define HID_VENDOR_ONLY_EP_IN  0x81
 #define HID_VENDOR_ONLY_EP_OUT 0x02
-#define HID_KBD_PACKET_LEN    8
-#define HID_INTERVAL          1
+#define HID_KBD_PACKET_LEN     8
+#define HID_INTERVAL           1
 
 struct HidVendorDescriptor {
     struct usb_iad_descriptor hid_iad;
@@ -124,30 +131,33 @@ static const struct usb_string_descriptor dell_manuf_desc = USB_STRING_DESC("Del
 static const struct usb_string_descriptor dell_prod_desc = USB_STRING_DESC("KB216 Keyboard");
 static const struct usb_string_descriptor msft_manuf_desc = USB_STRING_DESC("Microsoft");
 static const struct usb_string_descriptor msft_kbd_prod_desc = USB_STRING_DESC("USB Keyboard");
-static const struct usb_string_descriptor msft_vendor_prod_desc = USB_STRING_DESC("USB Input Device");
+static const struct usb_string_descriptor msft_vendor_prod_desc =
+    USB_STRING_DESC("USB Input Device");
 static const struct usb_string_descriptor hp_manuf_desc = USB_STRING_DESC("PIXART");
-static const struct usb_string_descriptor hp_prod_desc = USB_STRING_DESC("HP Wireless Keyboard and Mouse");
+static const struct usb_string_descriptor hp_prod_desc =
+    USB_STRING_DESC("HP Wireless Keyboard and Mouse");
 
 #define AIRBRIDGE_DEVICE_DESCRIPTOR_FULL(vid, pid, cls, sub, proto, bcd) \
-    { \
-        .bLength = sizeof(struct usb_device_descriptor), \
-        .bDescriptorType = USB_DTYPE_DEVICE, \
-        .bcdUSB = VERSION_BCD(2, 0, 0), \
-        .bDeviceClass = cls, \
-        .bDeviceSubClass = sub, \
-        .bDeviceProtocol = proto, \
-        .bMaxPacketSize0 = USB_EP0_SIZE, \
-        .idVendor = vid, \
-        .idProduct = pid, \
-        .bcdDevice = bcd, \
-        .iManufacturer = UsbDevManuf, \
-        .iProduct = UsbDevProduct, \
-        .iSerialNumber = 0, \
-        .bNumConfigurations = 1, \
+    {                                                                    \
+        .bLength = sizeof(struct usb_device_descriptor),                 \
+        .bDescriptorType = USB_DTYPE_DEVICE,                             \
+        .bcdUSB = VERSION_BCD(2, 0, 0),                                  \
+        .bDeviceClass = cls,                                             \
+        .bDeviceSubClass = sub,                                          \
+        .bDeviceProtocol = proto,                                        \
+        .bMaxPacketSize0 = USB_EP0_SIZE,                                 \
+        .idVendor = vid,                                                 \
+        .idProduct = pid,                                                \
+        .bcdDevice = bcd,                                                \
+        .iManufacturer = UsbDevManuf,                                    \
+        .iProduct = UsbDevProduct,                                       \
+        .iSerialNumber = 0,                                              \
+        .bNumConfigurations = 1,                                         \
     }
 
 #define AIRBRIDGE_DEVICE_DESCRIPTOR(vid, pid) \
-    AIRBRIDGE_DEVICE_DESCRIPTOR_FULL(vid, pid, USB_CLASS_IAD, USB_SUBCLASS_IAD, USB_PROTO_IAD, VERSION_BCD(1, 0, 0))
+    AIRBRIDGE_DEVICE_DESCRIPTOR_FULL(         \
+        vid, pid, USB_CLASS_IAD, USB_SUBCLASS_IAD, USB_PROTO_IAD, VERSION_BCD(1, 0, 0))
 
 static const struct usb_device_descriptor logitech_device_desc =
     AIRBRIDGE_DEVICE_DESCRIPTOR(0x046D, 0xC31C);
@@ -423,7 +433,7 @@ static usbd_respond hid_vendor_ep_config(usbd_device* dev, uint8_t cfg);
 static usbd_respond
     hid_vendor_control(usbd_device* dev, usbd_ctlreq* req, usbd_rqc_callback* callback);
 
-FuriHalUsbInterface usb_airbridge = {
+static FuriHalUsbInterface usb_airbridge = {
     .init = hid_vendor_init,
     .deinit = hid_vendor_deinit,
     .wakeup = hid_vendor_on_wakeup,
@@ -493,7 +503,7 @@ typedef struct {
 } AirbridgeProfile;
 
 static const AirbridgeProfile airbridge_profiles[] = {
-    [FuriHalUsbAirbridgeProfileLogitechKbdVendor] =
+    [AirbridgeUsbProfileLogitechKbdVendor] =
         {
             .label = "logitech_kbd_vendor",
             .identity = "Logitech Kbd+Vendor",
@@ -502,7 +512,7 @@ static const AirbridgeProfile airbridge_profiles[] = {
             .has_keyboard = true,
             .interface = &usb_airbridge,
         },
-    [FuriHalUsbAirbridgeProfileDellKbdVendor] =
+    [AirbridgeUsbProfileDellKbdVendor] =
         {
             .label = "dell_kbd_vendor",
             .identity = "Dell KB216 Kbd+Vendor",
@@ -511,7 +521,7 @@ static const AirbridgeProfile airbridge_profiles[] = {
             .has_keyboard = true,
             .interface = &usb_airbridge_dell,
         },
-    [FuriHalUsbAirbridgeProfileMsftKbdVendor] =
+    [AirbridgeUsbProfileMsftKbdVendor] =
         {
             .label = "msft_kbd_vendor",
             .identity = "MSFT Kbd+Vendor",
@@ -520,7 +530,7 @@ static const AirbridgeProfile airbridge_profiles[] = {
             .has_keyboard = true,
             .interface = &usb_airbridge_msft_kbd,
         },
-    [FuriHalUsbAirbridgeProfileMsftVendorOnly] =
+    [AirbridgeUsbProfileMsftVendorOnly] =
         {
             .label = "msft_vendor_only",
             .identity = "MSFT Vendor",
@@ -529,7 +539,7 @@ static const AirbridgeProfile airbridge_profiles[] = {
             .has_keyboard = false,
             .interface = &usb_airbridge_msft_vendor,
         },
-    [FuriHalUsbAirbridgeProfileHpKbdVendor] =
+    [AirbridgeUsbProfileHpKbdVendor] =
         {
             .label = "hp_kbd_vendor",
             .identity = "HP Wireless Kbd+Mouse",
@@ -551,42 +561,42 @@ static struct HidKeyboardReport hid_keyboard_report;
 static HidVendorCallback callback;
 static void* cb_ctx;
 
-uint8_t furi_hal_usb_airbridge_profile_count(void) {
+uint8_t airbridge_usb_profile_count(void) {
     return COUNT_OF(airbridge_profiles);
 }
 
-FuriHalUsbInterface* furi_hal_usb_airbridge_get_profile(uint8_t index) {
+FuriHalUsbInterface* airbridge_usb_get_profile(uint8_t index) {
     return (index < COUNT_OF(airbridge_profiles)) ? airbridge_profiles[index].interface : NULL;
 }
 
-const char* furi_hal_usb_airbridge_profile_label(uint8_t index) {
+const char* airbridge_usb_profile_label(uint8_t index) {
     return (index < COUNT_OF(airbridge_profiles)) ? airbridge_profiles[index].label : NULL;
 }
 
-const char* furi_hal_usb_airbridge_profile_identity(uint8_t index) {
+const char* airbridge_usb_profile_identity(uint8_t index) {
     return (index < COUNT_OF(airbridge_profiles)) ? airbridge_profiles[index].identity : NULL;
 }
 
-bool furi_hal_usb_airbridge_profile_has_keyboard(uint8_t index) {
+bool airbridge_usb_profile_has_keyboard(uint8_t index) {
     return (index < COUNT_OF(airbridge_profiles)) && airbridge_profiles[index].has_keyboard;
 }
 
-uint16_t furi_hal_usb_airbridge_profile_vid(uint8_t index) {
+uint16_t airbridge_usb_profile_vid(uint8_t index) {
     return (index < COUNT_OF(airbridge_profiles)) ? airbridge_profiles[index].vid : 0;
 }
 
-uint16_t furi_hal_usb_airbridge_profile_pid(uint8_t index) {
+uint16_t airbridge_usb_profile_pid(uint8_t index) {
     return (index < COUNT_OF(airbridge_profiles)) ? airbridge_profiles[index].pid : 0;
 }
 
-bool furi_hal_hid_vendor_is_connected(void) {
+bool airbridge_usb_vendor_is_connected(void) {
     FURI_CRITICAL_ENTER();
     bool connected = hid_vendor_connected;
     FURI_CRITICAL_EXIT();
     return connected;
 }
 
-void furi_hal_hid_vendor_set_callback(HidVendorCallback cb, void* ctx) {
+void airbridge_usb_vendor_set_callback(HidVendorCallback cb, void* ctx) {
     FURI_CRITICAL_ENTER();
     if((callback != NULL) && hid_vendor_connected) {
         callback(HidVendorDisconnected, cb_ctx);
@@ -634,8 +644,16 @@ static void hid_vendor_deinit(usbd_device* dev) {
     hid_vendor_connected = false;
     FURI_CRITICAL_EXIT();
     usb_dev = NULL;
-    furi_semaphore_release(hid_vendor_semaphore);
-    furi_semaphore_release(hid_keyboard_semaphore);
+}
+
+void airbridge_usb_free(void) {
+    /* UsbSrv may reinitialize an active interface while a sender is waiting.
+     * Keep semaphores across reinit; free only after synchronous restoration. */
+    furi_check(usb_dev == NULL);
+    if(hid_vendor_semaphore) furi_semaphore_free(hid_vendor_semaphore);
+    if(hid_keyboard_semaphore) furi_semaphore_free(hid_keyboard_semaphore);
+    hid_vendor_semaphore = NULL;
+    hid_keyboard_semaphore = NULL;
 }
 
 static void hid_vendor_on_wakeup(usbd_device* dev) {
@@ -662,7 +680,7 @@ static void hid_vendor_on_suspend(usbd_device* dev) {
     FURI_CRITICAL_EXIT();
 }
 
-bool furi_hal_hid_vendor_send_response(uint8_t* data, uint8_t len) {
+bool airbridge_usb_vendor_send_response(uint8_t* data, uint8_t len) {
     if(hid_vendor_semaphore == NULL) return false;
     if(furi_semaphore_acquire(hid_vendor_semaphore, 0) != FuriStatusOk) return false;
     if(hid_vendor_connected) {
@@ -675,7 +693,7 @@ bool furi_hal_hid_vendor_send_response(uint8_t* data, uint8_t len) {
     return hid_vendor_connected;
 }
 
-bool furi_hal_hid_vendor_send_response_blocking(uint8_t* data, uint8_t len, uint32_t timeout) {
+bool airbridge_usb_vendor_send_response_blocking(uint8_t* data, uint8_t len, uint32_t timeout) {
     if((hid_vendor_semaphore == NULL) || (len > HID_VENDOR_PACKET_LEN)) return false;
     if(furi_semaphore_acquire(hid_vendor_semaphore, timeout) != FuriStatusOk) return false;
     if((usb_dev == NULL) || !hid_vendor_connected) {
@@ -689,13 +707,13 @@ bool furi_hal_hid_vendor_send_response_blocking(uint8_t* data, uint8_t len, uint
     return true;
 }
 
-uint32_t furi_hal_hid_vendor_get_request(uint8_t* data) {
+uint32_t airbridge_usb_vendor_get_request(uint8_t* data) {
     if(usb_dev == NULL) return 0;
     int32_t len = usbd_ep_read(usb_dev, hid_vendor_ep_out, data, HID_VENDOR_PACKET_LEN);
     return (len < 0) ? 0 : len;
 }
 
-bool furi_hal_hid_airbridge_kb_press(uint16_t button) {
+bool airbridge_usb_kb_press(uint16_t button) {
     if((hid_keyboard_semaphore == NULL) || !hid_keyboard_available || !hid_vendor_connected) {
         return false;
     }
@@ -704,14 +722,15 @@ bool furi_hal_hid_airbridge_kb_press(uint16_t button) {
     }
     hid_keyboard_report.mods |= button >> 8;
     hid_keyboard_report.buttons[0] = button & 0xFF;
-    if(usbd_ep_write(usb_dev, HID_KBD_EP_IN, &hid_keyboard_report, sizeof(hid_keyboard_report)) < 0) {
+    if(usbd_ep_write(usb_dev, HID_KBD_EP_IN, &hid_keyboard_report, sizeof(hid_keyboard_report)) <
+       0) {
         furi_semaphore_release(hid_keyboard_semaphore);
         return false;
     }
     return true;
 }
 
-bool furi_hal_hid_airbridge_kb_release(uint16_t button) {
+bool airbridge_usb_kb_release(uint16_t button) {
     if((hid_keyboard_semaphore == NULL) || !hid_keyboard_available || !hid_vendor_connected) {
         return false;
     }
@@ -722,14 +741,15 @@ bool furi_hal_hid_airbridge_kb_release(uint16_t button) {
     if(hid_keyboard_report.buttons[0] == (button & 0xFF)) {
         hid_keyboard_report.buttons[0] = 0;
     }
-    if(usbd_ep_write(usb_dev, HID_KBD_EP_IN, &hid_keyboard_report, sizeof(hid_keyboard_report)) < 0) {
+    if(usbd_ep_write(usb_dev, HID_KBD_EP_IN, &hid_keyboard_report, sizeof(hid_keyboard_report)) <
+       0) {
         furi_semaphore_release(hid_keyboard_semaphore);
         return false;
     }
     return true;
 }
 
-bool furi_hal_hid_airbridge_kb_release_all(void) {
+bool airbridge_usb_kb_release_all(void) {
     if((hid_keyboard_semaphore == NULL) || !hid_keyboard_available || !hid_vendor_connected) {
         return false;
     }
@@ -737,7 +757,8 @@ bool furi_hal_hid_airbridge_kb_release_all(void) {
         return false;
     }
     memset(&hid_keyboard_report, 0, sizeof(hid_keyboard_report));
-    if(usbd_ep_write(usb_dev, HID_KBD_EP_IN, &hid_keyboard_report, sizeof(hid_keyboard_report)) < 0) {
+    if(usbd_ep_write(usb_dev, HID_KBD_EP_IN, &hid_keyboard_report, sizeof(hid_keyboard_report)) <
+       0) {
         furi_semaphore_release(hid_keyboard_semaphore);
         return false;
     }
@@ -825,8 +846,9 @@ static usbd_respond
             if(hid_keyboard_available && (req->wIndex == 0)) {
                 dev->status.data_ptr = (uint8_t*)&hid_composite_cfg_desc.keyboard.hid_desc;
                 dev->status.data_count = sizeof(hid_composite_cfg_desc.keyboard.hid_desc);
-            } else if((hid_keyboard_available && (req->wIndex == 1)) ||
-                      (!hid_keyboard_available && (req->wIndex == 0))) {
+            } else if(
+                (hid_keyboard_available && (req->wIndex == 1)) ||
+                (!hid_keyboard_available && (req->wIndex == 0))) {
                 dev->status.data_ptr = hid_keyboard_available ?
                                            (uint8_t*)&hid_composite_cfg_desc.vendor_hid_desc :
                                            (uint8_t*)&hid_vendor_cfg_desc.vendor.hid_desc;
@@ -841,8 +863,9 @@ static usbd_respond
             if(hid_keyboard_available && (req->wIndex == 0)) {
                 dev->status.data_ptr = (uint8_t*)hid_keyboard_report_desc;
                 dev->status.data_count = sizeof(hid_keyboard_report_desc);
-            } else if((hid_keyboard_available && (req->wIndex == 1)) ||
-                      (!hid_keyboard_available && (req->wIndex == 0))) {
+            } else if(
+                (hid_keyboard_available && (req->wIndex == 1)) ||
+                (!hid_keyboard_available && (req->wIndex == 0))) {
                 dev->status.data_ptr = (uint8_t*)hid_vendor_report_desc;
                 dev->status.data_count = sizeof(hid_vendor_report_desc);
             } else {

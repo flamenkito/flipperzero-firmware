@@ -5,7 +5,6 @@
 typedef enum {
     GapCommandAdvFast,
     GapCommandAdvLowPower,
-    GapCommandAdvRefresh,
     GapCommandAdvStop,
     GapCommandForceIdle,
     GapCommandKillThread,

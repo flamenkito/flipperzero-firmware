@@ -19,15 +19,10 @@ int32_t ble_glue_TL_SYS_SendCmd(uint8_t* buffer, uint16_t size) {
     return TL_SYS_SendCmd(buffer, size);
 }
 
-static int32_t ble_tl_hooks_get_tick(void) {
-    return (int32_t)furi_get_tick();
-}
-
 void shci_register_io_bus(tSHciIO* fops) {
     /* Register IO bus services */
     fops->Init = TL_SYS_Init;
     fops->Send = ble_glue_TL_SYS_SendCmd;
-    fops->GetTick = ble_tl_hooks_get_tick;
 }
 
 static int32_t ble_glue_TL_BLE_SendCmd(uint8_t* buffer, uint16_t size) {
@@ -42,5 +37,4 @@ void hci_register_io_bus(tHciIO* fops) {
     /* Register IO bus services */
     fops->Init = TL_BLE_Init;
     fops->Send = ble_glue_TL_BLE_SendCmd;
-    fops->GetTick = ble_tl_hooks_get_tick;
 }

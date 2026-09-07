@@ -1,6 +1,6 @@
 #include "airbridge_runtime.h"
 
-#include <furi_hal_usb_airbridge.h>
+#include "airbridge_usb.h"
 #include <notification/notification_messages.h>
 
 #define TAG "AirBridge"
@@ -27,7 +27,9 @@ static void airbridge_runtime_stream_close(void* context) {
 
 static void airbridge_runtime_ble_reset(void* context) {
     AirbridgeApp* app = context;
+    airbridge_operation_start(&app->operation, AirbridgeOperationBleReconnect, furi_get_tick());
     airbridge_ble_force_reconnect(&app->ble);
+    airbridge_operation_end(&app->operation);
 }
 
 static bool airbridge_runtime_ble_profile_installed(void* context) {
@@ -37,12 +39,12 @@ static bool airbridge_runtime_ble_profile_installed(void* context) {
 
 static bool airbridge_runtime_deploy_supported(void* context) {
     const AirbridgeApp* app = context;
-    return furi_hal_usb_airbridge_profile_has_keyboard(app->config.usb_profile_index);
+    return airbridge_usb_profile_has_keyboard(app->config.usb_profile_index);
 }
 
 static void airbridge_runtime_exit(void* context) {
     AirbridgeApp* app = context;
-    app->exit_requested = true;
+    __atomic_store_n(&app->exit_requested, true, __ATOMIC_RELEASE);
     airbridge_relay_wake(&app->relay);
 }
 
@@ -66,30 +68,46 @@ const AirbridgeScreenActions* airbridge_runtime_screen_actions(void) {
     return &actions;
 }
 
-static bool airbridge_runtime_exit_requested(
-    const AirbridgeApp* app,
-    AirbridgeExitLatch* exit_latch) {
-    return app->exit_requested || airbridge_exit_latch_requested(exit_latch);
+static bool
+    airbridge_runtime_exit_requested(const AirbridgeApp* app, AirbridgeExitLatch* exit_latch) {
+    return __atomic_load_n(&app->exit_requested, __ATOMIC_ACQUIRE) ||
+           airbridge_exit_latch_requested(exit_latch);
 }
 
-static void airbridge_runtime_apply_startup(AirbridgeApp* app) {
+static void airbridge_runtime_apply_startup(AirbridgeApp* app, AirbridgeExitLatch* exit_latch) {
+    airbridge_operation_start(&app->operation, AirbridgeOperationUsbStart, furi_get_tick());
     const bool usb_ready = airbridge_relay_configure_usb(
         &app->relay, app->config.usb_profile_index, &app->config.usb_profile_index);
+    airbridge_operation_end(&app->operation);
     if(!usb_ready) {
         airbridge_screens_show_fatal(app->screens, "USB CONFIG ERROR");
-    } else if(!airbridge_ble_configure(&app->ble, &app->config.ble_identity)) {
+        return;
+    }
+    if(airbridge_runtime_exit_requested(app, exit_latch)) return;
+    airbridge_operation_start(&app->operation, AirbridgeOperationBleStart, furi_get_tick());
+    const bool ble_ready = airbridge_ble_configure(
+        &app->ble, &app->config.ble_identity, airbridge_relay_ble_event, &app->relay);
+    airbridge_operation_end(&app->operation);
+    if(!ble_ready) {
+        airbridge_operation_start(&app->operation, AirbridgeOperationUsbStop, furi_get_tick());
         if(!airbridge_relay_restore_usb(&app->relay)) {
             FURI_LOG_E(TAG, "USB restore failed after BLE startup error");
         }
+        airbridge_operation_end(&app->operation);
         airbridge_screens_show_fatal(app->screens, "BLE CONFIG ERROR");
     }
 }
 
 static void airbridge_runtime_handle_relay(AirbridgeApp* app, BridgeEvent* event) {
     if(event->type == EVENT_TYPE_RELAY) {
+        airbridge_operation_start(
+            &app->operation,
+            event->to_ble ? AirbridgeOperationBleSend : AirbridgeOperationUsbSend,
+            furi_get_tick());
         if(!event->to_ble) airbridge_ble_note_rx(&app->ble, event->tick);
         const AirbridgeRelayResult result = airbridge_relay_handle(
-            &app->relay, event, airbridge_screens_current(app->screens));
+            &app->relay, &app->ble, event, airbridge_screens_current(app->screens));
+        airbridge_operation_end(&app->operation);
         if(result == AirbridgeRelayDeployRequested) {
             airbridge_screens_deploy_requested(app->screens);
         } else if(result == AirbridgeRelayDeployNotArmed) {
@@ -103,8 +121,10 @@ static void airbridge_runtime_handle_relay(AirbridgeApp* app, BridgeEvent* event
 static void airbridge_runtime_service_screen(AirbridgeApp* app) {
     const AirbridgeScreen screen = airbridge_screens_current(app->screens);
     if(screen == AirbridgeScreenBridge) {
-        airbridge_ble_bridge_adv_watchdog(&app->ble);
+        airbridge_operation_start(
+            &app->operation, AirbridgeOperationBleReconnect, furi_get_tick());
         airbridge_ble_squatter_watchdog(&app->ble);
+        airbridge_operation_end(&app->operation);
     } else if(screen == AirbridgeScreenTyping) {
         if(airbridge_typing_step(&app->typing)) {
             airbridge_screens_typing_complete(app->screens);
@@ -114,7 +134,10 @@ static void airbridge_runtime_service_screen(AirbridgeApp* app) {
             airbridge_screens_stream_complete(app->screens);
         }
     } else if(screen == AirbridgeScreenDone || screen == AirbridgeScreenError) {
+        airbridge_operation_start(
+            &app->operation, AirbridgeOperationBleReconnect, furi_get_tick());
         airbridge_ble_squatter_watchdog(&app->ble);
+        airbridge_operation_end(&app->operation);
     }
 }
 
@@ -144,18 +167,29 @@ void airbridge_runtime_run(
     while(app->running) {
         airbridge_ui_service_input(app->ui);
         if(airbridge_runtime_exit_requested(app, exit_latch)) break;
+        airbridge_operation_start(
+            &app->operation, AirbridgeOperationBleReconnect, furi_get_tick());
         airbridge_ble_service_pending(&app->ble);
+        airbridge_operation_end(&app->operation);
+        airbridge_ui_service_input(app->ui);
+        if(airbridge_runtime_exit_requested(app, exit_latch)) break;
 
         BridgeEvent event;
         if(airbridge_relay_poll(&app->relay, &event, AIRBRIDGE_EXIT_POLL_INTERVAL_MS) ==
            FuriStatusOk) {
+            airbridge_ui_service_input(app->ui);
+            if(airbridge_runtime_exit_requested(app, exit_latch)) break;
             airbridge_runtime_handle_relay(app, &event);
         }
         if(airbridge_runtime_exit_requested(app, exit_latch)) break;
         if(*startup_apply_pending) {
             *startup_apply_pending = false;
-            airbridge_runtime_apply_startup(app);
+            airbridge_runtime_apply_startup(app, exit_latch);
         }
+        /* BACK may have arrived during a BLE wait. Consume it before another
+         * typing step can emit a character after that operation returns. */
+        airbridge_ui_service_input(app->ui);
+        if(airbridge_runtime_exit_requested(app, exit_latch)) break;
         airbridge_runtime_service_screen(app);
         airbridge_runtime_update_ui(app);
 

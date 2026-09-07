@@ -15,8 +15,7 @@ typedef struct {
     uint16_t pnp_version;
 } AirbridgeDisStrings;
 
-BleServiceAirbridgeDevInfo*
-    ble_svc_airbridge_dev_info_start(const AirbridgeDisStrings* strings);
+BleServiceAirbridgeDevInfo* ble_svc_airbridge_dev_info_start(const AirbridgeDisStrings* strings);
 
 void ble_svc_airbridge_dev_info_stop(BleServiceAirbridgeDevInfo* service);
 

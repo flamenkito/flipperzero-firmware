@@ -25,7 +25,7 @@
 #define AIRBRIDGE_BLE_DIS_MODEL_MAX_LEN        (31U)
 #define AIRBRIDGE_BLE_DIS_SERIAL_MAX_LEN       (31U)
 
-/** Runtime BLE identity supplied by the Pocket AirBridge FAP.
+/** Runtime BLE identity owned by the Pocket AirBridge FAP.
  *
  * All strings are NUL-terminated. mac_address is the complete public address;
  * the FAP is responsible for validating its HP OUI before starting the profile.

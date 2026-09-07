@@ -48,7 +48,7 @@ void gui_input_events_callback(const void* value, void* ctx) {
 
     Gui* gui = ctx;
 
-    furi_message_queue_put(gui->input_queue, value, 0);
+    furi_message_queue_put(gui->input_queue, value, FuriWaitForever);
     furi_thread_flags_set(gui->thread_id, GUI_THREAD_FLAG_INPUT);
 }
 

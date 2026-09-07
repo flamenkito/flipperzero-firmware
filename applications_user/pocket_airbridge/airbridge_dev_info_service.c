@@ -1,5 +1,4 @@
 #include "airbridge_dev_info_service.h"
-#include "app_common.h"
 #include <furi_ble/gatt.h>
 
 #include <ble/ble.h>
