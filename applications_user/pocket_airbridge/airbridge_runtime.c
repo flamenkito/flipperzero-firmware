@@ -80,7 +80,9 @@ static void airbridge_runtime_apply_startup(AirbridgeApp* app, AirbridgeExitLatc
         &app->relay, app->config.usb_profile_index, &app->config.usb_profile_index);
     airbridge_operation_end(&app->operation);
     if(!usb_ready) {
-        airbridge_screens_show_fatal(app->screens, "USB CONFIG ERROR");
+        airbridge_screens_show_fatal(
+            app->screens,
+            app->relay.admission_rejected ? "ENABLE FLIPPER USB FIRST" : "USB CONFIG ERROR");
         return;
     }
     if(airbridge_runtime_exit_requested(app, exit_latch)) return;

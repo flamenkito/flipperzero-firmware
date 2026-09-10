@@ -3,6 +3,8 @@
 #include <lib/toolbox/value_index.h>
 #include <locale/locale.h>
 
+#define TAG "SystemSettings"
+
 const char* const log_level_text[] = {
     "Default",
     "None",
@@ -87,6 +89,37 @@ static void debug_changed(VariableItem* item) {
     } else {
         furi_hal_rtc_reset_flag(FuriHalRtcFlagDebug);
     }
+}
+
+const char* const usb_identity_text[] = {
+    "Logitech",
+    "Dell",
+};
+
+static void usb_identity_changed(VariableItem* item) {
+    uint8_t index = variable_item_get_current_value_index(item);
+    variable_item_set_current_value_text(item, usb_identity_text[index]);
+    furi_hal_rtc_set_usb_identity(index);
+}
+
+const char* const flipper_usb_text[] = {
+    "OFF",
+    "ON",
+};
+
+static void flipper_usb_changed(VariableItem* item) {
+    SystemSettings* app = variable_item_get_context(item);
+    uint8_t index = variable_item_get_current_value_index(item);
+
+    if(!cli_vcp_set_override(app->cli_vcp, index == 1)) {
+        index = cli_vcp_get_override(app->cli_vcp) ? 1 : 0;
+        variable_item_set_current_value_index(item, index);
+        variable_item_set_current_value_text(item, flipper_usb_text[index]);
+        FURI_LOG_W(TAG, "Flipper USB change busy");
+        return;
+    }
+
+    variable_item_set_current_value_text(item, flipper_usb_text[index]);
 }
 
 const char* const heap_trace_mode_text[] = {
@@ -218,6 +251,7 @@ SystemSettings* system_settings_alloc(void) {
 
     // Load settings
     app->gui = furi_record_open(RECORD_GUI);
+    app->cli_vcp = furi_record_open(RECORD_CLI_VCP);
 
     app->view_dispatcher = view_dispatcher_alloc();
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
@@ -292,6 +326,26 @@ SystemSettings* system_settings_alloc(void) {
 
     item = variable_item_list_add(
         app->var_item_list,
+        "USB Identity",
+        COUNT_OF(usb_identity_text),
+        usb_identity_changed,
+        app);
+    value_index = furi_hal_rtc_get_usb_identity();
+    variable_item_set_current_value_index(item, value_index);
+    variable_item_set_current_value_text(item, usb_identity_text[value_index]);
+
+    item = variable_item_list_add(
+        app->var_item_list,
+        "Flipper USB",
+        COUNT_OF(flipper_usb_text),
+        flipper_usb_changed,
+        app);
+    value_index = cli_vcp_get_override(app->cli_vcp) ? 1 : 0;
+    variable_item_set_current_value_index(item, value_index);
+    variable_item_set_current_value_text(item, flipper_usb_text[value_index]);
+
+    item = variable_item_list_add(
+        app->var_item_list,
         "Heap Trace",
         COUNT_OF(heap_trace_mode_text),
         heap_trace_mode_changed,
@@ -334,6 +388,7 @@ void system_settings_free(SystemSettings* app) {
     // View dispatcher
     view_dispatcher_free(app->view_dispatcher);
     // Records
+    furi_record_close(RECORD_CLI_VCP);
     furi_record_close(RECORD_GUI);
     free(app);
 }

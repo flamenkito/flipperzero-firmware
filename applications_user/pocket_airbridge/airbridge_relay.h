@@ -5,6 +5,7 @@
 
 #include <furi.h>
 #include <furi_hal_usb.h>
+#include <cli/cli_vcp.h>
 
 #include "airbridge_types.h"
 #include "airbridge_ble.h"
@@ -26,8 +27,15 @@ typedef enum {
 typedef struct {
     FuriMessageQueue* event_queue;
     FuriHalUsbInterface* usb_mode_prev;
+    FuriHalUsbInterface* usb_mode_owned;
+    CliVcp* cli_vcp;
     AirbridgeRelayMetrics metrics;
     bool usb_configured;
+    bool usb_transition_dirty;
+    bool admission_rejected;
+    bool cli_was_enabled;
+    bool usb_takeover_active;
+    bool usb_lock_held;
 } AirbridgeRelay;
 
 void airbridge_relay_init(AirbridgeRelay* relay);

@@ -64,6 +64,7 @@ struct Desktop {
     ViewPort* dummy_mode_icon_viewport;
     ViewPort* clock_viewport;
     ViewPort* stealth_mode_icon_viewport;
+    ViewPort* usb_exposure_badge_viewport;
 
     Loader* loader;
     Storage* storage;
@@ -82,6 +83,8 @@ struct Desktop {
     DesktopClock clock;
     DesktopSettings settings;
 
+    uint8_t usb_exposure_badge_tick_divider;
+    bool usb_exposure_badge_danger;
     bool in_transition;
     bool app_running;
     bool locked;

@@ -5,8 +5,15 @@
 
 #include "airbridge_usb.h"
 #include <furi_hal_usb_hid.h>
+#include <furi_hal_usb_spoof.h>
 
 #include <bt/bt_service/bt.h>
+
+#ifndef AIRBRIDGE_SAFE_TEARDOWN_ENABLED
+#define AIRBRIDGE_SAFE_TEARDOWN_ENABLED 1
+#endif
+
+#define TAG "AirBridge"
 
 static void airbridge_relay_increment(uint32_t* counter) {
     FURI_CRITICAL_ENTER();
@@ -75,18 +82,71 @@ uint16_t airbridge_relay_ble_event(SerialServiceEvent event, void* context) {
     return 0;
 }
 
-static bool app_apply_profile(
-    AirbridgeRelay* relay,
-    uint8_t profile_index,
-    uint8_t* selected_profile_index) {
-    FuriHalUsbInterface* profile = airbridge_usb_get_profile(profile_index);
-    if(profile == NULL || !furi_hal_usb_set_config(profile, NULL)) {
-        return false;
+static bool airbridge_usb_is_cdc(FuriHalUsbInterface* interface) {
+    return interface == &usb_cdc_single || interface == &usb_cdc_dual;
+}
+
+static bool airbridge_usb_is_spoof(FuriHalUsbInterface* interface) {
+    return interface == furi_hal_usb_spoof_get_interface(FuriHalUsbSpoofProfileLogitech) ||
+           interface == furi_hal_usb_spoof_get_interface(FuriHalUsbSpoofProfileDell);
+}
+
+static bool airbridge_usb_switch_safe(AirbridgeRelay* relay, FuriHalUsbInterface* target) {
+    FuriHalUsbInterface* source = furi_hal_usb_get_config();
+    if(source == target) {
+        relay->usb_transition_dirty = false;
+        return true;
     }
 
-    *selected_profile_index = profile_index;
-    relay->usb_configured = true;
-    return true;
+    const bool source_is_fap = source == relay->usb_mode_owned;
+    const bool target_is_fap = target == relay->usb_mode_owned;
+    const bool source_is_cdc = airbridge_usb_is_cdc(source);
+    const bool target_is_cdc = airbridge_usb_is_cdc(target);
+    const bool source_is_spoof = airbridge_usb_is_spoof(source);
+    const bool target_is_spoof = airbridge_usb_is_spoof(target);
+    const bool direct = (source_is_fap && target_is_cdc) ||
+                        (source_is_cdc && target_is_fap) ||
+                        (source == NULL &&
+                         (target_is_cdc || target == furi_hal_usb_spoof_get_active_interface() ||
+                          (target_is_fap && AIRBRIDGE_SAFE_TEARDOWN_ENABLED)));
+
+    if(direct) {
+        if(!furi_hal_usb_set_config(target, NULL)) {
+            if(source == NULL && target_is_fap) relay->usb_transition_dirty = true;
+            return false;
+        }
+        relay->usb_transition_dirty = false;
+        return true;
+    }
+
+    const bool teardown = AIRBRIDGE_SAFE_TEARDOWN_ENABLED &&
+                          ((source_is_spoof && target_is_fap) ||
+                           (source_is_fap && target_is_spoof));
+    if(!teardown) return false;
+
+    /* Experimental: HAL NULL deinitializes and disconnects without resetting the
+     * peripheral. Hardware row 8 decides whether this strategy remains enabled. */
+    if(!furi_hal_usb_set_config(NULL, NULL)) {
+        FURI_LOG_E(TAG, "USB teardown failed");
+        return false;
+    }
+    relay->usb_transition_dirty = true;
+    furi_delay_ms(500);
+    if(furi_hal_usb_set_config(target, NULL)) {
+        relay->usb_transition_dirty = false;
+        return true;
+    }
+
+    FURI_LOG_E(TAG, "USB install failed; rolling back");
+    if(furi_hal_usb_set_config(source, NULL)) {
+        relay->usb_transition_dirty = false;
+        relay->usb_configured = !target_is_fap;
+    } else {
+        relay->usb_configured = false;
+        relay->usb_transition_dirty = true;
+        FURI_LOG_E(TAG, "USB rollback failed; lifecycle retry required");
+    }
+    return false;
 }
 
 bool airbridge_relay_configure_usb(
@@ -96,32 +156,70 @@ bool airbridge_relay_configure_usb(
     FuriHalUsbInterface* profile = airbridge_usb_get_profile(profile_index);
     if(profile == NULL) return false;
 
-    if(furi_hal_usb_get_config() != profile) {
+    if(furi_hal_usb_is_locked()) {
         furi_hal_usb_unlock();
-        if(!app_apply_profile(relay, profile_index, selected_profile_index)) return false;
-    } else {
-        *selected_profile_index = profile_index;
-        relay->usb_configured = true;
     }
+    relay->cli_was_enabled = cli_vcp_usb_takeover_begin(relay->cli_vcp);
+    relay->usb_takeover_active = true;
+    relay->usb_mode_prev = furi_hal_usb_get_config();
+    relay->usb_mode_owned = profile;
+    relay->admission_rejected = false;
+
+    if(!AIRBRIDGE_SAFE_TEARDOWN_ENABLED && !airbridge_usb_is_cdc(relay->usb_mode_prev)) {
+        relay->admission_rejected = true;
+        cli_vcp_usb_takeover_end(relay->cli_vcp, relay->cli_was_enabled);
+        relay->usb_takeover_active = false;
+        return false;
+    }
+
+    if(!airbridge_usb_switch_safe(relay, profile)) {
+        FURI_LOG_E(TAG, "USB profile install failed");
+        cli_vcp_usb_takeover_end(relay->cli_vcp, relay->cli_was_enabled);
+        relay->usb_takeover_active = false;
+        return false;
+    }
+
+    *selected_profile_index = profile_index;
+    relay->usb_configured = true;
+    relay->usb_transition_dirty = false;
+    furi_hal_usb_lock();
+    relay->usb_lock_held = true;
 
     airbridge_usb_vendor_set_callback(usb_event_callback, relay);
     return true;
 }
 
 bool airbridge_relay_restore_usb(AirbridgeRelay* relay) {
-    if(!relay->usb_configured) return true;
+    if(!relay->usb_configured && !relay->usb_transition_dirty) return true;
+
+    if(relay->usb_lock_held) {
+        furi_hal_usb_unlock();
+        relay->usb_lock_held = false;
+    }
 
     airbridge_usb_vendor_set_callback(NULL, NULL);
-    bool restored = furi_hal_usb_set_config(relay->usb_mode_prev, NULL);
-    if(restored) relay->usb_configured = false;
-    return restored;
+    FuriHalUsbInterface* target = relay->usb_mode_prev;
+    if(target == NULL) target = furi_hal_usb_spoof_get_active_interface();
+    if(!airbridge_usb_switch_safe(relay, target)) return false;
+
+    relay->usb_configured = false;
+    relay->usb_transition_dirty = false;
+    if(relay->usb_takeover_active) {
+        cli_vcp_usb_takeover_end(relay->cli_vcp, relay->cli_was_enabled);
+        relay->usb_takeover_active = false;
+    }
+    /* Never re-lock here: a terminated RPC owner could otherwise strand the
+     * advisory lock. A late RPC cleanup unlock remains an accepted residual. */
+    return true;
 }
 
 void airbridge_relay_init(AirbridgeRelay* relay) {
     relay->event_queue = furi_message_queue_alloc(8, sizeof(BridgeEvent));
+    relay->cli_vcp = furi_record_open(RECORD_CLI_VCP);
 }
 
 void airbridge_relay_deinit(AirbridgeRelay* relay) {
+    furi_record_close(RECORD_CLI_VCP);
     furi_message_queue_free(relay->event_queue);
 }
 

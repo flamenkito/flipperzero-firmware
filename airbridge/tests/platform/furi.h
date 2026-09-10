@@ -45,3 +45,8 @@ FuriSemaphore* furi_semaphore_alloc(uint32_t maximum, uint32_t initial);
 void furi_semaphore_free(FuriSemaphore* semaphore);
 FuriStatus furi_semaphore_acquire(FuriSemaphore* semaphore, uint32_t timeout);
 FuriStatus furi_semaphore_release(FuriSemaphore* semaphore);
+
+FuriMessageQueue* furi_message_queue_alloc(size_t message_count, size_t message_size);
+void furi_message_queue_free(FuriMessageQueue* queue);
+FuriStatus furi_message_queue_put(FuriMessageQueue* queue, const void* message, uint32_t timeout);
+FuriStatus furi_message_queue_get(FuriMessageQueue* queue, void* message, uint32_t timeout);

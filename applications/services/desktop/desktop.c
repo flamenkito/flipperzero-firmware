@@ -1,6 +1,8 @@
 #include "desktop_i.h"
 
 #include <cli/cli_vcp.h>
+#include <furi_hal_usb.h>
+#include <furi_hal_usb_spoof.h>
 
 #include <gui/gui_i.h>
 
@@ -13,6 +15,8 @@
 #include "scenes/desktop_scene_locked.h"
 
 #define TAG "Desktop"
+
+#define DESKTOP_USB_EXPOSURE_BADGE_REFRESH_TICKS 2U
 
 static void desktop_auto_lock_arm(Desktop*);
 static void desktop_auto_lock_inhibit(Desktop*);
@@ -52,6 +56,31 @@ static void desktop_dummy_mode_icon_draw_callback(Canvas* canvas, void* context)
     UNUSED(context);
     furi_assert(canvas);
     canvas_draw_icon(canvas, 0, 0, &I_GameMode_11x8);
+}
+
+static bool desktop_usb_exposure_badge_is_danger(void) {
+    const FuriHalUsbInterface* current = furi_hal_usb_get_config();
+    return (current == &usb_cdc_single) || (current == &usb_cdc_dual);
+}
+
+static void desktop_usb_exposure_badge_draw_callback(Canvas* canvas, void* context) {
+    furi_assert(canvas);
+    furi_assert(context);
+
+    const Desktop* desktop = context;
+    const Icon* icon = desktop->usb_exposure_badge_danger ? &I_UsbDanger_12x8 :
+                                                            &I_UsbSafe_12x8;
+    canvas_draw_icon(canvas, 0, 0, icon);
+}
+
+static void desktop_usb_exposure_badge_update(Desktop* desktop) {
+    furi_assert(desktop);
+
+    const bool danger = desktop_usb_exposure_badge_is_danger();
+    if(desktop->usb_exposure_badge_danger != danger) {
+        desktop->usb_exposure_badge_danger = danger;
+        view_port_update(desktop->usb_exposure_badge_viewport);
+    }
 }
 
 static void desktop_clock_update(Desktop* desktop) {
@@ -166,6 +195,14 @@ static bool desktop_back_event_callback(void* context) {
 static void desktop_tick_event_callback(void* context) {
     furi_assert(context);
     Desktop* app = context;
+
+    app->usb_exposure_badge_tick_divider++;
+    if(app->usb_exposure_badge_tick_divider >=
+       DESKTOP_USB_EXPOSURE_BADGE_REFRESH_TICKS) {
+        app->usb_exposure_badge_tick_divider = 0;
+        desktop_usb_exposure_badge_update(app);
+    }
+
     scene_manager_handle_tick_event(app->scene_manager);
 }
 
@@ -360,6 +397,19 @@ static Desktop* desktop_alloc(void) {
     }
     gui_add_view_port(desktop->gui, desktop->stealth_mode_icon_viewport, GuiLayerStatusBarLeft);
 
+    desktop->usb_exposure_badge_danger = desktop_usb_exposure_badge_is_danger();
+    desktop->usb_exposure_badge_tick_divider = 0;
+    desktop->usb_exposure_badge_viewport = view_port_alloc();
+    view_port_set_width(
+        desktop->usb_exposure_badge_viewport, icon_get_width(&I_UsbSafe_12x8));
+    view_port_draw_callback_set(
+        desktop->usb_exposure_badge_viewport,
+        desktop_usb_exposure_badge_draw_callback,
+        desktop);
+    view_port_enabled_set(desktop->usb_exposure_badge_viewport, true);
+    gui_add_view_port(
+        desktop->gui, desktop->usb_exposure_badge_viewport, GuiLayerStatusBarLeft);
+
     // Unload animations before starting an application
     desktop->loader = furi_record_open(RECORD_LOADER);
     furi_pubsub_subscribe(loader_get_pubsub(desktop->loader), desktop_loader_callback, desktop);
@@ -392,9 +442,10 @@ void desktop_lock(Desktop* desktop) {
 
     furi_hal_rtc_set_flag(FuriHalRtcFlagLock);
 
-    if(desktop_pin_code_is_set()) {
+    if(desktop_pin_code_is_set() && !desktop->app_running) {
         CliVcp* cli_vcp = furi_record_open(RECORD_CLI_VCP);
-        cli_vcp_disable(cli_vcp);
+        // PIN lock clears user intent, fences actual CLI state, then validates the HAL observation.
+        cli_vcp_disable_for_lock(cli_vcp);
         furi_record_close(RECORD_CLI_VCP);
     }
 
@@ -422,9 +473,12 @@ void desktop_unlock(Desktop* desktop) {
     furi_hal_rtc_reset_flag(FuriHalRtcFlagLock);
     furi_hal_rtc_set_pin_fails(0);
 
-    if(desktop_pin_code_is_set()) {
+    if(desktop_pin_code_is_set() && !desktop->app_running) {
         CliVcp* cli_vcp = furi_record_open(RECORD_CLI_VCP);
-        cli_vcp_enable(cli_vcp);
+        // Repair only a NULL HAL observation; never resurrect cleared user intent or actual CDC state.
+        // A BUSY skip preserves intent; settings retries later, while reboot always converges to spoof.
+        cli_vcp_try_install_boot_identity(cli_vcp, true);
+        cli_vcp_retry_lock_convergence(cli_vcp);
         furi_record_close(RECORD_CLI_VCP);
     }
 
@@ -518,14 +572,21 @@ int32_t desktop_srv(void* p) {
 
     desktop_init_settings(desktop);
 
+    FuriHalUsbSpoofProfile boot_profile =
+        (FuriHalUsbSpoofProfile)furi_hal_rtc_get_usb_identity();
+    furi_hal_usb_spoof_latch_active(boot_profile);
+    CliVcp* cli_vcp = furi_record_open(RECORD_CLI_VCP);
+    // The latch is boot intent; cli_vcp serializes actual state against the observed HAL interface.
+    bool boot_installed = cli_vcp_try_install_boot_identity(cli_vcp, false);
+    furi_record_close(RECORD_CLI_VCP);
+    if(!boot_installed) {
+        FURI_LOG_W(TAG, "Boot USB identity install deferred to the current owner");
+    }
+
     scene_manager_next_scene(desktop->scene_manager, DesktopSceneMain);
 
     if(desktop_pin_code_is_set()) {
         desktop_lock(desktop);
-    } else {
-        CliVcp* cli_vcp = furi_record_open(RECORD_CLI_VCP);
-        cli_vcp_enable(cli_vcp);
-        furi_record_close(RECORD_CLI_VCP);
     }
 
     if(storage_file_exists(desktop->storage, SLIDESHOW_FS_PATH)) {

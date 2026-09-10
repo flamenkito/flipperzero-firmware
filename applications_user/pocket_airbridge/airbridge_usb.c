@@ -2,6 +2,7 @@
 #include <furi_hal_usb.h>
 #include "airbridge_usb.h"
 #include <furi_hal_usb_hid.h>
+#include <furi_hal_usb_spoof.h>
 
 #include "usb.h"
 #include "usb_hid.h"
@@ -14,51 +15,9 @@ enum {
     UsbDevProduct = 2
 };
 
-#define HID_PAGE_VENDOR   0xFF00
-#define HID_VENDOR_USAGE  0x01
-#define HID_VENDOR_INPUT  0x20
-#define HID_VENDOR_OUTPUT 0x21
-
-#define HID_KBD_EP_IN          0x81
-#define HID_VENDOR_EP_IN       0x82
-#define HID_VENDOR_EP_OUT      0x03
-#define HID_VENDOR_ONLY_EP_IN  0x81
-#define HID_VENDOR_ONLY_EP_OUT 0x02
-#define HID_KBD_PACKET_LEN     8
-#define HID_INTERVAL           1
-
-struct HidVendorDescriptor {
-    struct usb_iad_descriptor hid_iad;
-    struct usb_interface_descriptor hid;
-    struct usb_hid_descriptor hid_desc;
-    struct usb_endpoint_descriptor hid_ep_in;
-    struct usb_endpoint_descriptor hid_ep_out;
-};
-
-struct HidVendorConfigDescriptor {
-    struct usb_config_descriptor config;
-    struct HidVendorDescriptor vendor;
-} FURI_PACKED;
-
-struct HidKeyboardDescriptor {
-    struct usb_interface_descriptor hid;
-    struct usb_hid_descriptor hid_desc;
-    struct usb_endpoint_descriptor hid_ep_in;
-};
-
-struct HidCompositeConfigDescriptor {
-    struct usb_config_descriptor config;
-    struct usb_iad_descriptor hid_iad;
-    struct HidKeyboardDescriptor keyboard;
-    struct usb_interface_descriptor vendor;
-    struct usb_hid_descriptor vendor_hid_desc;
-    struct usb_endpoint_descriptor vendor_ep_in;
-    struct usb_endpoint_descriptor vendor_ep_out;
-} FURI_PACKED;
-
 struct HidCompositeNoIadConfigDescriptor {
     struct usb_config_descriptor config;
-    struct HidKeyboardDescriptor keyboard;
+    HidKeyboardDescriptor keyboard;
     struct usb_interface_descriptor vendor;
     struct usb_hid_descriptor vendor_hid_desc;
     struct usb_endpoint_descriptor vendor_ep_in;
@@ -71,64 +30,6 @@ struct HidKeyboardReport {
     uint8_t buttons[HID_KB_MAX_KEYS];
 } FURI_PACKED;
 
-static const uint8_t hid_vendor_report_desc[] = {
-    HID_RI_USAGE_PAGE(16, HID_PAGE_VENDOR),
-    HID_USAGE(HID_VENDOR_USAGE),
-    HID_COLLECTION(HID_APPLICATION_COLLECTION),
-    HID_USAGE(HID_VENDOR_INPUT),
-    HID_LOGICAL_MINIMUM(0x00),
-    HID_RI_LOGICAL_MAXIMUM(16, 0xFF),
-    HID_REPORT_SIZE(8),
-    HID_REPORT_COUNT(HID_VENDOR_PACKET_LEN),
-    HID_INPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
-    HID_USAGE(HID_VENDOR_OUTPUT),
-    HID_LOGICAL_MINIMUM(0x00),
-    HID_RI_LOGICAL_MAXIMUM(16, 0xFF),
-    HID_REPORT_SIZE(8),
-    HID_REPORT_COUNT(HID_VENDOR_PACKET_LEN),
-    HID_OUTPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
-    HID_END_COLLECTION,
-};
-
-static const uint8_t hid_keyboard_report_desc[] = {
-    HID_USAGE_PAGE(HID_PAGE_DESKTOP),
-    HID_USAGE(HID_DESKTOP_KEYBOARD),
-    HID_COLLECTION(HID_APPLICATION_COLLECTION),
-    HID_USAGE_PAGE(HID_DESKTOP_KEYPAD),
-    HID_USAGE_MINIMUM(HID_KEYBOARD_L_CTRL),
-    HID_USAGE_MAXIMUM(HID_KEYBOARD_R_GUI),
-    HID_LOGICAL_MINIMUM(0),
-    HID_LOGICAL_MAXIMUM(1),
-    HID_REPORT_SIZE(1),
-    HID_REPORT_COUNT(8),
-    HID_INPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
-    HID_REPORT_COUNT(1),
-    HID_REPORT_SIZE(8),
-    HID_INPUT(HID_IOF_CONSTANT | HID_IOF_ARRAY | HID_IOF_ABSOLUTE),
-    HID_REPORT_COUNT(5),
-    HID_REPORT_SIZE(1),
-    HID_USAGE_PAGE(HID_PAGE_LED),
-    HID_USAGE_MINIMUM(1),
-    HID_USAGE_MAXIMUM(5),
-    HID_OUTPUT(HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
-    HID_REPORT_COUNT(1),
-    HID_REPORT_SIZE(3),
-    HID_OUTPUT(HID_IOF_CONSTANT | HID_IOF_ARRAY | HID_IOF_ABSOLUTE),
-    HID_REPORT_COUNT(HID_KB_MAX_KEYS),
-    HID_REPORT_SIZE(8),
-    HID_LOGICAL_MINIMUM(0),
-    HID_RI_LOGICAL_MAXIMUM(16, 0xFF),
-    HID_USAGE_PAGE(HID_DESKTOP_KEYPAD),
-    HID_USAGE_MINIMUM(0),
-    HID_RI_USAGE_MAXIMUM(16, 0xFF),
-    HID_INPUT(HID_IOF_DATA | HID_IOF_ARRAY | HID_IOF_ABSOLUTE),
-    HID_END_COLLECTION,
-};
-
-static const struct usb_string_descriptor logitech_manuf_desc = USB_STRING_DESC("Logitech");
-static const struct usb_string_descriptor logitech_prod_desc = USB_STRING_DESC("USB Keyboard");
-static const struct usb_string_descriptor dell_manuf_desc = USB_STRING_DESC("Dell");
-static const struct usb_string_descriptor dell_prod_desc = USB_STRING_DESC("KB216 Keyboard");
 static const struct usb_string_descriptor msft_manuf_desc = USB_STRING_DESC("Microsoft");
 static const struct usb_string_descriptor msft_kbd_prod_desc = USB_STRING_DESC("USB Keyboard");
 static const struct usb_string_descriptor msft_vendor_prod_desc =
@@ -159,10 +60,6 @@ static const struct usb_string_descriptor hp_prod_desc =
     AIRBRIDGE_DEVICE_DESCRIPTOR_FULL(         \
         vid, pid, USB_CLASS_IAD, USB_SUBCLASS_IAD, USB_PROTO_IAD, VERSION_BCD(1, 0, 0))
 
-static const struct usb_device_descriptor logitech_device_desc =
-    AIRBRIDGE_DEVICE_DESCRIPTOR(0x046D, 0xC31C);
-static const struct usb_device_descriptor dell_device_desc =
-    AIRBRIDGE_DEVICE_DESCRIPTOR(0x413C, 0x2113);
 static const struct usb_device_descriptor msft_kbd_device_desc =
     AIRBRIDGE_DEVICE_DESCRIPTOR(0x045E, 0x07F8);
 static const struct usb_device_descriptor msft_vendor_device_desc =
@@ -215,7 +112,7 @@ static const struct HidVendorConfigDescriptor hid_vendor_cfg_desc = {
                     .bCountryCode = USB_HID_COUNTRY_NONE,
                     .bNumDescriptors = 1,
                     .bDescriptorType0 = USB_DTYPE_HID_REPORT,
-                    .wDescriptorLength0 = sizeof(hid_vendor_report_desc),
+                    .wDescriptorLength0 = FURI_HAL_USB_SPOOF_VENDOR_REPORT_DESC_LEN,
                 },
             .hid_ep_in =
                 {
@@ -235,105 +132,6 @@ static const struct HidVendorConfigDescriptor hid_vendor_cfg_desc = {
                     .wMaxPacketSize = HID_VENDOR_PACKET_LEN,
                     .bInterval = HID_INTERVAL,
                 },
-        },
-};
-
-static const struct HidCompositeConfigDescriptor hid_composite_cfg_desc = {
-    .config =
-        {
-            .bLength = sizeof(struct usb_config_descriptor),
-            .bDescriptorType = USB_DTYPE_CONFIGURATION,
-            .wTotalLength = sizeof(struct HidCompositeConfigDescriptor),
-            .bNumInterfaces = 2,
-            .bConfigurationValue = 1,
-            .iConfiguration = NO_DESCRIPTOR,
-            .bmAttributes = USB_CFG_ATTR_RESERVED | USB_CFG_ATTR_SELFPOWERED,
-            .bMaxPower = USB_CFG_POWER_MA(500),
-        },
-    .hid_iad =
-        {
-            .bLength = sizeof(struct usb_iad_descriptor),
-            .bDescriptorType = USB_DTYPE_INTERFASEASSOC,
-            .bFirstInterface = 0,
-            .bInterfaceCount = 2,
-            .bFunctionClass = USB_CLASS_HID,
-            .bFunctionSubClass = USB_HID_SUBCLASS_BOOT,
-            .bFunctionProtocol = USB_HID_PROTO_KEYBOARD,
-            .iFunction = NO_DESCRIPTOR,
-        },
-    .keyboard =
-        {
-            .hid =
-                {
-                    .bLength = sizeof(struct usb_interface_descriptor),
-                    .bDescriptorType = USB_DTYPE_INTERFACE,
-                    .bInterfaceNumber = 0,
-                    .bAlternateSetting = 0,
-                    .bNumEndpoints = 1,
-                    .bInterfaceClass = USB_CLASS_HID,
-                    .bInterfaceSubClass = USB_HID_SUBCLASS_BOOT,
-                    .bInterfaceProtocol = USB_HID_PROTO_KEYBOARD,
-                    .iInterface = NO_DESCRIPTOR,
-                },
-            .hid_desc =
-                {
-                    .bLength = sizeof(struct usb_hid_descriptor),
-                    .bDescriptorType = USB_DTYPE_HID,
-                    .bcdHID = VERSION_BCD(1, 0, 0),
-                    .bCountryCode = USB_HID_COUNTRY_NONE,
-                    .bNumDescriptors = 1,
-                    .bDescriptorType0 = USB_DTYPE_HID_REPORT,
-                    .wDescriptorLength0 = sizeof(hid_keyboard_report_desc),
-                },
-            .hid_ep_in =
-                {
-                    .bLength = sizeof(struct usb_endpoint_descriptor),
-                    .bDescriptorType = USB_DTYPE_ENDPOINT,
-                    .bEndpointAddress = HID_KBD_EP_IN,
-                    .bmAttributes = USB_EPTYPE_INTERRUPT,
-                    .wMaxPacketSize = HID_KBD_PACKET_LEN,
-                    .bInterval = HID_INTERVAL,
-                },
-        },
-    .vendor =
-        {
-            .bLength = sizeof(struct usb_interface_descriptor),
-            .bDescriptorType = USB_DTYPE_INTERFACE,
-            .bInterfaceNumber = 1,
-            .bAlternateSetting = 0,
-            .bNumEndpoints = 2,
-            .bInterfaceClass = USB_CLASS_HID,
-            .bInterfaceSubClass = USB_HID_SUBCLASS_NONBOOT,
-            .bInterfaceProtocol = USB_HID_PROTO_NONBOOT,
-            .iInterface = NO_DESCRIPTOR,
-        },
-    .vendor_hid_desc =
-        {
-            .bLength = sizeof(struct usb_hid_descriptor),
-            .bDescriptorType = USB_DTYPE_HID,
-            .bcdHID = VERSION_BCD(1, 0, 0),
-            .bCountryCode = USB_HID_COUNTRY_NONE,
-            .bNumDescriptors = 1,
-            .bDescriptorType0 = USB_DTYPE_HID_REPORT,
-            .wDescriptorLength0 = sizeof(hid_vendor_report_desc),
-        },
-    .vendor_ep_in =
-        {
-            .bLength = sizeof(struct usb_endpoint_descriptor),
-            .bDescriptorType = USB_DTYPE_ENDPOINT,
-            .bEndpointAddress = HID_VENDOR_EP_IN,
-            .bmAttributes = USB_EPTYPE_INTERRUPT,
-            .wMaxPacketSize = HID_VENDOR_PACKET_LEN,
-            .bInterval = HID_INTERVAL,
-        },
-    .vendor_ep_out =
-        {
-            .bLength = sizeof(struct usb_endpoint_descriptor),
-            .bDescriptorType = USB_DTYPE_ENDPOINT,
-            .bEndpointAddress = HID_VENDOR_EP_OUT,
-            .bmAttributes = USB_EPTYPE_INTERRUPT,
-            .wMaxPacketSize = HID_VENDOR_PACKET_LEN,
-            .bInterval = HID_INTERVAL,
         },
 };
 
@@ -371,7 +169,7 @@ static const struct HidCompositeNoIadConfigDescriptor hid_composite_noiad_cfg_de
                     .bCountryCode = USB_HID_COUNTRY_NONE,
                     .bNumDescriptors = 1,
                     .bDescriptorType0 = USB_DTYPE_HID_REPORT,
-                    .wDescriptorLength0 = sizeof(hid_keyboard_report_desc),
+                    .wDescriptorLength0 = FURI_HAL_USB_SPOOF_KEYBOARD_REPORT_DESC_LEN,
                 },
             .hid_ep_in =
                 {
@@ -403,7 +201,7 @@ static const struct HidCompositeNoIadConfigDescriptor hid_composite_noiad_cfg_de
             .bCountryCode = USB_HID_COUNTRY_NONE,
             .bNumDescriptors = 1,
             .bDescriptorType0 = USB_DTYPE_HID_REPORT,
-            .wDescriptorLength0 = sizeof(hid_vendor_report_desc),
+            .wDescriptorLength0 = FURI_HAL_USB_SPOOF_VENDOR_REPORT_DESC_LEN,
         },
     .vendor_ep_in =
         {
@@ -438,11 +236,11 @@ static FuriHalUsbInterface usb_airbridge = {
     .deinit = hid_vendor_deinit,
     .wakeup = hid_vendor_on_wakeup,
     .suspend = hid_vendor_on_suspend,
-    .dev_descr = (struct usb_device_descriptor*)&logitech_device_desc,
-    .str_manuf_descr = (void*)&logitech_manuf_desc,
-    .str_prod_descr = (void*)&logitech_prod_desc,
+    .dev_descr = NULL,
+    .str_manuf_descr = NULL,
+    .str_prod_descr = NULL,
     .str_serial_descr = NULL,
-    .cfg_descr = (void*)&hid_composite_cfg_desc,
+    .cfg_descr = NULL,
 };
 
 static FuriHalUsbInterface usb_airbridge_dell = {
@@ -450,11 +248,11 @@ static FuriHalUsbInterface usb_airbridge_dell = {
     .deinit = hid_vendor_deinit,
     .wakeup = hid_vendor_on_wakeup,
     .suspend = hid_vendor_on_suspend,
-    .dev_descr = (struct usb_device_descriptor*)&dell_device_desc,
-    .str_manuf_descr = (void*)&dell_manuf_desc,
-    .str_prod_descr = (void*)&dell_prod_desc,
+    .dev_descr = NULL,
+    .str_manuf_descr = NULL,
+    .str_prod_descr = NULL,
     .str_serial_descr = NULL,
-    .cfg_descr = (void*)&hid_composite_cfg_desc,
+    .cfg_descr = NULL,
 };
 
 static FuriHalUsbInterface usb_airbridge_msft_kbd = {
@@ -466,7 +264,7 @@ static FuriHalUsbInterface usb_airbridge_msft_kbd = {
     .str_manuf_descr = (void*)&msft_manuf_desc,
     .str_prod_descr = (void*)&msft_kbd_prod_desc,
     .str_serial_descr = NULL,
-    .cfg_descr = (void*)&hid_composite_cfg_desc,
+    .cfg_descr = NULL,
 };
 
 static FuriHalUsbInterface usb_airbridge_msft_vendor = {
@@ -492,6 +290,34 @@ static FuriHalUsbInterface usb_airbridge_hp = {
     .str_serial_descr = NULL,
     .cfg_descr = (void*)&hid_composite_noiad_cfg_desc,
 };
+
+static const void* active_keyboard_hid_desc;
+static uint16_t active_keyboard_hid_desc_len;
+static const void* active_vendor_hid_desc;
+static uint16_t active_vendor_hid_desc_len;
+
+static void airbridge_usb_resolve_descriptors(void) {
+    static bool resolved;
+    if(resolved) return;
+
+    const FuriHalUsbSpoofIdentity* logitech =
+        furi_hal_usb_spoof_get_identity(FuriHalUsbSpoofProfileLogitech);
+    const FuriHalUsbSpoofIdentity* dell =
+        furi_hal_usb_spoof_get_identity(FuriHalUsbSpoofProfileDell);
+
+    usb_airbridge.dev_descr = (struct usb_device_descriptor*)logitech->device_desc;
+    usb_airbridge.str_manuf_descr = (void*)logitech->manuf_desc;
+    usb_airbridge.str_prod_descr = (void*)logitech->prod_desc;
+    usb_airbridge.cfg_descr = (void*)logitech->composite_config_desc;
+
+    usb_airbridge_dell.dev_descr = (struct usb_device_descriptor*)dell->device_desc;
+    usb_airbridge_dell.str_manuf_descr = (void*)dell->manuf_desc;
+    usb_airbridge_dell.str_prod_descr = (void*)dell->prod_desc;
+    usb_airbridge_dell.cfg_descr = (void*)dell->composite_config_desc;
+
+    usb_airbridge_msft_kbd.cfg_descr = (void*)logitech->composite_config_desc;
+    resolved = true;
+}
 
 typedef struct {
     const char* label;
@@ -618,6 +444,7 @@ void airbridge_usb_vendor_set_callback(HidVendorCallback cb, void* ctx) {
 
 static void hid_vendor_init(usbd_device* dev, FuriHalUsbInterface* intf, void* ctx) {
     UNUSED(ctx);
+    airbridge_usb_resolve_descriptors();
     if(hid_vendor_semaphore == NULL) {
         hid_vendor_semaphore = furi_semaphore_alloc(1, 1);
     }
@@ -629,6 +456,27 @@ static void hid_vendor_init(usbd_device* dev, FuriHalUsbInterface* intf, void* c
     hid_keyboard_available = intf != &usb_airbridge_msft_vendor;
     hid_vendor_ep_in = hid_keyboard_available ? HID_VENDOR_EP_IN : HID_VENDOR_ONLY_EP_IN;
     hid_vendor_ep_out = hid_keyboard_available ? HID_VENDOR_EP_OUT : HID_VENDOR_ONLY_EP_OUT;
+    if(intf == &usb_airbridge_msft_vendor) {
+        active_keyboard_hid_desc = NULL;
+        active_keyboard_hid_desc_len = 0;
+        active_vendor_hid_desc = &hid_vendor_cfg_desc.vendor.hid_desc;
+        active_vendor_hid_desc_len = sizeof(hid_vendor_cfg_desc.vendor.hid_desc);
+    } else if(intf == &usb_airbridge_hp) {
+        active_keyboard_hid_desc = &hid_composite_noiad_cfg_desc.keyboard.hid_desc;
+        active_keyboard_hid_desc_len = sizeof(hid_composite_noiad_cfg_desc.keyboard.hid_desc);
+        active_vendor_hid_desc = &hid_composite_noiad_cfg_desc.vendor_hid_desc;
+        active_vendor_hid_desc_len = sizeof(hid_composite_noiad_cfg_desc.vendor_hid_desc);
+    } else {
+        const FuriHalUsbSpoofProfile spoof_profile = intf == &usb_airbridge_dell ?
+                                                         FuriHalUsbSpoofProfileDell :
+                                                         FuriHalUsbSpoofProfileLogitech;
+        const FuriHalUsbSpoofIdentity* identity =
+            furi_hal_usb_spoof_get_identity(spoof_profile);
+        active_keyboard_hid_desc = identity->keyboard_hid_desc;
+        active_keyboard_hid_desc_len = identity->keyboard_hid_desc_len;
+        active_vendor_hid_desc = identity->vendor_hid_desc;
+        active_vendor_hid_desc_len = identity->vendor_hid_desc_len;
+    }
     memset(&hid_keyboard_report, 0, sizeof(hid_keyboard_report));
 
     usbd_reg_config(dev, hid_vendor_ep_config);
@@ -844,30 +692,30 @@ static usbd_respond
         switch(req->wValue >> 8) {
         case USB_DTYPE_HID:
             if(hid_keyboard_available && (req->wIndex == 0)) {
-                dev->status.data_ptr = (uint8_t*)&hid_composite_cfg_desc.keyboard.hid_desc;
-                dev->status.data_count = sizeof(hid_composite_cfg_desc.keyboard.hid_desc);
+                dev->status.data_ptr = (uint8_t*)active_keyboard_hid_desc;
+                dev->status.data_count = active_keyboard_hid_desc_len;
             } else if(
                 (hid_keyboard_available && (req->wIndex == 1)) ||
                 (!hid_keyboard_available && (req->wIndex == 0))) {
-                dev->status.data_ptr = hid_keyboard_available ?
-                                           (uint8_t*)&hid_composite_cfg_desc.vendor_hid_desc :
-                                           (uint8_t*)&hid_vendor_cfg_desc.vendor.hid_desc;
-                dev->status.data_count = hid_keyboard_available ?
-                                             sizeof(hid_composite_cfg_desc.vendor_hid_desc) :
-                                             sizeof(hid_vendor_cfg_desc.vendor.hid_desc);
+                dev->status.data_ptr = (uint8_t*)active_vendor_hid_desc;
+                dev->status.data_count = active_vendor_hid_desc_len;
             } else {
                 return usbd_fail;
             }
             return usbd_ack;
         case USB_DTYPE_HID_REPORT:
             if(hid_keyboard_available && (req->wIndex == 0)) {
-                dev->status.data_ptr = (uint8_t*)hid_keyboard_report_desc;
-                dev->status.data_count = sizeof(hid_keyboard_report_desc);
+                uint16_t report_len = 0;
+                dev->status.data_ptr =
+                    (uint8_t*)furi_hal_usb_spoof_keyboard_report_desc(&report_len);
+                dev->status.data_count = report_len;
             } else if(
                 (hid_keyboard_available && (req->wIndex == 1)) ||
                 (!hid_keyboard_available && (req->wIndex == 0))) {
-                dev->status.data_ptr = (uint8_t*)hid_vendor_report_desc;
-                dev->status.data_count = sizeof(hid_vendor_report_desc);
+                uint16_t report_len = 0;
+                dev->status.data_ptr =
+                    (uint8_t*)furi_hal_usb_spoof_vendor_report_desc(&report_len);
+                dev->status.data_count = report_len;
             } else {
                 return usbd_fail;
             }

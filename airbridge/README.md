@@ -78,6 +78,8 @@ Run these commands from the monorepo root,
 
 The typed snippet carries a WebHID filter list that enumerates every profile VID/PID (Logitech, Dell, MSFT, HP). On the target machine only the Flipper should match; other devices with those IDs should be absent.
 
+The bootstrap is unaffected by the firmware USB identity setting. It uses the FAP's configured kbd+vendor profile during Deploy.
+
 ### Keyboard layout requirement
 
 The typed payload is ASCII-only but includes symbols like `{}[]();:=>"'`. The Flipper types it using US keyboard scancodes, so **the target PC must use a US keyboard layout**. On any other layout the symbols mistype.
@@ -175,6 +177,12 @@ use `chat-usb.html` and `chat-ble.html` instead.
 - On Linux, Web Bluetooth may need `chrome://flags/#enable-web-bluetooth` or kernel BLE permissions.
 
 ## Flipper Zero Firmware Notes
+
+The firmware's new **USB Identity** (boot identity) and **Flipper USB** (volatile
+CDC for maintenance) settings entries — plus compatibility edge cases and Pocket
+AirBridge ownership rules — are documented in
+[USB identity and maintenance](docs/usb-identity.md). Hardware enumeration claims
+for this feature remain pending hardware verification.
 
 The FAP owns both custom profiles in `applications_user/pocket_airbridge/`:
 

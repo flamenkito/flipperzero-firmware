@@ -7,10 +7,48 @@ import shlex
 import subprocess
 from tools.usb_descriptor_fixture import CaptureData, CaptureError, Target, UNKNOWN
 
+__all__ = (
+    "CaptureData",
+    "CaptureError",
+    "Target",
+    "UNKNOWN",
+    "SYSTEM_PROFILER_COMMAND",
+    "IOREG_COMMAND",
+    "IOREG_IOSERVICE_INTERFACES_COMMAND",
+    "PROPERTY_LINE",
+    "NODE_LINE",
+    "ProfilerSection",
+    "IoregNode",
+    "parse_integer",
+    "run_command",
+    "field_value",
+    "indentation",
+    "profiler_sections",
+    "ioreg_nodes",
+    "property_text",
+    "property_number",
+    "selected_ioreg_device",
+    "number_text",
+    "hexadecimal",
+    "first_known",
+    "descriptor_hex",
+    "add_interfaces",
+    "ioservice_interface_nodes",
+    "add_interfaces_with_fallback",
+    "normalized_values",
+    "capture",
+)
+
 
 SYSTEM_PROFILER_COMMAND: tuple[str, ...] = ("system_profiler", "SPUSBDataType", "-detailLevel", "full")
 IOREG_COMMAND: tuple[str, ...] = ("ioreg", "-p", "IOUSB", "-l", "-w", "0")
-PROPERTY_LINE = re.compile(r'^\s*"(?P<key>[^"]+)" = (?P<value>.*)$')
+# Fallback for hosts whose IOUSB-plane dump omits IOUSBHostInterface nodes
+# but exposes them on the IOService plane (observed on Apple-Silicon macOS).
+# Invoked only when the primary plane yields no interfaces for the device.
+IOREG_IOSERVICE_INTERFACES_COMMAND: tuple[str, ...] = (
+    "ioreg", "-p", "IOService", "-l", "-w", "0", "-c", "IOUSBHostInterface",
+)
+PROPERTY_LINE = re.compile(r'^\s*(?:\|\s*)*"(?P<key>[^"]+)" = (?P<value>.*)$')
 NODE_LINE = re.compile(r"^\s*(?:\|\s*)*[+`\\]-o\s+.*?<class\s+(?P<class>[^,>]+)")
 
 
@@ -42,7 +80,7 @@ def parse_integer(value: str) -> int | None:
 
 
 def run_command(command: Sequence[str]) -> str:
-    completed = subprocess.run(command, capture_output=True, check=False, text=True)
+    completed = subprocess.run(command, capture_output=True, check=False, text=True, errors="replace")
     if completed.returncode != 0:
         detail = completed.stderr.strip() or "no stderr output"
         raise CaptureError(f"{shlex.join(command)} failed with exit {completed.returncode}: {detail}")
@@ -215,6 +253,25 @@ def add_interfaces(values: dict[str, str], nodes: Iterable[IoregNode], device: I
             values[f"{endpoint_prefix}.max_packet_size"] = first_known((number_text(property_number(endpoint, "wMaxPacketSize")),))
 
 
+def ioservice_interface_nodes() -> tuple[IoregNode, ...]:
+    try:
+        raw = run_command(IOREG_IOSERVICE_INTERFACES_COMMAND)
+    except CaptureError:
+        return ()
+    return ioreg_nodes(raw)
+
+
+def add_interfaces_with_fallback(
+    values: dict[str, str], primary_nodes: Iterable[IoregNode], device: IoregNode,
+) -> None:
+    add_interfaces(values, primary_nodes, device)
+    if values.get("interfaces.count", UNKNOWN) != UNKNOWN:
+        return
+    fallback_nodes = ioservice_interface_nodes()
+    if fallback_nodes:
+        add_interfaces(values, fallback_nodes, device)
+
+
 def normalized_values(profiler: ProfilerSection, nodes: Iterable[IoregNode], device: IoregNode, target: Target) -> tuple[tuple[str, str], ...]:
     values = {
         "device.VID": f"0x{target.vendor_id:04X}", "device.PID": f"0x{target.product_id:04X}",
@@ -232,7 +289,7 @@ def normalized_values(profiler: ProfilerSection, nodes: Iterable[IoregNode], dev
         "device.bMaxPacketSize0": first_known((number_text(property_number(device, "bMaxPacketSize0")),)),
         "device.bNumConfigurations": first_known((number_text(property_number(device, "bNumConfigurations")),)),
     }
-    add_interfaces(values, nodes, device)
+    add_interfaces_with_fallback(values, nodes, device)
     return tuple(sorted(values.items()))
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import sys
 import unittest
 from pathlib import Path
 
@@ -110,6 +111,92 @@ class T12StaticInvariantTest(unittest.TestCase):
             header_digest("AIRBRIDGE_BOOTSTRAP_SHA256"),
             hashlib.sha256(bootstrap_path.read_bytes()).digest(),
         )
+
+    def test_ioreg_nodes_parses_pipe_prefixed_property_lines(self) -> None:
+        """ioreg indents property lines with ``| `` when the device's parent
+        controller is not the last sibling. The sample below places the
+        Logitech target under the first of two XHCI siblings (pipe-prefixed)
+        and the Realtek device under the last (unprefixed); both must parse
+        so ``selected_ioreg_device`` can resolve VID:PID 0x046D:0xC31C.
+        """
+        if str(ROOT / "airbridge") not in sys.path:
+            sys.path.insert(0, str(ROOT / "airbridge"))
+        from tools.usb_descriptor_fixture import Target
+        from tools.usb_descriptor_macos import (
+            PROPERTY_LINE,
+            ioreg_nodes,
+            selected_ioreg_device,
+        )
+
+        sample = (
+            "  +-o AppleT8132USBXHCI@02000000  <class AppleT8132USBXHCI, id 0x1000004cc>\n"
+            "  | {\n"
+            "  |   \"IOClass\" = \"AppleT8132USBXHCI\"\n"
+            "  | }\n"
+            "  | \n"
+            "  | +-o USB Keyboard@02100000  <class IOUSBHostDevice, id 0x1001b54f5>\n"
+            "  |     {\n"
+            "  |       \"idProduct\" = 49948\n"
+            "  |       \"idVendor\" = 1133\n"
+            "  |       \"kUSBProductString\" = \"USB Keyboard\"\n"
+            "  |       \"kUSBVendorString\" = \"Logitech\"\n"
+            "  |       \"locationID\" = 34603008\n"
+            "  |     }\n"
+            "  |     \n"
+            "  +-o AppleT8132USBXHCI@01000000  <class AppleT8132USBXHCI, id 0x1000004d4>\n"
+            "    | {\n"
+            "    |   \"IOClass\" = \"AppleT8132USBXHCI\"\n"
+            "    | }\n"
+            "    | \n"
+            "    +-o HID Device@01100000  <class IOUSBHostDevice, id 0x1000a0155>\n"
+            "        {\n"
+            "          \"idProduct\" = 4352\n"
+            "          \"idVendor\" = 3034\n"
+            "          \"kUSBProductString\" = \"HID Device\"\n"
+            "          \"kUSBVendorString\" = \"Realtek\"\n"
+            "          \"locationID\" = 1114112\n"
+            "        }\n"
+        )
+
+        nodes = ioreg_nodes(sample)
+        usb_hosts = [n for n in nodes if n.class_name == "IOUSBHostDevice"]
+        self.assertEqual(
+            len(usb_hosts), 2,
+            "expected exactly two IOUSBHostDevice nodes (Logitech + Realtek)",
+        )
+
+        logitech = [
+            n for n in usb_hosts
+            if any(k == "kUSBVendorString" and "Logitech" in v for k, v in n.properties)
+        ]
+        realtek = [
+            n for n in usb_hosts
+            if any(k == "kUSBVendorString" and "Realtek" in v for k, v in n.properties)
+        ]
+        self.assertEqual(len(logitech), 1, "exactly one Logitech node expected")
+        self.assertEqual(len(realtek), 1, "exactly one Realtek node expected")
+        logitech_node = logitech[0]
+        realtek_node = realtek[0]
+
+        parsed_keys = {key for key, _ in logitech_node.properties}
+        for required in ("idVendor", "idProduct", "kUSBProductString", "kUSBVendorString", "locationID"):
+            self.assertIn(required, parsed_keys, f"missing {required} on pipe-prefixed Logitech node")
+        self.assertEqual(
+            {key for key, _ in realtek_node.properties},
+            parsed_keys,
+            "Realtek and Logitech nodes must expose the same key set",
+        )
+
+        device = selected_ioreg_device(nodes, Target(0x046D, 0xC31C, None))
+        self.assertIs(
+            device, logitech_node,
+            "selected_ioreg_device must resolve to the pipe-prefixed Logitech node",
+        )
+
+        self.assertIsNone(PROPERTY_LINE.match("  | +-o Foo@0  <class Bar>"))
+        self.assertIsNone(PROPERTY_LINE.match("  | }"))
+        self.assertIsNotNone(PROPERTY_LINE.match("  |     \"foo\" = 1"))
+        self.assertIsNotNone(PROPERTY_LINE.match("  \"foo\" = 1"))
 
 
 if __name__ == "__main__":

@@ -26,6 +26,18 @@ typedef enum {
     FuriHalRtcFlagDetailedFilename = (1 << 7),
 } FuriHalRtcFlag;
 
+/** USB identity persisted in the RTC backup register.
+ *
+ * Warm and cold reboots and normal firmware updates preserve this value.
+ * Factory reset, RTC backup-domain recovery, and furi_hal_rtc_reset_registers()
+ * reset it to Logitech.
+ */
+typedef enum {
+    FuriHalUsbIdentityLogitech = 0,
+    FuriHalUsbIdentityDell = 1,
+    FuriHalUsbIdentityCount,
+} FuriHalUsbIdentity;
+
 typedef enum {
     FuriHalRtcBootModeNormal = 0, /**< Normal boot mode, default value */
     FuriHalRtcBootModeDfu, /**< Boot to DFU (MCU bootloader by ST) */
@@ -132,6 +144,18 @@ void furi_hal_rtc_set_register(FuriHalRtcRegister reg, uint32_t value);
  * @param[in]  level  The level to store
  */
 void furi_hal_rtc_set_log_level(uint8_t level);
+
+/** Set USB identity value
+ *
+ * @param[in]  identity  The USB identity to store
+ */
+void furi_hal_rtc_set_usb_identity(FuriHalUsbIdentity identity);
+
+/** Get USB identity value
+ *
+ * @return     The USB identity value
+ */
+FuriHalUsbIdentity furi_hal_rtc_get_usb_identity(void);
 
 /** Get Log Level value
  *

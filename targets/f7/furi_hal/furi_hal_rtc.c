@@ -29,7 +29,7 @@ typedef struct {
 
 typedef struct {
     uint8_t log_level    : 4;
-    uint8_t log_reserved : 4;
+    uint8_t usb_identity : 4;
     uint8_t flags;
     FuriHalRtcBootMode boot_mode                 : 4;
     FuriHalRtcHeapTrackMode heap_track_mode      : 2;
@@ -42,6 +42,7 @@ typedef struct {
 } SystemReg;
 
 _Static_assert(sizeof(SystemReg) == 4, "SystemReg size mismatch");
+_Static_assert(FuriHalUsbIdentityCount <= 16, "USB identity does not fit in SystemReg");
 
 typedef struct {
     FuriHalRtcAlarmCallback alarm_callback;
@@ -257,6 +258,27 @@ void furi_hal_rtc_set_log_level(uint8_t level) {
     data->log_level = level;
     furi_hal_rtc_set_register(FuriHalRtcRegisterSystem, data_reg);
     furi_log_set_level(level);
+}
+
+void furi_hal_rtc_set_usb_identity(FuriHalUsbIdentity identity) {
+    if(identity >= FuriHalUsbIdentityCount) {
+        identity = FuriHalUsbIdentityLogitech;
+    }
+
+    uint32_t data_reg = furi_hal_rtc_get_register(FuriHalRtcRegisterSystem);
+    SystemReg* data = (SystemReg*)&data_reg;
+    data->usb_identity = identity;
+    furi_hal_rtc_set_register(FuriHalRtcRegisterSystem, data_reg);
+}
+
+FuriHalUsbIdentity furi_hal_rtc_get_usb_identity(void) {
+    uint32_t data_reg = furi_hal_rtc_get_register(FuriHalRtcRegisterSystem);
+    SystemReg* data = (SystemReg*)&data_reg;
+    FuriHalUsbIdentity identity = data->usb_identity;
+    if(identity >= FuriHalUsbIdentityCount) {
+        identity = FuriHalUsbIdentityLogitech;
+    }
+    return identity;
 }
 
 uint8_t furi_hal_rtc_get_log_level(void) {

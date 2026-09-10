@@ -93,9 +93,6 @@ static void airbridge_app_wait(void* context) {
 
 static int32_t airbridge_app_worker(void* context) {
     AirbridgeApp* app = context;
-    airbridge_operation_start(&app->operation, AirbridgeOperationUsbStart, furi_get_tick());
-    app->relay.usb_mode_prev = furi_hal_usb_get_config();
-    airbridge_operation_end(&app->operation);
     bool startup_apply_pending = true;
     airbridge_runtime_run(app, app->notifications, &startup_apply_pending, &app_exit_latch);
 
