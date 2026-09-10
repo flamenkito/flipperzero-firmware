@@ -91,22 +91,22 @@ cd /Users/asutov/projects/flipperzero-firmware
 
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 send -f \
   build/f7-firmware-D/.extapps/pocket_airbridge.fap \
-  /ext/apps/USB/pocket_airbridge.fap
+  /ext/apps/Tools/pocket_airbridge.fap
 
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 size \
-  /ext/apps/USB/pocket_airbridge.fap
+  /ext/apps/Tools/pocket_airbridge.fap
 
 python3 scripts/runfap.py -p /dev/cu.usbmodemflip_Luwot1 \
   -s build/f7-firmware-D/.extapps/pocket_airbridge.fap \
-  -t /ext/apps/USB/pocket_airbridge.fap
+  -t /ext/apps/Tools/pocket_airbridge.fap
 ```
 
 The `size` command should report the uploaded FAP size. In the verified build it reported `3776` bytes.
 
-**Canonical location:** the FAP lives ONLY at `/ext/apps/USB/pocket_airbridge.fap` (the `fap_category="USB"` menu location). Never deploy a copy to `/ext/apps/` root or another category folder — a second copy goes stale silently and the menu can launch the old build. Before deploying, check for duplicates:
+**Canonical location:** the FAP lives ONLY at `/ext/apps/Tools/pocket_airbridge.fap` (the `fap_category="Tools"` menu location). Never deploy a copy to `/ext/apps/` root or another category folder — a second copy goes stale silently and the menu can launch the old build. Before deploying, check for duplicates:
 ```bash
 python3 scripts/storage.py -p /dev/cu.usbmodemflip_Luwot1 list /ext/apps | grep -i airbridge
-# must print exactly: /ext/apps/USB/pocket_airbridge.fap
+# must print exactly: /ext/apps/Tools/pocket_airbridge.fap
 # remove strays with: python3 scripts/storage.py -p <port> remove <path>
 ```
 
@@ -157,7 +157,7 @@ This compiles, uploads via USB, and runs the app automatically when the serial t
 
 Then copy the `.fap` manually:
 ```bash
-cp dist/f7/C/apps/USB/pocket_airbridge.fap /Volumes/Flipper/apps/USB/
+cp dist/f7/C/apps/Tools/pocket_airbridge.fap /Volumes/Flipper/apps/Tools/
 ```
 
 ## Deploy App Files to the SD Card

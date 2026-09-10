@@ -17,7 +17,7 @@ BUNDLE_MAGIC: Final = b"ABND"
 BUNDLE_FORMAT_VERSION: Final = 1
 BUNDLE_HEADER: Final = struct.Struct("<4sB3xI")
 BOOTSTRAPS = (
-    (WEB / "bootstrap.js", 1200),
+    (WEB / "bootstrap.js", 4096),
 )
 BUNDLES = (
     ("chat-usb.html", "app-usb.html", "WebHIDAdapter"),

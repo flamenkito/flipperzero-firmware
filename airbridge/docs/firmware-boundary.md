@@ -98,7 +98,7 @@ active-link exit/relaunch/reconnect, and stalled-operation warning/late cleanup.
 - `./fbt flash_usb` completed. The device subsequently reported API 87.14,
   `radio_alive: true`, and `system_lock: 0`.
 - Exactly one AirBridge FAP was present before deployment, at the canonical
-  `/ext/apps/USB/pocket_airbridge.fap`. The new 57,192-byte FAP was uploaded.
+  `/ext/apps/Tools/pocket_airbridge.fap`. The new 57,192-byte FAP was uploaded.
   The subsequent size check/launch was interrupted; launch is not verified.
   A later Deploy key-release correction produced a 57,392-byte FAP that has
   not been uploaded. The on-device FAP must be replaced before acceptance tests.

@@ -5,6 +5,6 @@ App(
     entry_point="pocket_airbridge_app",
     stack_size=4 * 1024,
     requires=["gui", "bt", "notification"],
-    fap_category="USB",
+    fap_category="Tools",
     fap_icon="icon.png",
 )

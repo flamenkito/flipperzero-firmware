@@ -145,7 +145,9 @@ AirbridgeRelayResult airbridge_relay_handle(
     AirbridgeBle* ble,
     BridgeEvent* be,
     AirbridgeScreen screen) {
-    const bool deploy_request = be->to_ble && (be->len == 1) && (be->data[0] == 0x42);
+    /* Windows delivers the full 64-byte OUT transfer; macOS sends a short 1-byte
+       transfer. Match on the first byte only so both arm deploy. */
+    const bool deploy_request = be->to_ble && (be->len >= 1) && (be->data[0] == 0x42);
     if(deploy_request && screen == AirbridgeScreenWaiting) {
         return AirbridgeRelayDeployRequested;
     }

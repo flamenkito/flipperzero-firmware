@@ -43,12 +43,12 @@ Write logs and screenshots under:
 3. With the Flipper exited to desktop and unlocked, upload the FAP, bootstrap, and USB app asset to the canonical paths:
 
    ```bash
-   /ext/apps/USB/pocket_airbridge.fap
+   /ext/apps/Tools/pocket_airbridge.fap
    /ext/apps_data/pocket_airbridge/bootstrap.js
    /ext/apps_data/pocket_airbridge/app-usb.html.gz
    ```
 
-4. Before launch, run `python3 scripts/storage.py -p <port> list /ext/apps | grep -i airbridge`. It must return exactly `/ext/apps/USB/pocket_airbridge.fap`; remove every stray copy before continuing.
+4. Before launch, run `python3 scripts/storage.py -p <port> list /ext/apps | grep -i airbridge`. It must return exactly `/ext/apps/Tools/pocket_airbridge.fap`; remove every stray copy before continuing.
 
 ## Connect and unlock
 
