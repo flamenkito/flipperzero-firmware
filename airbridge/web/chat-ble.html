@@ -7,12 +7,16 @@
 <link rel="stylesheet" href="./airbridge-ui.css">
 <title>Pocket AirBridge — BLE Chat</title>
 </head>
-<body>
-<h1>Pocket AirBridge — BLE Chat</h1>
-<p>PC-B chat endpoint over Web Bluetooth. Send text or attachments through the AirBridge.</p>
-<div class="mock-banner">Mock mode is active from <span class="mono">?mock=1</span>; Web Bluetooth permission prompt is bypassed and a paired mock USB endpoint replies in-page.</div>
+<body data-endpoint="ble">
+<header class="console-header">
+  <div class="console-kicker">AIRBRIDGE / PC-B / WEB BLUETOOTH</div>
+  <h1>Pocket AirBridge — BLE Chat</h1>
+  <p class="page-intro">PC-B chat endpoint over Web Bluetooth. Send text or attachments through the AirBridge.</p>
+</header>
+<div class="mock-banner">Mock mode bypasses Web Bluetooth. Use <span class="mono">?mock=1&amp;mockPeer=demo</span> on both pages for paired chat, or <span class="mono">?mock=1</span> alone for the in-page sender verifier.</div>
 
-<section class="card" aria-labelledby="connectionTitle">
+<main class="grid shell-stack">
+<section class="card shell-stack connection-rail" aria-labelledby="connectionTitle">
   <h2 id="connectionTitle">Connection</h2>
   <div class="connection-row">
     <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span id="connectionStatus">disconnected</span></span>
@@ -20,8 +24,8 @@
     <button id="disconnectBtn" type="button" disabled>Disconnect</button>
     <span id="deviceName" class="mono">No device</span>
   </div>
-  <div class="connection-row" style="margin-top:10px;">
-    <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">&#x1F513;</span><span id="cryptoState" class="mono">E2E locked</span></span>
+  <div class="connection-row">
+    <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">SEC</span><span id="cryptoState" class="mono">E2E locked</span></span>
     <span class="mono">SAS <strong id="sasCode">------</strong></span>
     <button id="acceptSasBtn" type="button" disabled>Accept SAS</button>
     <button id="abortCryptoBtn" type="button" disabled>Abort Crypto</button>
@@ -29,89 +33,75 @@
   <p class="hint" id="pickerHint">Pick the HP Wireless device in the list.</p>
 </section>
 
-<main class="grid" style="margin-top:12px;">
-  <section class="card" aria-labelledby="chatTitle">
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px;">
-      <h2 id="chatTitle" style="margin:0;">Chat Transcript</h2>
+  <section class="card chat-workspace" aria-labelledby="chatTitle">
+    <div class="panel-heading">
+      <h2 id="chatTitle">Chat Transcript</h2>
       <button id="clearTranscriptBtn" type="button" class="clear-btn">Clear</button>
     </div>
     <div id="transcript" aria-live="polite"><div class="empty">No messages yet.</div></div>
-    <form id="textForm" class="composer" style="margin-top:8px;">
-      <input id="textInput" type="text" placeholder="Type a message" autocomplete="off" disabled>
+    <form id="textForm" class="composer shell-stack">
+      <input id="textInput" type="text" aria-label="Message" placeholder="Type a message" autocomplete="off" disabled>
       <button id="sendTextBtn" type="submit" disabled>Send</button>
     </form>
-    <div class="attachment-row" style="margin-top:8px;">
-      <input id="fileInput" type="file" disabled>
+    <div class="attachment-row">
+      <input id="fileInput" type="file" aria-label="Attachment" aria-describedby="attachmentLimits" disabled>
       <button id="sendFileBtn" type="button" disabled>Send Attachment</button>
     </div>
-    <p class="hint">Attachments are chunked automatically during transfer.</p>
+    <p class="hint" id="attachmentLimits">Encrypted attachments are held in browser memory until verified, then offered as Blob downloads. Available memory, storage and transfer time limit practical file size; this is not disk streaming.</p>
   </section>
 
-  <aside class="card" aria-labelledby="transferTitle">
+  <aside class="card shell-stack diagnostic-rail" aria-labelledby="transferTitle">
     <h2 id="transferTitle">Transfer State</h2>
-    <div id="panelState" class="panel-state">idle</div>
+    <div id="panelState" class="panel-state" data-phase="Ready" role="status">Ready</div>
     <div id="throughput" class="throughput">--</div>
+    <p id="transferFailure" class="hint error" role="alert" hidden></p>
     <div class="transfer-actions">
       <button id="cancelBtn" type="button" hidden>Cancel Transfer</button>
     </div>
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin:12px 0 8px;">
-      <h2 style="margin:0;">Status Log</h2>
+    <div class="panel-heading">
+      <h2>Status Log</h2>
       <button id="clearLogBtn" type="button" class="clear-btn">Clear</button>
     </div>
     <pre id="log">Waiting…</pre>
   </aside>
 </main>
 
+<script src="./vendor/js-sha256-0.11.1.js"></script>
 <script type="module">
-import { AirBridgeCryptoSession, buildMessage, CRYPTO_ROLE, CRYPTO_STATE, encodeMeta, ItemReceiver, ItemSender, MAX_PAYLOAD, MSG, parseMessage, sha256 } from './airbridge-protocol.js';
+import { createChatOutbound } from './airbridge-chat-outbound.js';
+import { renderReceivedItem, routeReceiveControl } from './airbridge-chat-receive.js';
+import { installMockStreamPeer } from './airbridge-mock-stream-peer.js';
+import { createPairedChatMock } from './airbridge-chat-mock.js';
+import { discardTranscriptDownloads, setTransferPhase } from './airbridge-ui.js';
+import { AirBridgeCryptoSession, buildMessage, CRYPTO_ROLE, CRYPTO_STATE, ItemReceiver, MAX_PAYLOAD, MSG, parseMessage } from './airbridge-protocol.js';
 import { createTimingRecorder, recordCancel, recordFlipperCounters } from './airbridge-evidence.js';
 import { WebBluetoothAdapter } from './airbridge-transports.js';
 import { addMessage, addSystemMessage, clearTranscript, createLogger, createThroughputMeter, escapeHtml, formatBytes, renderAttachmentCard, shortHash, timeLabel, updateCardProgress } from './airbridge-ui.js';
 
-const BUSY_BACKOFF_MS = 900;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const mockMode = new URLSearchParams(location.search).get('mock') === '1';
+const mockPeer = new URLSearchParams(location.search).get('mockPeer');
 const evidenceMode = new URLSearchParams(location.search).get('evidence') === '1';
 
 let transport = null;
 let unsubscribeReceive = null;
 let unsubscribeDisconnect = null;
-let sender = null;
+let outbound = null;
 let receiver = null;
 let cryptoSession = null;
 let isConnecting = false;
 let isSending = false;
-let activeItemId = null;
-let activeTransfer = null;
-let transferAbortController = null;
-let transferPendingAckSeq = null;
-let transferCancelSource = null;
 let inboundMeta = null;
 let inboundHelloItemId = null;
 let inboundChunks = 0;
-let busyBackoffUntil = 0;
-let pendingSendRow = null;
 let pendingReceiveRow = null;
-let yieldedItem = null;
-let yieldedRetryScheduled = false;
 let transferMeter = null;
 let inboundTiming = null;
 
 const $ = id => document.getElementById(id);
-function sleep(ms, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(abortError());
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    function onAbort() {
-      clearTimeout(timer);
-      reject(abortError());
-    }
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 if (mockMode) document.body.classList.add('mock');
@@ -157,11 +147,12 @@ function setConnectionStatus(status, deviceName = '') {
 function updateCryptoPanel(status = cryptoSession?.getStatus()) {
   const state = status?.state ?? CRYPTO_STATE.REQUIRED;
   const unlocked = state === CRYPTO_STATE.UNLOCKED;
+  if (!unlocked) outbound?.cancel();
   const pending = state === CRYPTO_STATE.SAS_PENDING;
   const aborted = state === CRYPTO_STATE.ABORTED;
   $('cryptoState').textContent = `E2E ${unlocked ? 'unlocked' : pending ? (status.localAccepted ? 'waiting peer' : 'verify SAS') : aborted ? 'aborted' : 'locked'}`;
   $('cryptoPill').className = `status-pill crypto-pill ${unlocked ? 'crypto-unlocked' : pending ? 'crypto-pending' : aborted ? 'crypto-aborted' : 'crypto-locked'}`;
-  $('cryptoLock').textContent = unlocked ? '\u{1F512}' : '\u{1F513}';
+  $('cryptoLock').textContent = 'SEC';
   $('sasCode').textContent = status?.sas ?? '------';
   $('acceptSasBtn').disabled = !pending || status.localAccepted;
   $('abortCryptoBtn').disabled = !cryptoSession || state === CRYPTO_STATE.REQUIRED;
@@ -178,20 +169,14 @@ async function sendProtocolError(reason) {
 }
 
 function resetTransferPanel() {
-  $('panelState').textContent = 'idle';
-  $('throughput').textContent = '--';
+  setTransferPhase('Ready', {bytes:0n,total:null,reset:true});
   transferMeter = null;
 }
 
 function setSending(value, itemId = null, panelText = null) {
   isSending = value;
-  activeItemId = value ? itemId : null;
   receiver?.setBusy(value);
-  if (panelText != null) {
-    $('panelState').textContent = panelText;
-  } else if (!value && inboundMeta == null && inboundHelloItemId == null) {
-    $('panelState').textContent = 'idle';
-  }
+  if (panelText === 'cancelled') setTransferPhase('Cancelled');
   updateControls();
 }
 
@@ -210,103 +195,8 @@ function updateControls() {
   $('cancelBtn').disabled = !connected || !canCancel;
 }
 
-function abortError(message = 'Transfer cancelled') {
-  const error = new Error(message);
-  error.name = 'AbortError';
-  return error;
-}
-
-function throwIfAborted(signal) {
-  if (signal?.aborted) throw signal.reason ?? abortError();
-}
-
-function raceWithAbort(promise, signal) {
-  const wrapped = Promise.resolve(promise);
-  if (!signal) return wrapped;
-  if (signal.aborted) return Promise.reject(signal.reason ?? abortError());
-  return new Promise((resolve, reject) => {
-    const onAbort = () => reject(signal.reason ?? abortError());
-    signal.addEventListener('abort', onAbort, { once: true });
-    wrapped.then(
-      value => {
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      error => {
-        signal.removeEventListener('abort', onAbort);
-        reject(error);
-      },
-    );
-  });
-}
-
-function createAckFrame(type, seq) {
-  return buildMessage(MSG.ACK, 0, new Uint8Array([type, (seq >> 8) & 0xff, seq & 0xff]));
-}
-
-function* abortableChunks(chunks, signal) {
-  for (const chunk of chunks) {
-    throwIfAborted(signal);
-    yield chunk;
-  }
-}
-
-async function sendItemMetaWithAbort(meta, signal) {
-  const fragments = encodeMeta(meta);
-  for (let seq = 0; seq < fragments.length; seq++) {
-    throwIfAborted(signal);
-    await raceWithAbort(sender.sendWithAck(buildMessage(MSG.ITEM_META, seq, fragments[seq]), seq), signal);
-  }
-}
-
-function readHelloItemId(msg) {
-  if (!msg?.payload || msg.payload.length < 4) return null;
-  const payload = msg.payload;
-  return (((payload[0] << 24) >>> 0) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
-}
-
-function busyPayload(winnerItemId, loserItemId) {
-  return encoder.encode(JSON.stringify({ w: winnerItemId, l: loserItemId, r: BUSY_BACKOFF_MS }));
-}
-
-async function sendBusy(winnerItemId, loserItemId) {
-  if (!transport?.isConnected()) return;
-  await transport.send(buildMessage(MSG.BUSY, 0, busyPayload(winnerItemId, loserItemId)));
-}
-
-function parseBusy(payload) {
-  try {
-    const detail = JSON.parse(decoder.decode(payload));
-    return {
-      winnerItemId: detail.winnerItemId ?? detail.w,
-      loserItemId: detail.loserItemId ?? detail.l,
-      retryAfterMs: detail.retryAfterMs ?? detail.r,
-    };
-  } catch (_) {
-    return {};
-  }
-}
-
-function settleAbortedSend(transfer) {
-  const pending = transfer?.pendingAck;
-  if (!pending) return;
-  transfer.pendingAck = null;
-  if (transferPendingAckSeq?.type === pending.type && transferPendingAckSeq?.seq === pending.seq) {
-    transferPendingAckSeq = null;
-  }
-  sender?.receiveAck(createAckFrame(pending.type, pending.seq));
-}
-
-function chunksFor(data) {
-  const chunks = [];
-  for (let offset = 0; offset < data.length; offset += MAX_PAYLOAD) {
-    chunks.push(data.slice(offset, offset + MAX_PAYLOAD));
-  }
-  return chunks.length ? chunks : [new Uint8Array(0)];
-}
-
 function metaTransferSize(meta) {
-  return meta?.encryptedSize ?? meta?.size ?? 0;
+  return Number(meta?.totalCiphertextBytes ?? 0);
 }
 
 function metaChunkCount(meta) {
@@ -314,18 +204,18 @@ function metaChunkCount(meta) {
 }
 
 async function connect() {
+  if (transport) { await safeDisconnectTransport(); handleDisconnected(); }
   isConnecting = true;
   setConnectionStatus('connecting');
   log(mockMode ? 'Connecting to in-page mock BLE transport...' : 'Opening Web Bluetooth picker...');
   try {
     transport = mockMode
-      ? createMockBleTransport()
+      ? (mockPeer ? createPairedChatMock('ble', mockPeer) : createMockBleTransport())
       : new WebBluetoothAdapter({ onDisconnect: handleDisconnected });
     await transport.connect();
-    sender = new ItemSender(sendFrameWithBusyBackoff, { timeoutMs: mockMode ? 1200 : 5000, retries: 4 });
-    receiver = new ItemReceiver({ sendFn: frame => transport.send(frame), busy: false });
     cryptoSession = new AirBridgeCryptoSession({ role: CRYPTO_ROLE.BLE, sendFn: frame => transport.send(frame), onStateChange: updateCryptoPanel });
-    receiver.setItemValidator(({ meta, data }) => cryptoSession.decryptItem(meta, data));
+    receiver = new ItemReceiver({ session:cryptoSession, sendFn: frame => transport.send(frame) });
+    outbound = createChatOutbound({session:cryptoSession, transport, setBusy:setSending, log});
     wireProtocolEvents();
     unsubscribeReceive = transport.onReceive(handleFrame);
     unsubscribeDisconnect = transport.onDisconnect?.(handleDisconnected) ?? null;
@@ -348,6 +238,8 @@ async function disconnect() {
 }
 
 async function safeDisconnectTransport() {
+  receiver?.dispose();
+  outbound?.dispose();
   unsubscribeReceive?.();
   unsubscribeReceive = null;
   unsubscribeDisconnect?.();
@@ -360,13 +252,12 @@ async function safeDisconnectTransport() {
 }
 
 function handleDisconnected() {
-  transferAbortController?.abort();
-  activeTransfer = null;
-  transferAbortController = null;
-  transferPendingAckSeq = null;
-  transferCancelSource = null;
+  const wasActive = isSending || inboundHelloItemId != null;
+  discardTranscriptDownloads($('transcript'));
+  receiver?.dispose();
+  outbound?.dispose();
+  outbound = null;
   transport = null;
-  sender = null;
   receiver = null;
   cryptoSession?.clearKeys();
   cryptoSession = null;
@@ -375,33 +266,30 @@ function handleDisconnected() {
   inboundTiming?.fail('disconnected');
   inboundTiming = null;
   inboundChunks = 0;
-  pendingSendRow = null;
   pendingReceiveRow = null;
-  yieldedItem = null;
   updateCryptoPanel();
   setSending(false);
-  resetTransferPanel();
+  if (wasActive) setTransferPhase('Cancelled');
+  else resetTransferPanel();
   setConnectionStatus('disconnected');
   log('Disconnected.', 'warn');
 }
 
 function wireProtocolEvents() {
-  receiver.on('ack', detail => { if (!cryptoSession?.receiveAck(detail.message)) sender?.receiveAck(detail.message); });
-  receiver.on('nack', detail => { if (!cryptoSession?.receiveNack(detail.message)) sender?.receiveNack(detail.message); });
-  receiver.on('busy', handleBusy);
+  receiver.on('ack', detail => cryptoSession?.receiveAck(detail.message));
+  receiver.on('nack', detail => cryptoSession?.receiveNack(detail.message));
   receiver.on('rejected', () => log('Rejected peer HELLO while this side is busy.', 'warn'));
   receiver.on('cancel', handlePeerCancel);
   receiver.on('hello', detail => {
     inboundHelloItemId = detail.itemId;
     inboundTiming = createTimingRecorder({ operation: 'chat-receive', direction: 'inbound', mock: mockMode, hardware: !mockMode, sink: publishEvidence });
     inboundTiming.markFirstReport();
-    $('panelState').textContent = `receiving: item ${detail.itemId ?? 'unknown'}`;
-    $('throughput').textContent = '0/? chunks · -- KB/s · -- left';
+    setTransferPhase('Receiving', {bytes:0n,total:null,reset:true});
     updateControls();
     log(`Peer HELLO item=${detail.itemId ?? 'unknown'}`);
   });
   receiver.on('meta', meta => {
-    if (isCryptoUnlocked() && meta.kind !== 'encrypted') {
+    if (isCryptoUnlocked() && meta.kind !== 'encrypted-stream') {
       receiver.resetItem();
       sendProtocolError('plaintext metadata rejected').catch(() => {});
       cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
@@ -411,7 +299,7 @@ function wireProtocolEvents() {
     inboundMeta = meta;
     inboundChunks = 0;
     if (inboundTiming) {
-      inboundTiming.record.operation = meta.kind === 'encrypted' ? 'encrypted-item' : meta.kind === 'text' ? 'chat-text' : 'attachment';
+  inboundTiming.record.operation = meta.kind === 'text' ? 'chat-text' : 'attachment';
       inboundTiming.record.itemId = meta.itemId ?? null;
       inboundTiming.record.details = { ...inboundTiming.record.details, itemId: meta.itemId, kind: meta.kind, name: meta.name };
       inboundTiming.record.metadata = inboundTiming.record.details;
@@ -421,10 +309,9 @@ function wireProtocolEvents() {
     transferMeter = createThroughputMeter();
     transferMeter.tick(0, totalChunks, 0);
     updateControls();
-    $('panelState').textContent = `receiving: ${meta.kind === 'encrypted' ? 'encrypted item' : meta.name || 'item'}`;
-    $('throughput').textContent = transferMeter.text();
+    setTransferPhase('Receiving', {bytes:0n,total:null});
     log(`Receiving ${meta.kind || 'item'}: ${meta.name || '(unnamed)'} (${formatBytes(metaTransferSize(meta))})`);
-    if (meta.kind !== 'text' && meta.kind !== 'encrypted') {
+    if (meta.kind !== 'text' && meta.kind !== 'encrypted-stream') {
       pendingReceiveRow = addMessage($('transcript'), {
         side: 'peer',
         kind: 'attachment',
@@ -434,29 +321,18 @@ function wireProtocolEvents() {
       });
     }
   });
-  receiver.on('data', detail => {
-    inboundChunks = detail.received;
-    const totalChunks = metaChunkCount(detail.meta);
-    if (totalChunks) {
-      const pct = (detail.received / totalChunks) * 100;
-      if (!isSending) $('panelState').textContent = `receiving: ${detail.meta.name || 'item'}`;
-      transferMeter?.tick(
-        detail.received,
-        totalChunks,
-        Math.min(detail.received * MAX_PAYLOAD, metaTransferSize(detail.meta) || detail.received * MAX_PAYLOAD),
-      );
-      inboundTiming?.tickTransferBytes(Math.min(detail.received * MAX_PAYLOAD, metaTransferSize(detail.meta) || detail.received * MAX_PAYLOAD));
-      if (transferMeter) $('throughput').textContent = transferMeter.text();
-      if (pendingReceiveRow) {
-        updateCardProgress(pendingReceiveRow, pct, `${detail.received}/${totalChunks} chunks`);
-      }
-    }
+  receiver.on('data', ({ plaintextBytes }) => {
+    setTransferPhase('Receiving', {bytes:plaintextBytes,total:null});
+    inboundTiming?.tickTransferBytes(Number(plaintextBytes));
   });
-  receiver.on('item', detail => { void handleIncomingItem(detail); });
+  receiver.on('item', handleIncomingItem);
   receiver.on('error', error => {
+    setTransferPhase('Failed');
     inboundTiming?.fail(error.message || error);
     inboundTiming = null;
-    cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
+    inboundMeta = null;
+    inboundHelloItemId = null;
+    updateControls();
     log(`Protocol error: ${error.message || error}`, 'error');
   });
   receiver.on('invalid', error => {
@@ -467,14 +343,17 @@ function wireProtocolEvents() {
 }
 
 async function handleFrame(frame) {
+  const control = routeReceiveControl(frame, receiver);
+  if (control) return control;
+  if (outbound?.receive(frame)) return;
   const parsed = parseMessage(frame);
   if (parsed?.type === MSG.ACK) {
-    if (!cryptoSession?.receiveAck(parsed)) sender?.receiveAck(parsed);
+    cryptoSession?.receiveAck(parsed);
     return;
   }
 
   if (parsed?.type === MSG.NACK) {
-    if (!cryptoSession?.receiveNack(parsed)) sender?.receiveNack(parsed);
+    cryptoSession?.receiveNack(parsed);
     return;
   }
 
@@ -487,350 +366,54 @@ async function handleFrame(frame) {
     return;
   }
 
-  if (parsed?.type === MSG.ERROR) {
-    sender?.receiveError(parsed);
-    cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
-    await receiver?.onMessage(parsed);
-    return;
-  }
-
   if ((parsed?.type === MSG.HELLO || parsed?.type === MSG.ITEM_META || parsed?.type === MSG.ITEM_DATA || parsed?.type === MSG.ITEM_DONE) && !isCryptoUnlocked()) {
-    await sendProtocolError('crypto locked');
+    await sendProtocolError('Unsupported protocol version');
     cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
-    log('Rejected plaintext item frame before crypto unlock.', 'error');
+    setTransferPhase('Failed');
+    log('Unsupported protocol version', 'error');
     return;
   }
 
-  if (parsed?.type === MSG.HELLO && isSending && activeTransfer && !activeTransfer.yielded && activeItemId != null) {
-    const peerItemId = readHelloItemId(parsed);
-    const localWins = peerItemId != null && activeItemId < peerItemId;
-    const equalIds = peerItemId != null && activeItemId === peerItemId;
-    if (peerItemId != null && (peerItemId < activeItemId || (equalIds && activeTransfer.acceptPeerDuringBackoff))) {
-      await yieldToPeer(parsed, peerItemId);
-      return;
-    }
-    if (localWins || equalIds) {
-      log(`Keeping local item ${activeItemId} over peer item ${peerItemId}; returning BUSY.`, 'warn');
-      await sendBusy(activeItemId, peerItemId);
-      return;
-    }
-  }
-
-  await receiver?.onMessage(parsed ?? frame);
-}
-
-function handleBusy(msg) {
-  const detail = parseBusy(msg.payload);
-  const localItemId = activeItemId;
-  const peerWins = Number.isInteger(localItemId)
-    && detail.loserItemId === localItemId
-    && Number.isInteger(detail.winnerItemId)
-    && detail.winnerItemId < localItemId;
-  const equalIds = Number.isInteger(localItemId)
-    && detail.winnerItemId === localItemId
-    && detail.loserItemId === localItemId;
-  if (!isSending || activeTransfer?.yielded || (!peerWins && !equalIds)) {
-    log('Ignoring BUSY that does not lose the active item arbitration.', 'warn');
-    return;
-  }
-  const retryAfterMs = Number.isFinite(detail.retryAfterMs) ? detail.retryAfterMs : BUSY_BACKOFF_MS;
-  const delay = Math.max(0, retryAfterMs) + Math.floor(Math.random() * 401);
-  busyBackoffUntil = Date.now() + delay;
-  if (equalIds) activeTransfer.acceptPeerDuringBackoff = true;
-  log(`Peer item ${detail.winnerItemId} has priority${equalIds ? ' (equal item IDs)' : ''}; retrying in ${delay} ms.`, 'warn');
-}
-
-async function yieldToPeer(msg, peerItemId) {
-  const transfer = activeTransfer;
-  if (!transfer || transfer.yielded) return;
-  transfer.yielded = true;
-  yieldedItem = {
-    meta: transfer.meta,
-    plainMeta: transfer.plainMeta,
-    chunks: transfer.chunks,
-    onRendered: transfer.onRendered,
-    row: pendingSendRow,
-  };
-  transfer.controller.abort(abortError(`Yielded to peer item ${peerItemId}`));
-  settleAbortedSend(transfer);
-  receiver?.setBusy(false);
-  if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Yielded');
-  addSystemMessage($('transcript'), `Yielded to peer item ${peerItemId}`);
-  log(`Yielded local item ${transfer.itemId} to peer item ${peerItemId}.`, 'warn');
-  await receiver?.onMessage(msg);
-}
-
-function scheduleYieldedRetry() {
-  if (!yieldedItem || yieldedRetryScheduled) return;
-  yieldedRetryScheduled = true;
-  setTimeout(async () => {
-    yieldedRetryScheduled = false;
-    const yielded = yieldedItem;
-    if (!yielded || isSending || inboundHelloItemId != null || !transport?.isConnected()) return;
-    yieldedItem = null;
-    pendingSendRow = yielded.row;
-    if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Retrying…');
-    await sendItem(yielded.meta, yielded.chunks, yielded.onRendered, yielded.plainMeta);
-  }, 0);
+  if (parsed?.type === MSG.ITEM_DONE && frame.byteLength >= 9 && receiver?.snapshot().itemId === new DataView(frame.buffer, frame.byteOffset).getUint32(5)) setTransferPhase('Verifying');
+  return receiver?.onMessage(frame);
 }
 
 function handlePeerCancel() {
   inboundTiming?.fail('cancelled-by-peer');
   inboundTiming = null;
-  transferCancelSource = 'peer';
-  transferAbortController?.abort();
-  if (transferPendingAckSeq != null && sender) {
-    sender.receiveAck(createAckFrame(transferPendingAckSeq.type, transferPendingAckSeq.seq));
-  }
-  transferPendingAckSeq = null;
   inboundMeta = null;
   inboundHelloItemId = null;
   inboundChunks = 0;
-  $('throughput').textContent = '--';
   transferMeter = null;
   setSending(false, null, 'cancelled');
   addSystemMessage($('transcript'), 'Transfer cancelled by peer');
   log('Transfer cancelled by peer', 'warn');
-  if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled by peer', 'cancelled');
   if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled by peer', 'cancelled');
-  scheduleYieldedRetry();
 }
 
-async function sendFrameWithBusyBackoff(frame) {
-  const transfer = activeTransfer;
-  const signal = transfer?.controller.signal;
-  const parsed = parseMessage(frame);
-  if (parsed) {
-    transferPendingAckSeq = { type: parsed.type, seq: parsed.seq };
-    if (transfer) transfer.pendingAck = transferPendingAckSeq;
-  }
-  if (signal?.aborted) {
-    if (parsed && sender) sender.receiveAck(createAckFrame(parsed.type, parsed.seq));
-    return;
-  }
-  const wait = busyBackoffUntil - Date.now();
-  if (wait > 0) {
-    try {
-      await sleep(wait, signal);
-    } catch (error) {
-      if (signal?.aborted) {
-        if (parsed && sender) sender.receiveAck(createAckFrame(parsed.type, parsed.seq));
-        return;
-      }
-      throw error;
-    }
-  }
-  if (signal?.aborted) {
-    if (parsed && sender) sender.receiveAck(createAckFrame(parsed.type, parsed.seq));
-    return;
-  }
-  if (!transport?.isConnected()) throw new Error('Not connected');
-  activeTransfer?.timing?.markFirstReport();
-  await transport.send(frame);
-}
-
-function handleIncomingItem({ meta, data, hash }) {
-  inboundTiming?.complete({ bundleBytes: meta.size || data.length, transferBytes: data.length, direction: 'inbound' });
+async function handleIncomingItem(item) {
+  await renderReceivedItem($('transcript'), item);
+  if (!item.isCurrent()) return;
+  inboundTiming?.complete({ bundleBytes: Number(item.size), transferBytes: Number(item.size), direction: 'inbound' });
   inboundTiming = null;
   inboundMeta = null;
   inboundHelloItemId = null;
   updateControls();
-  $('panelState').textContent = 'idle';
-  if (meta.kind === 'text') {
-    addMessage($('transcript'), { side: 'peer', kind: 'text', text: decoder.decode(data) });
-    log(`Received text message (${formatBytes(data.length)}).`, 'ok');
-  } else {
-    if (pendingReceiveRow) {
-      const finalCard = renderAttachmentCard(meta, data, hash, false);
-      const placeholder = pendingReceiveRow.querySelector('.attachment-card');
-      if (placeholder) placeholder.replaceWith(finalCard);
-      pendingReceiveRow = null;
-    } else {
-      addMessage($('transcript'), { side: 'peer', kind: 'attachment', meta, data, hash });
-    }
-    log(`Received attachment ${meta.name || '(unnamed)'}; SHA-256 verified.`, 'ok');
-  }
+  setTransferPhase('Ready', {bytes:item.size,total:item.size});
+  log(`Received ${item.kind} ${item.name}; SHA-256 verified.`, 'ok');
   inboundChunks = 0;
-  setTimeout(() => {
-    if (!isSending && inboundMeta == null) {
-      $('throughput').textContent = '--';
-      transferMeter = null;
-    }
-  }, 700);
-  scheduleYieldedRetry();
 }
 
 async function sendText() {
-  if (!isCryptoUnlocked()) {
-    log('Accept matching SAS on both endpoints before sending.', 'error');
-    return;
-  }
   const text = $('textInput').value.trim();
   if (!text) return;
-  const data = encoder.encode(text);
-  const itemId = makeItemId();
-  const hash = await sha256(data);
-  const meta = {
-    kind: 'text',
-    itemId,
-    name: `message-${itemId}.txt`,
-    mimeType: 'text/plain;charset=utf-8',
-    size: data.length,
-    chunks: chunksFor(data).length,
-    hash: `sha256:${hash}`,
-  };
-  const encrypted = await cryptoSession.encryptItem(meta, data);
-  const chunks = chunksFor(encrypted.data);
-  $('textInput').value = '';
-  updateControls();
-  await sendItem(encrypted.meta, chunks, () => addMessage($('transcript'), { side: 'you', kind: 'text', text, meta, hash }), meta);
+  await outbound?.sendText(text);
 }
 
 async function sendSelectedFile() {
-  if (!isCryptoUnlocked()) {
-    log('Accept matching SAS on both endpoints before sending.', 'error');
-    return;
-  }
   const file = $('fileInput').files?.[0];
   if (!file) return;
-
-  const data = await readFileBytes(file);
-  const hash = await sha256(data);
-  const itemId = makeItemId();
-  const meta = {
-    kind: 'attachment',
-    itemId,
-    name: file.name || `attachment-${itemId}`,
-    mimeType: file.type || 'application/octet-stream',
-    size: data.length,
-    chunks: chunksFor(data).length,
-    hash: `sha256:${hash}`,
-  };
-  const encrypted = await cryptoSession.encryptItem(meta, data);
-  const chunks = chunksFor(encrypted.data);
-  $('fileInput').value = '';
-  updateControls();
-  pendingSendRow = addMessage($('transcript'), {
-    side: 'you',
-    kind: 'attachment',
-    meta,
-    data,
-    hash,
-    progress: { percent: 0, label: 'Sending…' },
-  });
-  await sendItem(encrypted.meta, chunks, () => {}, meta);
-}
-
-function readFileBytes(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(new Uint8Array(reader.result));
-    reader.onerror = () => reject(reader.error || new Error('File read failed'));
-    reader.readAsArrayBuffer(file);
-  });
-}
-
-async function sendItem(meta, chunks, onRendered, plainMeta = meta) {
-  if (!sender || !transport?.isConnected()) {
-    log('Connect before sending.', 'error');
-    return;
-  }
-  const transfer = {
-    controller: new AbortController(),
-    itemId: meta.itemId,
-    meta,
-    plainMeta,
-    chunks,
-    onRendered,
-    pendingAck: null,
-    yielded: false,
-    acceptPeerDuringBackoff: false,
-  };
-  activeTransfer = transfer;
-  transferAbortController = transfer.controller;
-  transferPendingAckSeq = null;
-  transferCancelSource = null;
-  const { signal } = transfer.controller;
-  let outcome = 'sent';
-  transferMeter = createThroughputMeter();
-  const timing = createTimingRecorder({ operation: plainMeta.kind === 'text' ? 'chat-text' : 'attachment', direction: 'outbound', bundleBytes: plainMeta.size, transferBytes: plainMeta.size, mock: mockMode, hardware: !mockMode, sink: publishEvidence });
-  transfer.timing = timing;
-  transferMeter.tick(0, chunks.length, 0);
-  $('throughput').textContent = transferMeter.text();
-  setSending(true, meta.itemId, `sending: ${plainMeta.name}`);
-  log(`Sending encrypted ${plainMeta.kind} item ${meta.itemId} (${chunks.length} chunks).`);
-  const acknowledgedDataSeqs = new Set();
-  let trackDataAcks = false;
-  const unsubscribeAck = sender.onAck((seq, _message, type) => {
-    if (transfer.yielded || type !== MSG.ITEM_DATA || !trackDataAcks || acknowledgedDataSeqs.has(seq) || seq >= chunks.length) return;
-    acknowledgedDataSeqs.add(seq);
-    const acked = acknowledgedDataSeqs.size;
-    const pct = (acked / chunks.length) * 100;
-    const transferSize = metaTransferSize(meta);
-    transferMeter?.tick(acked, chunks.length, Math.min(acked * MAX_PAYLOAD, transferSize));
-    timing.tickTransferBytes(Math.min(acked * MAX_PAYLOAD, plainMeta.size));
-    if (transferMeter) $('throughput').textContent = transferMeter.text();
-    if (pendingSendRow) {
-      updateCardProgress(pendingSendRow, pct, `${acked}/${chunks.length} chunks`);
-    }
-  });
-  try {
-    throwIfAborted(signal);
-    timing.markFirstReport();
-    await raceWithAbort(sender.sendHello(meta.itemId), signal);
-    throwIfAborted(signal);
-    await sendItemMetaWithAbort(meta, signal);
-    throwIfAborted(signal);
-    trackDataAcks = true;
-    await raceWithAbort(sender.sendItemData(abortableChunks(chunks, signal)), signal);
-    trackDataAcks = false;
-    throwIfAborted(signal);
-    await raceWithAbort(sender.sendItemDone(), signal);
-    onRendered();
-    timing.complete({ bundleBytes: plainMeta.size, transferBytes: plainMeta.size, direction: 'outbound' });
-    log(`Sent encrypted ${plainMeta.kind} item ${plainMeta.itemId}; plaintext SHA-256 ${shortHash(plainMeta.hash)}.`, 'ok');
-    if (pendingSendRow) {
-      updateCardProgress(pendingSendRow, 100, 'Sent', 'complete');
-    }
-  } catch (error) {
-    if (transfer.yielded) {
-      outcome = 'yielded';
-      timing.fail('yielded', { bundleBytes: plainMeta.size, transferBytes: plainMeta.size });
-    } else if (signal.aborted || error?.name === 'AbortError') {
-      outcome = 'cancelled';
-      timing.fail('cancelled', { bundleBytes: plainMeta.size, transferBytes: plainMeta.size });
-      $('throughput').textContent = '--';
-      transferMeter = null;
-      if (pendingSendRow) {
-        updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
-      }
-    } else {
-      outcome = 'failed';
-      timing.fail(error?.message || 'failed', { bundleBytes: plainMeta.size, transferBytes: plainMeta.size });
-      log(`Send failed: ${error.message}`, 'error');
-      resetTransferPanel();
-    }
-  } finally {
-    unsubscribeAck();
-    transferPendingAckSeq = null;
-    if (activeTransfer === transfer) activeTransfer = null;
-    if (transferAbortController === transfer.controller) transferAbortController = null;
-    transferCancelSource = null;
-    if (!transfer.yielded) pendingSendRow = null;
-    setSending(false, null, outcome === 'yielded' ? null : outcome === 'cancelled' ? 'cancelled' : 'idle');
-    if (outcome === 'sent') {
-      setTimeout(() => {
-        if (!isSending && inboundMeta == null) {
-          $('throughput').textContent = '--';
-          transferMeter = null;
-        }
-      }, 900);
-    }
-  }
-}
-
-function makeItemId() {
-  return Math.floor((Date.now() + Math.random() * 0xffff) % 0xffff_ffff);
+  await outbound?.sendFile(file);
 }
 
 function createMockBleTransport() {
@@ -838,48 +421,8 @@ function createMockBleTransport() {
   const usb = createEndpoint('Mock USB peer');
   ble.link(usb);
   usb.link(ble);
-  installMockPeer(usb);
-  return linkMockAcrossTabs(ble, 'ble');
-}
-
-function linkMockAcrossTabs(transport, role) {
-  if (!globalThis.BroadcastChannel) return transport;
-  const channel = new BroadcastChannel('pocket-airbridge-mock-bridge');
-  let remoteConnected = false;
-  const originalConnect = transport.connect.bind(transport);
-  const originalDisconnect = transport.disconnect.bind(transport);
-  const originalSend = transport.send.bind(transport);
-  const announce = type => channel.postMessage({ type, role });
-
-  channel.onmessage = event => {
-    const message = event.data;
-    if (!message || message.role === role) return;
-    if (message.type === 'connected') {
-      const wasRemoteConnected = remoteConnected;
-      remoteConnected = true;
-      if (!wasRemoteConnected) announce('connected');
-    } else if (message.type === 'disconnected') {
-      remoteConnected = false;
-    } else if (message.type === 'frame' && remoteConnected) {
-      transport.receiveCallback?.(new Uint8Array(message.frame));
-    }
-  };
-
-  transport.connect = async () => {
-    await originalConnect();
-    announce('connected');
-  };
-  transport.disconnect = async () => {
-    announce('disconnected');
-    channel.close();
-    await originalDisconnect();
-  };
-  transport.send = async frame => {
-    if (!remoteConnected) return originalSend(frame);
-    const copy = new Uint8Array(frame);
-    channel.postMessage({ type: 'frame', role, frame: copy });
-  };
-  return transport;
+  installMockStreamPeer(usb, CRYPTO_ROLE.USB);
+  return ble;
 }
 
 function createEndpoint(name) {
@@ -895,7 +438,9 @@ function createEndpoint(name) {
     async send(frame) {
       if (!this.connected) throw new Error(`${this.name} is not connected`);
       const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
-      await sleep(8);
+      const message = parseMessage(frame);
+      if (message.type >= MSG.KEY_OFFER || (message.type === MSG.ACK && message.payload.length === 3)) await sleep(8);
+      else await Promise.resolve();
       this.peer?.receiveCallback?.(bytes.slice());
     },
     onReceive(callback) { this.receiveCallback = callback; return () => { if (this.receiveCallback === callback) this.receiveCallback = null; }; },
@@ -903,87 +448,6 @@ function createEndpoint(name) {
     isConnected() { return this.connected; },
     getName() { return this.name; },
   };
-}
-
-function installMockPeer(endpoint) {
-  const mockSender = new ItemSender(frame => endpoint.send(frame), { timeoutMs: 1200, retries: 3 });
-  const mockReceiver = new ItemReceiver({ sendFn: frame => endpoint.send(frame) });
-  const mockCrypto = new AirBridgeCryptoSession({ role: CRYPTO_ROLE.USB, sendFn: frame => endpoint.send(frame), onStateChange: status => {
-    if (status.state === CRYPTO_STATE.SAS_PENDING && !status.localAccepted) setTimeout(() => mockCrypto.acceptSas().catch(() => {}), 0);
-  } });
-  mockReceiver.setItemValidator(({ meta, data }) => mockCrypto.decryptItem(meta, data));
-  let replyQueued = false;
-  mockCrypto.start().catch(() => {});
-
-  endpoint.onReceive(async frame => {
-    const msg = parseMessage(frame);
-    if (msg.type === MSG.ACK) {
-      if (!mockCrypto.receiveAck(msg)) mockSender.receiveAck(msg);
-      return;
-    }
-    if (msg.type === MSG.NACK) {
-      if (!mockCrypto.receiveNack(msg)) mockSender.receiveNack(msg);
-      return;
-    }
-    if (mockCrypto.isCryptoFrame(msg)) {
-      await mockCrypto.onMessage(msg).catch(() => {});
-      return;
-    }
-    if ((msg.type === MSG.HELLO || msg.type === MSG.ITEM_META || msg.type === MSG.ITEM_DATA || msg.type === MSG.ITEM_DONE) && !mockCrypto.isUnlocked()) {
-      await endpoint.send(buildMessage(MSG.ERROR, 0, encoder.encode('crypto locked')));
-      return;
-    }
-    await mockReceiver.onMessage(frame);
-  });
-  mockReceiver.on('ack', detail => { if (!mockCrypto.receiveAck(detail.message)) mockSender.receiveAck(detail.message); });
-  mockReceiver.on('nack', detail => { if (!mockCrypto.receiveNack(detail.message)) mockSender.receiveNack(detail.message); });
-  mockReceiver.on('item', async ({ meta, data }) => {
-    if (replyQueued) return;
-    replyQueued = true;
-    await sleep(180);
-    const text = meta.kind === 'text'
-      ? `Mock peer received: ${decoder.decode(data)}`
-      : `Mock peer received attachment: ${meta.name} (${formatBytes(meta.size || data.length)})`;
-    await sendMockText(mockSender, mockCrypto, text);
-    replyQueued = false;
-  });
-}
-
-async function sendMockText(mockSender, mockCrypto, text) {
-  if (!mockCrypto.isUnlocked()) return;
-  const data = encoder.encode(text);
-  const hash = await sha256(data);
-  const itemId = makeItemId();
-  const meta = { kind: 'text', itemId, name: `mock-${itemId}.txt`, mimeType: 'text/plain;charset=utf-8', size: data.length, chunks: chunksFor(data).length, hash: `sha256:${hash}` };
-  const encrypted = await mockCrypto.encryptItem(meta, data);
-  const chunks = chunksFor(encrypted.data);
-  await mockSender.sendHello(itemId);
-  await mockSender.sendItemMeta(encrypted.meta);
-  await mockSender.sendItemData(chunks);
-  await mockSender.sendItemDone();
-}
-
-async function sendCancelFrame() {
-  const timing = createTimingRecorder({ operation: 'cancel', direction: 'outbound', bundleBytes: 0, transferBytes: 0, mock: mockMode, hardware: !mockMode, sink: publishEvidence });
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    if (!transport?.isConnected()) {
-      timing.fail('not-connected');
-      return;
-    }
-    try {
-      timing.markFirstReport();
-      await transport.send(buildMessage(MSG.CANCEL, 0));
-      timing.complete();
-      return;
-    } catch (error) {
-      if (attempt === 3) {
-        timing.fail(error.message || 'failed');
-        log(`Failed to send CANCEL: ${error.message}`, 'error');
-        return;
-      }
-      await sleep(200);
-    }
-  }
 }
 
 $('connectBtn').addEventListener('click', connect);
@@ -996,17 +460,20 @@ $('sendFileBtn').addEventListener('click', sendSelectedFile);
 $('acceptSasBtn').addEventListener('click', () => cryptoSession?.acceptSas().catch(error => log(`SAS accept failed: ${error.message}`, 'error')));
 $('abortCryptoBtn').addEventListener('click', () => cryptoSession?.rejectSas().catch(error => log(`Crypto abort failed: ${error.message}`, 'error')));
 $('cancelBtn').addEventListener('click', async () => {
+  if (isSending && outbound) { outbound.cancel(); return; }
   if (!isSending && (inboundMeta || inboundHelloItemId != null)) {
     const cancelItemId = inboundMeta?.itemId ?? inboundHelloItemId;
     const cancelBytes = inboundMeta?.size ?? 0;
-    await sendCancelFrame();
+    const cancellingReceiver = receiver;
+    const cancelled = await cancellingReceiver?.cancel();
+    if (receiver !== cancellingReceiver || cancelled?.itemId !== cancelItemId ||
+        cancellingReceiver.snapshot().generation !== cancelled.generation) return;
     inboundTiming?.fail('cancelled-by-user');
     inboundTiming = null;
     receiver?.resetItem();
     inboundMeta = null;
     inboundHelloItemId = null;
     inboundChunks = 0;
-    $('throughput').textContent = '--';
     transferMeter = null;
     setSending(false, null, 'cancelled');
     addSystemMessage($('transcript'), 'Transfer cancelled by user');
@@ -1014,34 +481,24 @@ $('cancelBtn').addEventListener('click', async () => {
     recordCancel({ origin: 'user', endpoint: 'ble-chat', itemId: cancelItemId, transferBytes: cancelBytes, mock: mockMode, hardware: !mockMode }, { sink: publishEvidence });
     if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled', 'cancelled');
     pendingReceiveRow = null;
-    scheduleYieldedRetry();
     return;
   }
-  if (!isSending || !transferAbortController || transferAbortController.signal.aborted) return;
-  const cancelItemId = activeTransfer?.itemId ?? activeItemId;
-  const cancelBytes = activeTransfer?.meta?.size ?? 0;
-  transferCancelSource = 'user';
-  transferAbortController.abort();
-  await sendCancelFrame();
-  if (transferPendingAckSeq != null && sender) {
-    sender.receiveAck(createAckFrame(transferPendingAckSeq.type, transferPendingAckSeq.seq));
-  }
-  $('throughput').textContent = '--';
-  transferMeter = null;
-  setSending(false, null, 'cancelled');
-  log('Transfer cancelled by user', 'warn');
-  recordCancel({ origin: 'user', endpoint: 'ble-chat', itemId: cancelItemId, transferBytes: cancelBytes, mock: mockMode, hardware: !mockMode }, { sink: publishEvidence });
-  if (pendingSendRow) updateCardProgress(pendingSendRow, 0, 'Cancelled', 'cancelled');
-  pendingSendRow = null;
 });
 $('textInput').addEventListener('input', updateControls);
 $('fileInput').addEventListener('change', updateControls);
-$('clearTranscriptBtn').addEventListener('click', () => clearTranscript($('transcript'), 'No messages yet.'));
+$('clearTranscriptBtn').addEventListener('click', () => {
+  outbound?.cancel();
+  receiver?.resetItem();
+  inboundMeta = null; inboundHelloItemId = null;
+  inboundTiming?.fail('transcript-cleared'); inboundTiming = null;
+  clearTranscript($('transcript'), 'No messages yet.'); resetTransferPanel(); updateControls();
+});
 $('clearLogBtn').addEventListener('click', () => logger.clear());
 
 setConnectionStatus('disconnected');
 updateCryptoPanel();
 if (mockMode) log('Mock mode enabled via ?mock=1; Web Bluetooth permission prompt will be bypassed.', 'ok');
+window.addEventListener('pagehide', () => { receiver?.dispose(); outbound?.cancel(); discardTranscriptDownloads($('transcript')); });
 </script>
 </body>
 </html>

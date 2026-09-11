@@ -7,7 +7,8 @@ import re
 import struct
 import zlib
 from collections.abc import Mapping
-from typing import Final
+from typing import Final, override
+from html.parser import HTMLParser
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,34 +23,25 @@ BOOTSTRAPS = (
 BUNDLES = (
     ("chat-usb.html", "app-usb.html", "WebHIDAdapter"),
 )
-PROTOCOL_IMPORT = (
-    "import { AirBridgeCryptoSession, buildMessage, CRYPTO_ROLE, CRYPTO_STATE, encodeMeta, ItemReceiver, ItemSender, MAX_PAYLOAD, MSG, "
-    "parseMessage, sha256 } from './airbridge-protocol.js';"
+COMMON_SCRIPTS: Final = (
+    "vendor/js-sha256-0.11.1.js", "airbridge-incremental-sha256.js",
+    "airbridge-protocol.js", "airbridge-receive-accumulator.js",
+    "airbridge-item-receiver.js", "airbridge-ui.js", "airbridge-file-pass.js",
+    "airbridge-outbound.js", "airbridge-chat-outbound.js", "airbridge-chat-receive.js",
+    "airbridge-mock-stream-peer.js", "airbridge-chat-mock.js", "airbridge-evidence.js",
+    "airbridge-identity.js", "airbridge-transports.js",
 )
-PROTOCOL_BINDINGS = [
-    "AirBridgeCryptoSession",
-    "buildMessage",
-    "CRYPTO_ROLE",
-    "CRYPTO_STATE",
-    "encodeMeta",
-    "ItemReceiver",
-    "ItemSender",
-    "MAX_PAYLOAD",
-    "MSG",
-    "parseMessage",
-    "sha256",
-]
-EVIDENCE_IMPORT = (
-    "import { createTimingRecorder, recordCancel, recordFlipperCounters } from './airbridge-evidence.js';"
-)
-EVIDENCE_BINDINGS = [
-    "createTimingRecorder",
-    "recordCancel",
-    "recordFlipperCounters",
-]
 UI_CSS_LINK = '<link rel="stylesheet" href="./airbridge-ui.css">'
-UI_IMPORT_RE = re.compile(
-    r"(?m)^import \{ (?P<bindings>[^}]+) \} from './airbridge-ui\.js';$"
+IMPORT_RE: Final = re.compile(
+    r"\bimport\s*\{(?P<bindings>[^}]+)\}\s*from\s*['\"]\./(?P<path>[\w./-]+)['\"];"
+)
+EXPORT_RE: Final = re.compile(r"(?m)^export (?:async )?(?:const|function|class) (\w+)")
+EXPORT_LIST_RE: Final = re.compile(
+    r"(?m)^export \{([^}]+)\}(?: from ['\"]\./([\w./-]+)['\"])?;"
+)
+CHARACTERIZATION_ONLY_RE: Final = re.compile(
+    r"\s*/\* characterization-only:start \*/.*?/\* characterization-only:end \*/\s*",
+    re.DOTALL,
 )
 
 
@@ -61,14 +53,68 @@ class BundleBuildError(ValueError):
     pass
 
 
-def inline_module(path: Path, bindings: list[str] | None) -> str:
-    source = path.read_text(encoding="utf-8")
-    source = re.sub(r"(?ms)^\s*import\s+.*?;\s*\n?", "", source)
-    source = re.sub(r"(?m)^(\s*)export\s+", r"\1", source)
-    if bindings is None:
-        return source
-    names = ", ".join(bindings)
-    return f"const {{ {names} }} = (() => {{\n{source}\nreturn {{ {names} }};\n}})();"
+class OfflinePage(HTMLParser):
+    @override
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for name, value in attrs:
+            if name in {"src", "href", "srcset"} and (value is None or not value.startswith("data:")):
+                raise BundleBuildError(f"unresolved {tag} resource: {name}={value!r}")
+            if tag == "script" and name == "type" and value and value.lower() == "module":
+                raise BundleBuildError("bundle still contains module script")
+
+
+def binding_names(value: str) -> tuple[str, ...]:
+    names = tuple(part.strip() for part in value.split(","))
+    if len(set(names)) != len(names) or any(not re.fullmatch(r"[A-Za-z_$][\w$]*", name) for name in names):
+        raise BundleBuildError(f"unsupported or duplicate bindings: {value!r}")
+    return names
+
+
+def inline_scripts(page: str) -> str:
+    sources = {
+        name: CHARACTERIZATION_ONLY_RE.sub("\n", (WEB / name).read_text(encoding="utf-8"))
+        for name in COMMON_SCRIPTS[1:]
+    }
+    exports = {name: set(EXPORT_RE.findall(source)) for name, source in sources.items()}
+    for name, source in sources.items():
+        for match in EXPORT_LIST_RE.finditer(source):
+            exports[name].update(binding_names(match[1]))
+    emitted: set[str] = set()
+
+    def imports(source: str) -> str:
+        seen: set[str] = set()
+        def replace(match: re.Match[str]) -> str:
+            dependency = match["path"]
+            names = binding_names(match["bindings"])
+            if dependency not in emitted or not set(names) <= exports[dependency] or seen.intersection(names):
+                raise BundleBuildError(f"missing, unordered or duplicate import: {match[0]}")
+            seen.update(names)
+            return f"const {{ {', '.join(names)} }} = __airbridgeModules['{dependency}'];"
+        return IMPORT_RE.sub(replace, source)
+
+    modules = ["const __airbridgeModules = Object.create(null);"]
+    for name, source in sources.items():
+        getters: list[str] = []
+        for match in EXPORT_LIST_RE.finditer(source):
+            dependency = match[2]
+            if dependency:
+                names = binding_names(match[1])
+                if dependency not in exports or not set(names) <= exports[dependency]:
+                    raise BundleBuildError(f"missing re-export: {match[0]}")
+                # The protocol/receiver cycle needs deferred lookup, like an ESM re-export.
+                getters.extend(f"get {key}() {{ return __airbridgeModules['{dependency}'].{key}; }}" for key in names)
+            else:
+                getters.extend(binding_names(match[1]))
+        body = imports(EXPORT_LIST_RE.sub("", source))
+        body = re.sub(r"(?m)^export (?=(?:async )?(?:const|function|class) )", "", body)
+        members = ", ".join([*EXPORT_RE.findall(source), *getters])
+        modules.append(f"/* bundled: {name} */\n__airbridgeModules['{name}'] = (() => {{\n'use strict';\n{body}\nreturn {{ {members} }};\n}})();")
+        emitted.add(name)
+    vendor = COMMON_SCRIPTS[0]
+    vendor_source = (WEB / vendor).read_text(encoding="utf-8")
+    page = replace_once(page, f'<script src="./{vendor}"></script>', f"<script>/* bundled: {vendor} */\n{vendor_source}\n</script>")
+    page = imports(page)
+    return replace_once(page, '<script type="module">', "<script>\n'use strict';\n" + "\n".join(modules))
 
 
 def replace_once(page: str, needle: str, replacement: str) -> str:
@@ -80,16 +126,6 @@ def replace_once(page: str, needle: str, replacement: str) -> str:
 def inline_ui_css(page: str) -> str:
     css = (WEB / "airbridge-ui.css").read_text(encoding="utf-8")
     return replace_once(page, UI_CSS_LINK, f"<style>\n{css}\n</style>")
-
-
-def inline_ui_module(page: str) -> str:
-    matches = list(UI_IMPORT_RE.finditer(page))
-    if len(matches) != 1:
-        raise BundleBuildError("expected exactly one airbridge-ui.js import line")
-    bindings = [part.strip() for part in matches[0].group("bindings").split(",") if part.strip()]
-    if not bindings:
-        raise BundleBuildError("expected at least one UI binding")
-    return page[: matches[0].start()] + inline_module(WEB / "airbridge-ui.js", bindings) + page[matches[0].end() :]
 
 
 def gzip_deterministic(data: bytes) -> bytes:
@@ -110,7 +146,8 @@ def build_bundle_container(raw: bytes) -> bytes:
 def decode_bundle_container(container: bytes) -> bytes:
     if len(container) < BUNDLE_HEADER.size + 2:
         raise BundleFormatError("bundle container is truncated")
-    magic, version, decompressed_size = BUNDLE_HEADER.unpack_from(container)
+    magic, version = container[:4], container[4]
+    decompressed_size = int.from_bytes(container[8:12], "little")
     if magic != BUNDLE_MAGIC:
         raise BundleFormatError("bundle magic mismatch")
     if version != BUNDLE_FORMAT_VERSION:
@@ -169,37 +206,15 @@ def normalize_bootstrap(data: bytes, path: Path) -> bytes:
 def build_bundle() -> dict[str, bytes]:
     """Build all bundles in memory, returning {output_name: raw_bytes}."""
     bundles: dict[str, bytes] = {}
-    for page_name, output_name, adapter_name in BUNDLES:
+    for page_name, output_name, _adapter_name in BUNDLES:
         page = (WEB / page_name).read_text(encoding="utf-8")
-        page = inline_ui_css(page)
-        page = inline_ui_module(page)
-        page = replace_once(
-            page,
-            PROTOCOL_IMPORT,
-            inline_module(WEB / "airbridge-protocol.js", PROTOCOL_BINDINGS),
-        )
-        page = replace_once(
-            page,
-            EVIDENCE_IMPORT,
-            inline_module(WEB / "airbridge-evidence.js", EVIDENCE_BINDINGS),
-        )
-        page = replace_once(
-            page,
-            f"import {{ {adapter_name} }} from './airbridge-transports.js';",
-            "\n".join(
-                (
-                    inline_module(WEB / "airbridge-identity.js", None),
-                    inline_module(WEB / "airbridge-transports.js", [adapter_name]),
-                ),
-            ),
-        )
-        page = replace_once(page, '<script type="module">', "<script>")
-        if 'href="./airbridge-ui.css"' in page:
-            raise BundleBuildError("bundle still contains UI stylesheet link")
-        if "from './airbridge-ui.js'" in page:
-            raise BundleBuildError("bundle still contains UI module import")
-        if "import " in page or 'type="module"' in page:
-            raise BundleBuildError("bundle still contains module syntax")
+        page = inline_scripts(inline_ui_css(page))
+        unresolved = re.search(r"\bimport\s*[(\{*]|^\s*(?:import|export)\s|type\s*=\s*['\"]module", page, re.M)
+        if unresolved:
+            raise BundleBuildError(f"bundle still contains module syntax: {page[unresolved.start():unresolved.start() + 100]!r}")
+        OfflinePage().feed(page)
+        if re.search(r"@import|\burl\s*\(|\b(?:fetch|WebSocket|XMLHttpRequest)\s*\(", page, re.I):
+            raise BundleBuildError("bundle still contains resource dependencies")
         bundles[output_name] = page.encode("utf-8")
     return bundles
 
@@ -209,6 +224,8 @@ def bundle_matches_source() -> bool:
     output_dir = ROOT / "dist"
     bundles = build_bundle()
     for name, raw in bundles.items():
+        if not (output_dir / name).is_file() or not (output_dir / (name + ".gz")).is_file():
+            return False
         on_disk = (output_dir / name).read_bytes()
         if on_disk != raw:
             return False
@@ -217,7 +234,7 @@ def bundle_matches_source() -> bool:
             return False
     bootstrap_path = WEB / "bootstrap.js"
     bootstrap = normalize_bootstrap(bootstrap_path.read_bytes(), bootstrap_path)
-    return ASSET_DIGEST_HEADER.read_text(encoding="utf-8") == render_digest_header(bootstrap, bundles)
+    return ASSET_DIGEST_HEADER.is_file() and ASSET_DIGEST_HEADER.read_text(encoding="utf-8") == render_digest_header(bootstrap, bundles)
 
 
 def main() -> None:
@@ -232,7 +249,7 @@ def main() -> None:
             _ = bootstrap_path.write_bytes(bootstrap)
         normalized_bootstraps[bootstrap_path] = bootstrap
         print(
-            f"{bootstrap_path.relative_to(ROOT)}: {len(bootstrap)} chars, "
+            f"{bootstrap_path.relative_to(ROOT)}: {len(bootstrap)} chars, " +
             f"sha256={hashlib.sha256(bootstrap).hexdigest()}"
         )
 

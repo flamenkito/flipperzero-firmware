@@ -38,11 +38,28 @@ Read the full architecture in [`docs/architecture.md`](docs/architecture.md).
 
 ## Protocol
 
-Binary wire protocol over 64-byte frames. Message types include `HELLO`, `ITEM_META`, `ITEM_DATA`, `ACK`, `NACK`, `ITEM_DONE`, `ERROR`, `BUSY`, `CANCEL`, and crypto handshake frames. ACKs carry `[acked_type, acked_seq]`. NACKs carry `[type, seq_hi, seq_lo, reason]` and request only an exact current-item outer-frame retry. There is no byte-range or cross-session resume. The receiver verifies SHA-256 before ACKing `ITEM_DONE`.
+Protocol **v2 (AB2S)** uses 64-byte frames, 59-byte outer payloads and 51-byte encrypted DATA slices. Item ACKs are 15 bytes and NACKs 16 bytes, matching type, sequence, AB2S, itemId and segment (control sentinel `0xffffffff`). KEY handshake ACKs alone retain three bytes. NACK retries only the exact outstanding frame; no byte-range or cross-session resume. Receiver authentication, final size/SHA-256 verification and Blob creation precede `ITEM_DONE` ACK.
 
 The chat protocol is always encrypted end to end in the browsers. USB and BLE exchange a P-256 ECDH handshake, derive AES-GCM keys with HKDF, and unlock only after both users compare and accept the same six-digit SAS. The Flipper never sees plaintext, session keys, decrypted metadata, or decrypted files.
 
 Read the full specification in [`docs/protocol.md`](docs/protocol.md).
+
+Attachments use two independent File.stream() passes: incremental hash/count,
+then segmented encryption. Receive authenticates each segment before retaining
+plaintext chunks, verifies the final counts/SHA-256, then offers a Blob download.
+Retained authenticated plaintext is intentionally **O(file size)** browser memory;
+completed cards own object URLs and revoke them on removal/replacement/disposal.
+There is no whole-item sender/ciphertext buffering or disk/OPFS/File System Access
+receive, save picker or direct-to-disk mode.
+
+V2 removes the old **4 MiB/4096-chunk demo ceiling**, not finite limits: uint32
+IDs/segment counts, uint64 sizes, browser heap/API limits, download/storage
+capacity, BLE/USB throughput and transfer time still constrain attachments.
+Old/plain or unsupported-streaming peers fail with **`Unsupported protocol version`**
+before META/DATA progression. Use current v2 pages on both endpoints, reconnect
+and confirm a fresh SAS session; no mixed v1/v2 fallback exists. The unchanged
+handshake remains `cryptoVersion:1`. See root
+[ADR 0001](../docs/adr/0001-airbridge-protocol-v2-streaming.md).
 
 ## Locked-down PC bootstrap (Deploy app)
 
@@ -67,7 +84,7 @@ Run these commands from the monorepo root,
    ```bash
    python3 airbridge/tools/build_bundle.py
    ```
-   This inlines the shared JS modules into the self-contained USB deploy page, writes the authenticated `airbridge/dist/app-usb.html.gz` container, and regenerates `applications_user/pocket_airbridge/airbridge_assets_digest.h`.
+    This inlines the shared JS modules into the self-contained USB deploy page, writes the authenticated `airbridge/dist/app-usb.html.gz` container, and regenerates `applications_user/pocket_airbridge/airbridge_assets_digest.h`. USB is the only generated deploy output; v2 source verification does not prove generated bundle freshness. The no-limit-transfer Todo 9 integration gate owns the rebuild after runtime changes.
 2. **Deploy the bootstrap and the bundle to the Flipper SD card** (exact commands in [docs/firmware-guide.md](docs/firmware-guide.md)).
 3. **Launch Pocket AirBridge** on the Flipper. The app opens on the Bridge relay screen; press **RIGHT** or **LEFT** to reach the USB Deploy prompt. (LEFT/RIGHT toggle Bridge ↔ USB Deploy; a short BACK returns to Bridge, a long BACK exits the app. The relay keeps running in the background on every screen.) The prompt asks you to place the cursor, then press OK.
 4. **On the target PC**, open a browser tab at `https://blank.org`, open DevTools (F12), and click into the console. Any `https://` page works; `about:blank` is possible but verify first — on some Chrome builds `window.isSecureContext === false` there, which blocks WebHID. Run `console.log(window.isSecureContext)` to confirm before proceeding.
@@ -103,7 +120,7 @@ Tested on a real Flipper Zero between `chat-usb.html` and `chat-ble.html`:
 
 ## Current verification scope
 
-Tasks 1 through 8 added browser-only E2E crypto, SAS unlock, deterministic gzip Deploy bundles, NACK exact-frame retry, BLE static tuning evidence, deploy typing jitter, and per-device default DIS serials. These are browser-harness and firmware-build verified in this roadmap, but physical USB/BLE proof after those changes is blocked unless a Flipper is connected and a gated run records hardware evidence. BLE service UUID hiding, Windows USB tree comparison, negotiated BLE MTU/PHY/DLE/runtime interval proof, and transfer resume remain deferred.
+Earlier roadmap work added browser-only E2E crypto, SAS unlock, deterministic gzip Deploy bundles, exact-frame retry, BLE static tuning evidence, deploy typing jitter, and per-device DIS serials. Current protocol v2 streaming is covered by Node and browser/mock tests; the historical hardware results above are not v2 proof. Generated bundle integration and physical USB/BLE verification are separate gates. BLE service UUID hiding, Windows USB tree comparison and negotiated radio/throughput claims still need physical evidence. Resume is not implemented.
 
 ## Project Structure
 
@@ -163,8 +180,8 @@ use `chat-usb.html` and `chat-ble.html` instead.
 | Custom BLE profile built | AirBridge profile with Battery, DIS, and the custom serial UUID family (`7b871228-baf0-c5b4-5f46-9c2613d627a3` / TX `87825ec0-7398-8cb7-3242-b083eaa34f27` / RX `152f7eeb-e3b7-5898-ba41-7ff66121c98d`); TX uses NOTIFY (not INDICATE). Static firmware config supports a local ATT MTU maximum of 414, enables DLE, prefers 2M PHY, and requests a 7.5 to 45 ms interval; negotiated runtime values remain peer-driven and need hardware evidence. |
 | Custom HID descriptor registration | May need to patch `furi_hal_usb_hid` or use a community plugin template |
 | BLE service UUID hiding | Deferred. The serial UUID is still advertised and the browser still uses the service-filtered picker until `acceptAllDevices:true` with `optionalServices` is proven on hardware. |
-| 59-byte chunks | Slow but simple; works for files < 50 KB in reasonable time |
-| Single-item half-duplex | Only one message or attachment in flight at a time; lower itemId wins collision. NACK retries exact current-item frames only; no resume. |
+| 51-byte encrypted DATA slices | Small reports limit throughput; practical transfer time grows with file size. |
+| Single-item half-duplex | Only one item in flight; order by `(itemId, role)`, USB wins equal-ID ties. NACK retries exact current-item frames only; no resume. |
 | Transfer resume | Deferred. NACK retries exact current-item outer frames only. |
 
 ## Browser Compatibility

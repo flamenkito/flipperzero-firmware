@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { WebBluetoothAdapter } from '../../airbridge/web/airbridge-transports.js';
+import { hidIngressTests } from '../web/protocol-hid-ingress-tests.js';
+
+for (const [name, run] of hidIngressTests()) test(name, run);
 
 const TX_UUID = '87825ec0-7398-8cb7-3242-b083eaa34f27';
 const RX_UUID = '152f7eeb-e3b7-5898-ba41-7ff66121c98d';

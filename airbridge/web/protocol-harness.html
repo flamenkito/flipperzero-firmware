@@ -29,14 +29,35 @@
 <div id="status">Idle.</div>
 <ul id="results" aria-live="polite"></ul>
 
+<script src="./vendor/js-sha256-0.11.1.js"></script>
 <script type="module">
+import { incrementalSha256Tests } from './protocol-sha256-tests.js';
+import { receiveAccumulatorTests } from './protocol-receive-tests.js';
+import { attachmentLifecycleTests } from './protocol-attachment-lifecycle-tests.js';
+import { segmentedCryptoTests } from './protocol-segmented-crypto-tests.js';
+import { outboundTests } from './protocol-outbound-tests.js';
+import { outboundLifecycleTests } from './protocol-outbound-lifecycle-tests.js';
+import { outboundUiTests } from './protocol-outbound-ui-tests.js';
+import { itemReceiverTests } from './protocol-item-receiver-tests.js';
+import { itemReceiverLifecycleTests } from './protocol-item-receiver-lifecycle-tests.js';
+import { itemReceiverAuthTests } from './protocol-item-receiver-auth-tests.js';
+import { itemReceiverGenerationTests } from './protocol-item-receiver-generation-tests.js';
+import { itemReceiverPageRaceTests } from './protocol-item-receiver-page-race-tests.js';
+import { chatUiTests } from './protocol-chat-ui-tests.js';
+import { chatPageTests } from './protocol-chat-pages-tests.js';
+import { chatCleanupTests } from './protocol-chat-cleanup-tests.js';
+import { incompatibilityTests } from './protocol-incompatibility-tests.js';
+import { incompatibilityPageTests } from './protocol-incompatibility-page-tests.js';
+import { arbitrationPageTests } from './protocol-arbitration-page-tests.js';
+import { hidIngressTests } from './protocol-hid-ingress-tests.js';
+import { hidIngressPageTests } from './protocol-hid-ingress-page-tests.js';
 import { identity } from './airbridge-identity.js';
 import { createTimingRecorder, recordCancel, recordFlipperCounters } from './airbridge-evidence.js';
 import {
   AirBridgeCryptoSession,
   CRYPTO_ROLE,
   CRYPTO_STATE,
-  ItemReceiver,
+  LegacyItemReceiver as ItemReceiver,
   ItemSender,
   MAX_PAYLOAD as PROTOCOL_MAX_PAYLOAD,
   MSG as PROTOCOL_MSG,
@@ -51,6 +72,7 @@ import {
 } from './airbridge-protocol.js';
 
 const FRAME_SIZE = 64;
+import * as v2 from './airbridge-protocol.js';
 const HEADER_SIZE = 5;
 const MAX_PAYLOAD = Number(PROTOCOL_MAX_PAYLOAD ?? 59);
 const REPORT_ID = 0x01;
@@ -118,7 +140,211 @@ const tests = [
   ['NACK wrong frame is ignored safely', testWrongNackIgnoredSafely],
   ['NACK encrypted recovery preserves plaintext integrity', testNackEncryptedRecoveryIntegrity],
   ['NACK cancel returns receiver idle', testNackCancelReturnsIdle],
+  ['AB2S exact wire and capability rejection', testV2Wire],
+  ['AB2S private header, uint64 and segment bounds', testV2Header],
+  ['AB2S rollover, duplicate conflict and stale controls', testV2State],
+  ['AB2S nonce, AAD and session item IDs', testV2Session],
+  ['AB2S generated large stream and completion gates', testV2Completion],
+  ['R1 stale malformed ERROR preserves receiver completion', testV2StaleMalformedError],
+  ['R1 stale malformed ERROR preserves sender pending frame', testV2SenderStaleMalformedError],
+  ['R2 exact owned BufferSource retry bytes', testV2RetryViews],
+  ...incrementalSha256Tests(window.sha256),
+  ...receiveAccumulatorTests(window.sha256),
+  ...attachmentLifecycleTests(window.sha256),
+  ...segmentedCryptoTests(window.sha256),
+  ...outboundTests(window.sha256),
+  ...outboundLifecycleTests(window.sha256),
+  ...outboundUiTests(),
+    ...itemReceiverTests(window.sha256),
+    ...incompatibilityTests(window.sha256),
+    ...incompatibilityPageTests(),
+    ...arbitrationPageTests(),
+    ...hidIngressTests(),
+    ...hidIngressPageTests(),
+  ...itemReceiverLifecycleTests(window.sha256),
+  ...itemReceiverAuthTests(window.sha256),
+  ...itemReceiverGenerationTests(window.sha256),
+  ...itemReceiverPageRaceTests(),
+  ...chatUiTests(),
+  ...chatPageTests(),
+  ...chatCleanupTests(),
 ];
+
+function v2Reject(fn, message) {
+  let rejected = false;
+  try { fn(); } catch (error) { rejected = error instanceof Error; }
+  assert(rejected, message);
+}
+
+function v2Meta(size = 0n, itemId = 1) {
+  return v2.makeV2Meta({keyId:'AAAAAAAAAAAAAAAAAAAAAA',direction:'usb-to-ble',itemId,headerLen:50,payloadSize:size});
+}
+
+function testV2Wire() {
+  equalBytes(v2.buildV2Frame(MSG.HELLO,0,1),new Uint8Array([1,0,0,0,8,0,0,0,1,65,66,50,83]),'v2 HELLO');
+  const context={type:MSG.DATA,seq:0,itemId:1,segment:0};
+  equalBytes(v2.makeV2AckPayload(context),new Uint8Array([3,0,0,65,66,50,83,0,0,0,1,0,0,0,0]),'v2 ACK');
+  assert(v2.makeV2AckPayload(context,1).length===16,'NACK length');
+  const wait=new v2.V2StopAndWait();
+  wait.begin(v2.buildV2Frame(MSG.HELLO,0,1));
+  v2Reject(()=>wait.receive(protocolBuildMessage(MSG.ACK,0,new Uint8Array([1,0,0]))),'legacy ACK accepted');
+  v2Reject(()=>v2.parseV2Frame(protocolBuildMessage(MSG.HELLO,0,new Uint8Array(4))),'legacy HELLO accepted');
+  for(const frame of [new Uint8Array(4),new Uint8Array(65),new Uint8Array([1,0,0,0,59])]) v2Reject(()=>v2.parseV2Frame(frame),'malformed frame accepted');
+}
+
+function testV2Header() {
+  for(const value of ['01','-1','+1','1e4',1,'18446744073709551616']) v2Reject(()=>v2.parseCanonicalUint64(value),'noncanonical uint64');
+  const header=v2.encodeV2Header({kind:'attachment',name:'é',mimeType:'x',payloadSize:0n,payloadSha256:'00'.repeat(32)});
+  assert(header.length===53 && v2.decodeV2Header(header).name==='é','UTF-8 header');
+  header[50]=255; v2Reject(()=>v2.decodeV2Header(header),'invalid UTF-8');
+  for(const size of [0n,65486n,65487n,4194305n]) {
+    const meta=v2Meta(size);
+    const fragments=protocolEncodeMeta(meta);
+    assert(fragments.length>1,'META collapsed');
+    const parsed=v2.validateV2Meta(protocolDecodeMeta(fragments),{itemId:1,keyId:meta.keyId,direction:meta.direction});
+    assert(parsed.totalCiphertextBytes===50n+size+16n*BigInt(meta.segmentCount),'segment totals');
+  }
+  v2Reject(()=>v2.v2StreamLayout(65537,0n),'oversized header');
+  v2Reject(()=>v2.v2StreamLayout(50,65536n*0xffffffffn),'overflow segment count');
+}
+
+function testV2State() {
+  const state=new v2.V2ReceiveState({keyId:'AAAAAAAAAAAAAAAAAAAAAA',direction:'usb-to-ble'});
+  state.accept(v2.buildV2Frame(MSG.HELLO,0,1));
+  for(const [seq,payload] of protocolEncodeMeta(v2Meta(65487n)).entries()) state.accept(v2.buildV2Frame(MSG.META,seq,1,undefined,payload));
+  for(let seq=0;seq<1286;seq++) {
+    const frame=v2.buildV2Frame(MSG.DATA,seq,1,0,new Uint8Array(seq===1285?17:51));
+    assert(state.accept(frame).action==='ack','DATA not accepted');
+    assert(state.accept(frame).action==='duplicate','duplicate appended');
+  }
+  assert(state.segmentIndex===1 && state.chunkInSegment===0 && state.ciphertextBytes===65552n,'rollover');
+  state.accept(v2.buildV2Frame(MSG.CANCEL,0,1));
+  state.accept(v2.buildV2Frame(MSG.HELLO,0,2));
+  for(let repeat=0;repeat<3;repeat++) for(const type of [MSG.CANCEL,MSG.DONE,MSG.ERROR,MSG.BUSY,MSG.DATA]) {
+    assert(state.accept(v2.buildV2Frame(type,0,1,type===MSG.DATA?0:undefined)).action==='stale','stale interruption');
+  }
+  assert(state.itemId===2,'stale control aborted new item');
+  const first=v2.buildV2Frame(MSG.META,0,2,undefined,protocolEncodeMeta(v2Meta(0n,2))[0]);
+  state.accept(first);first[first.length-1]^=1;
+  v2Reject(()=>state.accept(first),'conflicting duplicate accepted');
+  assert(state.itemId===null,'conflict did not abort');
+}
+
+function testV2Session() {
+  const prefix=new Uint8Array([1,2,3,4]);
+  equalBytes(v2.makeV2Iv(prefix,1,2),new Uint8Array([1,2,3,4,0,0,0,1,0,0,0,2]),'IV bytes');
+  assert(String(v2.makeV2Iv(prefix,1,0))!==String(v2.makeV2Iv(prefix,0,1)),'shift collision');
+  const ivs=new Set();
+  for(const itemId of [1,2,3]) for(let segment=0;segment<1286;segment++) {
+    const iv=String(v2.makeV2Iv(prefix,itemId,segment));
+    assert(!ivs.has(iv),`duplicate IV for item ${itemId}, segment ${segment}`);
+    ivs.add(iv);
+  }
+  assert(ivs.size===3*1286,'multi-item/segment IV uniqueness count');
+  v2Reject(()=>v2.makeV2Iv(prefix,1,0x100000000),'segment overflow');
+  assert(v2.compareV2Offers(1,1,1,2)<0,'USB equal-ID tie');
+  const session=new AirBridgeCryptoSession({role:1,sendFn:async()=>{}});
+  v2Reject(()=>session.allocateStreamItemId(),'pre-SAS allocation');
+  const aad=v2.makeV2Aad({cryptoVersion:1,keyId:'AAAAAAAAAAAAAAAAAAAAAA',direction:'usb-to-ble',itemId:1,segmentIndex:0,segmentPlaintextLen:50,finalFlag:true});
+  assert(aad.length===38 && aad[37]===1,'AAD length/final flag');
+}
+
+function testV2Completion() {
+  for(const payloadSize of [0n,4194305n]) {
+    const meta=v2Meta(payloadSize);
+    const state=new v2.V2ReceiveState({keyId:meta.keyId,direction:meta.direction});
+    state.accept(v2.buildV2Frame(MSG.HELLO,0,1));
+    for(const [seq,payload] of protocolEncodeMeta(meta).entries()) state.accept(v2.buildV2Frame(MSG.META,seq,1,undefined,payload));
+    for(let segment=0;segment<meta.segmentCount;segment++) {
+      const length=segment===meta.segmentCount-1?v2.toSafeV2Number(BigInt(meta.totalCiphertextBytes)-BigInt(segment)*65552n):65552;
+      for(let offset=0;offset<length;offset+=51) {
+        state.accept(v2.buildV2Frame(MSG.DATA,offset/51,1,segment,new Uint8Array(Math.min(51,length-offset)).fill(segment&255)));
+        assert(state.last.payload.length<=59 && state.metaFragments.length===0,'unbounded replay/ciphertext retention');
+      }
+    }
+    const proof={authenticatedSegments:meta.segmentCount,streamPlaintextBytes:50n+payloadSize,
+      headerLen:50,payloadSize,payloadBytes:payloadSize,payloadSha256:'00'.repeat(32),actualSha256:'00'.repeat(32)};
+    v2Reject(()=>v2.verifyV2Completion(meta,{...proof,authenticatedSegments:0}),'unauthenticated completion');
+    v2Reject(()=>v2.verifyV2Completion(meta,{...proof,payloadBytes:payloadSize+1n}),'wrong payload size');
+    v2Reject(()=>v2.verifyV2Completion(meta,{...proof,actualSha256:'11'.repeat(32)}),'hash mismatch');
+    state.verifyCompletion(proof);
+    const done=v2.buildV2Frame(MSG.DONE,0,1);
+    assert(state.accept(done).action==='ack','verified completion');
+    assert(state.accept(done).action==='duplicate','DONE retry');
+  }
+}
+
+function v2MalformedError(itemId) {
+  const frame=v2.buildV2Frame(MSG.ERROR,0,itemId,undefined,'x');
+  frame[frame.length-1]=255;
+  return frame;
+}
+
+function testV2StaleMalformedError() {
+  const state=new v2.V2ReceiveState({keyId:'AAAAAAAAAAAAAAAAAAAAAA',direction:'usb-to-ble'});
+  state.accept(v2.buildV2Frame(MSG.HELLO,0,1));
+  state.accept(v2.buildV2Frame(MSG.CANCEL,0,1));
+  state.accept(v2.buildV2Frame(MSG.HELLO,0,2));
+  const stale=v2MalformedError(1);
+  v2Reject(()=>v2.parseV2Frame(stale),'standalone parser lost fatal UTF-8');
+  const interrupt=()=>{
+    const before={...state};
+    for(let i=0;i<10;i++) assert(state.accept(stale).action==='stale','malformed stale ERROR accepted');
+    assert(Object.keys(before).every(key=>state[key]===before[key]),'stale ERROR mutated receiver');
+    assert(state.itemId===2,'new item was aborted');
+  };
+  interrupt();
+  for(const [seq,payload] of protocolEncodeMeta(v2Meta(0n,2)).entries()) {
+    state.accept(v2.buildV2Frame(MSG.META,seq,2,undefined,payload));interrupt();
+  }
+  state.accept(v2.buildV2Frame(MSG.DATA,0,2,0,new Uint8Array(51)));interrupt();
+  state.accept(v2.buildV2Frame(MSG.DATA,1,2,0,new Uint8Array(15)));
+  state.verifyCompletion({authenticatedSegments:1,streamPlaintextBytes:50n,headerLen:50,
+    payloadSize:0n,payloadBytes:0n,payloadSha256:'00'.repeat(32),actualSha256:'00'.repeat(32)});
+  interrupt();
+  assert(state.accept(v2.buildV2Frame(MSG.DONE,0,2)).action==='ack','next item did not complete');
+  state.accept(v2.buildV2Frame(MSG.HELLO,0,3));
+  v2Reject(()=>state.accept(v2MalformedError(3)),'malformed current ERROR accepted');
+  assert(state.itemId===null,'malformed current ERROR not fail-closed');
+  const badMagic=stale.slice();badMagic[5]=0;
+  const badSeq=stale.slice();badSeq[2]=1;
+  const padded=new Uint8Array(64);padded.set(stale);padded[63]=1;
+  for(const raw of [badMagic,badSeq,padded,stale.slice(0,12),new Uint8Array(65)]) v2Reject(()=>state.accept(raw),'ambiguous control ignored');
+}
+
+function testV2SenderStaleMalformedError() {
+  const wait=new v2.V2StopAndWait();
+  wait.begin(v2.buildV2Frame(MSG.HELLO,0,2));
+  const pending=wait.pending;
+  for(let i=0;i<10;i++) {
+    assert(wait.receive(v2MalformedError(1))==='ignored','sender stale ERROR not ignored');
+    assert(wait.pending===pending,'sender pending frame changed');
+  }
+  assert(wait.receive(protocolBuildMessage(MSG.ACK,0,v2.makeV2AckPayload({type:MSG.HELLO,seq:0,itemId:2,segment:0xffffffff})))==='ack','HELLO did not settle');
+  wait.begin(v2.buildV2Frame(MSG.DATA,0,2,0,new Uint8Array(51)));
+  assert(wait.receive(v2MalformedError(1))==='ignored','post-capability stale ERROR');
+  v2Reject(()=>wait.receive(v2MalformedError(2)),'current invalid UTF-8 ignored');
+  const badMagic=v2MalformedError(1);badMagic[5]=0;
+  const other=new v2.V2StopAndWait();other.begin(v2.buildV2Frame(MSG.HELLO,0,2));
+  v2Reject(()=>other.receive(badMagic),'ambiguous sender control ignored');
+}
+
+function testV2RetryViews() {
+  const hello=v2.buildV2Frame(MSG.HELLO,0,1);
+  const factories=[buffer=>new DataView(buffer,3,hello.length),buffer=>new Uint8Array(buffer,3,hello.length),
+    buffer=>new Uint16Array(buffer,4,32),buffer=>new Float32Array(buffer,4,16)];
+  for(const viewOf of factories) {
+    const buffer=new ArrayBuffer(80);new Uint8Array(buffer).fill(0xa5);
+    const view=viewOf(buffer);
+    const raw=new Uint8Array(buffer,view.byteOffset,view.byteLength);raw.fill(0);raw.set(hello);
+    const expected=raw.slice();
+    const wait=new v2.V2StopAndWait();wait.begin(view);
+    equalBytes(wait.pending.frame,expected,view.constructor.name+' retry bytes');
+    new Uint8Array(buffer).fill(255);
+    equalBytes(wait.pending.frame,expected,'retry aliases caller');
+    assert(v2.parseV2Frame(wait.pending.frame).itemId===1,'retry context changed');
+  }
+}
 
 const harnessEvidenceRecords = [];
 window.__airbridgeHarnessEvidence = harnessEvidenceRecords;
@@ -1424,6 +1650,8 @@ function createHidDeviceMock(reports) {
   const listeners = new Set();
 
   const device = {
+    vendorId: 0x03F0,
+    productId: 0x5341,
     collections: [{ usagePage: 0xFF00, usage: 0x01 }],
     sentReports: [],
     closeCallOrder: [],
@@ -1489,6 +1717,8 @@ async function testBootstrapJsEval() {
   const payloadReport = new Uint8Array(FRAME_SIZE);
   payloadReport.set(compressedPayload, 0);
   const mockDevice = createHidDeviceMock([headerReport, payloadReport]);
+  assert(Number.isInteger(mockDevice.vendorId) && Number.isInteger(mockDevice.productId),
+    'bootstrap HID mock must expose numeric vendorId/productId like a real HIDDevice');
 
   // Flags for detecting which landing-page path bootstrap takes.
   win.__docWriteCalled = false;
@@ -1721,6 +1951,8 @@ async function testBootstrapTransferTimeout() {
   const doc = win.document;
   const mockDevice = createHidDeviceMock([]);
   let requestDeviceCalled = false;
+  assert(Number.isInteger(mockDevice.vendorId) && Number.isInteger(mockDevice.productId),
+    'bootstrap HID mock must expose numeric vendorId/productId like a real HIDDevice');
   win.ABT = 10;
 
   Object.defineProperty(win, 'navigator', {

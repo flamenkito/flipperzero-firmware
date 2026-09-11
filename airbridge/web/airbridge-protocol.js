@@ -15,6 +15,10 @@ export const MSG = Object.freeze({
 });
 
 export const MAX_PAYLOAD = 59;
+export const V2_DATA_SLICE_LEN = MAX_PAYLOAD - 8;
+export const V2_SEGMENT_PLAINTEXT = 65536;
+export const V2_SEGMENT_CIPHERTEXT = 65552;
+export const V2_CONTROL_SEGMENT = 0xffffffff;
 export const AIRBRIDGE_CRYPTO_V1 = 1;
 export const NACK_REASON = Object.freeze({
   MISSING: 1,
@@ -164,6 +168,7 @@ function encodeErrorPayload(reason) {
   return payload.length === 0 ? textEncoder.encode('Protocol error') : payload;
 }
 
+/* characterization-only:start */
 function metaTransferSize(meta) {
   return meta?.kind === 'encrypted' ? meta.encryptedSize : meta?.size;
 }
@@ -173,6 +178,7 @@ function expectedDataChunks(meta) {
   const size = metaTransferSize(meta);
   return Number.isFinite(size) ? Math.max(1, Math.ceil(size / MAX_PAYLOAD)) : null;
 }
+/* characterization-only:end */
 
 function isItemDataFrameType(type) {
   return type === MSG.HELLO || type === MSG.ITEM_META || type === MSG.ITEM_DATA || type === MSG.ITEM_DONE;
@@ -340,6 +346,7 @@ function abortReasonName(reason) {
   }
 }
 
+/* characterization-only:start */
 function makeAad({ cryptoVersion, itemId, direction, iv, encryptedSize }) {
   return concatBytes([
     ascii('AB1-AAD'),
@@ -401,6 +408,7 @@ async function decodeInnerEnvelope(bytes) {
     hash: Array.from(plainSha256, b => b.toString(16).padStart(2, '0')).join(''),
   };
 }
+/* characterization-only:end */
 
 /**
  * Encode a metadata object into META payload fragments. Each payload begins with
@@ -485,6 +493,10 @@ export async function waitAck(sendFn, expectedType, expectedSeq, timeoutMs = 500
 }
 
 export class AirBridgeCryptoSession {
+  #invalidations = new Set();
+  #itemCryptoMode = null;
+  #outboundStream = null;
+  #inboundStream = null;
   constructor(options) {
     if (!options || (options.role !== CRYPTO_ROLE.USB && options.role !== CRYPTO_ROLE.BLE)) throw new Error('crypto role must be USB or BLE');
     assertSendFn(options.sendFn);
@@ -498,6 +510,11 @@ export class AirBridgeCryptoSession {
   }
 
   reset() {
+    this.state = CRYPTO_STATE.REQUIRED;
+    for (const callback of [...this.#invalidations]) callback();
+    this.#outboundStream?.abort(); this.#outboundStream = null;
+    this.#inboundStream?.abort(); this.#inboundStream = null;
+    this.#itemCryptoMode = null;
     this.state = CRYPTO_STATE.REQUIRED;
     this.keyPair = null;
     this.localPubRaw = null;
@@ -515,13 +532,24 @@ export class AirBridgeCryptoSession {
     this.keyId = null;
     this.keys = null;
     this.noncePrefixes = null;
+    /* characterization-only:start */
     this.outboundCounter = 0n;
+    /* characterization-only:end */
+    this.streamOutboundId = 0;
+    this.streamInboundId = 0;
+    /* characterization-only:start */
     this.inboundReplay = new Set();
+    /* characterization-only:end */
     this.emitState();
   }
 
   emitState() {
     this.onStateChange(this.getStatus());
+  }
+
+  onInvalidated(callback) {
+    this.#invalidations.add(callback);
+    return () => this.#invalidations.delete(callback);
   }
 
   getStatus() {
@@ -767,14 +795,56 @@ export class AirBridgeCryptoSession {
     await this.sendFn(buildMessage(MSG.ACK, 0, makeAckPayload(type, seq)));
   }
 
+  /* characterization-only:start */
   makeIv(direction, counter) {
     const prefix = this.noncePrefixes?.[direction];
     if (!prefix) throw new Error('missing nonce prefix');
     return concatBytes([prefix, u64Bytes(counter)]);
   }
+  /* characterization-only:end */
 
+  // Called only after the hash pass, immediately before HELLO. There is no
+  // refund operation: cancel, error, timeout and success all burn the ID.
+  allocateStreamItemId() {
+    if (!this.isUnlocked()) throw new Error('crypto session is locked');
+    this.#selectItemCryptoMode(2);
+    if (this.streamOutboundId >= 0xffffffff) {
+      this.clearKeys(CRYPTO_STATE.ABORTED);
+      throw new Error('stream item ID wrapped; fresh ECDH session required');
+    }
+    return ++this.streamOutboundId;
+  }
+
+  acceptStreamItemId(itemId) {
+    if (!this.isUnlocked()) throw new Error('crypto session is locked');
+    this.#selectItemCryptoMode(2);
+    requireUint32(itemId, 'itemId');
+    if (itemId <= this.streamInboundId) throw new Error('stale stream item ID');
+    this.streamInboundId = itemId;
+  }
+
+  // Hash-pass receipts are inputs; this API performs only the second stream pass.
+  openEncryptedStream(header, source) {
+    const stream = new V2EncryptedStream(this, header, source);
+    this.#outboundStream?.abort(); this.#outboundStream = stream;
+    return stream;
+  }
+
+  openSegmentReceiver(meta) {
+    const receiver = new V2SegmentReceiver(this, meta);
+    this.#inboundStream?.abort(); this.#inboundStream = receiver;
+    return receiver;
+  }
+
+  #selectItemCryptoMode(version) {
+    if (this.#itemCryptoMode !== null && this.#itemCryptoMode !== version) throw new Error('mixed v1/v2 item crypto requires fresh ECDH');
+    this.#itemCryptoMode = version;
+  }
+
+  /* characterization-only:start */
   async encryptItem(meta, data) {
     if (!this.isUnlocked()) throw new Error('crypto session is locked');
+    this.#selectItemCryptoMode(1);
     const direction = directionForRole(this.role);
     const itemCounter = this.outboundCounter;
     if (itemCounter > 0xffff_ffff_ffff_ffffn) throw new Error('crypto item counter wrapped');
@@ -804,6 +874,7 @@ export class AirBridgeCryptoSession {
 
   async decryptItem(meta, encrypted) {
     if (!this.isUnlocked()) throw new Error('crypto session is locked');
+    this.#selectItemCryptoMode(1);
     if (meta.kind !== 'encrypted' || meta.cryptoVersion !== AIRBRIDGE_CRYPTO_V1 || meta.alg !== 'AES-GCM-256') throw new Error('encrypted item metadata required');
     if (meta.keyId !== this.keyId) throw new Error('encrypted item keyId mismatch');
     const direction = meta.direction;
@@ -827,9 +898,773 @@ export class AirBridgeCryptoSession {
     this.inboundReplay.add(replayKey);
     return decodeInnerEnvelope(plain);
   }
+  /* characterization-only:end */
+}
+
+const v2Magic = new Uint8Array([65, 66, 50, 83]);
+const v2FatalDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const v2ItemTypes = [MSG.HELLO, MSG.ITEM_META, MSG.ITEM_DATA, MSG.ITEM_DONE, MSG.CANCEL];
+
+function requireV2BigInt(value) {
+  if (typeof value !== 'bigint' || value < 0n || value > 0xffffffffffffffffn) {
+    throw new RangeError('uint64 BigInt required');
+  }
+  return value;
+}
+
+export function parseCanonicalUint64(value) {
+  if (typeof value !== 'string' || value.length > 20 || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error('canonical unsigned decimal uint64 string required');
+  }
+  return requireV2BigInt(BigInt(value));
+}
+
+export function toSafeV2Number(value) {
+  requireV2BigInt(value);
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError('unsafe Number conversion');
+  return Number(value);
+}
+
+function v2Text(value) {
+  if (typeof value !== 'string') throw new TypeError('UTF-8 string required');
+  const encoded = textEncoder.encode(value);
+  if (v2FatalDecoder.decode(encoded) !== value) throw new Error('invalid UTF-8 source');
+  return encoded;
+}
+
+function v2KeyBytes(keyId) {
+  if (typeof keyId !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(keyId)) throw new Error('invalid keyId');
+  const key = base64ToBytes(keyId);
+  if (key.length !== 16 || bytesToBase64(key, true) !== keyId) throw new Error('noncanonical keyId');
+  return key;
+}
+
+function validateV2Context({ type, seq, itemId, segment }) {
+  if (!v2ItemTypes.includes(type)) throw new Error('invalid v2 item type');
+  requireUint16(seq, 'seq');
+  requireUint32(itemId, 'itemId');
+  requireUint32(segment, 'segment');
+  if (type !== MSG.ITEM_DATA && segment !== V2_CONTROL_SEGMENT) throw new Error('invalid control segment');
+  if ([MSG.HELLO, MSG.ITEM_DONE, MSG.CANCEL].includes(type) && seq !== 0) throw new Error('invalid control seq');
+}
+
+export function makeV2AckPayload(context, reason) {
+  validateV2Context(context);
+  const ack = concatBytes([makeAckPayload(context.type, context.seq), v2Magic,
+    u32Bytes(context.itemId), u32Bytes(context.segment)]);
+  if (reason === undefined) return ack;
+  if (!Object.values(NACK_REASON).includes(reason)) throw new Error('invalid NACK reason');
+  return concatBytes([ack, new Uint8Array([reason])]);
+}
+
+export function buildV2Frame(type, seq, itemId, segment = V2_CONTROL_SEGMENT, data) {
+  requireUint32(itemId, 'itemId');
+  let payload;
+  switch (type) {
+    case MSG.HELLO: payload = concatBytes([u32Bytes(itemId), v2Magic]); break;
+    case MSG.ITEM_META: payload = normalizePayload(data); break;
+    case MSG.ITEM_DATA:
+      payload = concatBytes([u32Bytes(itemId), u32Bytes(segment), normalizePayload(data)]);
+      break;
+    case MSG.ITEM_DONE:
+    case MSG.CANCEL: payload = u32Bytes(itemId); break;
+    case MSG.ERROR: payload = concatBytes([v2Magic, u32Bytes(itemId), v2Text(data ?? '')]); break;
+    case MSG.BUSY: payload = concatBytes([v2Magic, u32Bytes(itemId)]); break;
+    default: throw new Error('invalid v2 frame type');
+  }
+  if (v2ItemTypes.includes(type)) validateV2Context({type, seq, itemId, segment});
+  const frame = buildMessage(type, seq, payload);
+  parseV2Frame(frame, itemId);
+  return frame;
+}
+
+export function parseV2Frame(raw, activeItemId) {
+  const msg = parseV2RoutingFrame(raw, activeItemId);
+  validateV2ControlBody(msg);
+  return msg;
+}
+
+function validateV2ControlBody(msg) {
+  if (msg.type === MSG.ERROR) v2FatalDecoder.decode(msg.body);
+}
+
+function parseV2Envelope(raw) {
+  const bytes = normalizePayload(raw);
+  const msg = parseMessage(bytes);
+  if (!msg || (bytes.length !== 5 + msg.len && bytes.length !== 64) || bytes.length > 64) {
+    throw new Error('malformed v2 frame length');
+  }
+  if (bytes.slice(5 + msg.len).some(byte => byte !== 0)) throw new Error('nonzero frame padding');
+  return msg;
+}
+
+export function parseV2RoutingFrame(raw, activeItemId) {
+  const msg = parseV2Envelope(raw);
+  const p = msg.payload;
+  let itemId;
+  let segment = V2_CONTROL_SEGMENT;
+  let body = p;
+  const magicAt = offset => bytesEqual(p.slice(offset, offset + 4), v2Magic);
+  switch (msg.type) {
+    case MSG.HELLO:
+      if (p.length !== 8 || !magicAt(4)) throw new Error('Unsupported protocol version');
+      itemId = readU32(p, 0);
+      break;
+    case MSG.ITEM_META:
+      requireUint32(activeItemId, 'META active itemId');
+      if (p.length < 3 || ((p[0] << 8) | p[1]) === 0) throw new Error('invalid META fragment');
+      itemId = activeItemId;
+      break;
+    case MSG.ITEM_DATA:
+      if (p.length < 8) throw new Error('missing DATA context');
+      itemId = readU32(p, 0); segment = readU32(p, 4); body = p.slice(8);
+      break;
+    case MSG.ITEM_DONE:
+    case MSG.CANCEL:
+      if (p.length !== 4) throw new Error('missing item control context');
+      itemId = readU32(p, 0);
+      break;
+    case MSG.ERROR:
+    case MSG.BUSY:
+      if (p.length < 8 || !magicAt(0) || (msg.type === MSG.BUSY && p.length !== 8) || msg.seq !== 0) throw new Error('invalid item control');
+      itemId = readU32(p, 4); body = p.slice(8);
+      break;
+    case MSG.ACK:
+    case MSG.NACK: {
+      if (p.length !== (msg.type === MSG.ACK ? 15 : 16) || !magicAt(3) || msg.seq !== 0) throw new Error('invalid v2 ACK/NACK');
+      const context = {type:p[0], seq:(p[1]<<8)|p[2], itemId:readU32(p,7), segment:readU32(p,11)};
+      validateV2Context(context);
+      if (msg.type === MSG.NACK && !Object.values(NACK_REASON).includes(p[15])) throw new Error('invalid NACK reason');
+      return {...msg, ...context, type:msg.type, ackedType:context.type, ackedSeq:context.seq, seq:msg.seq, reason:p[15]};
+    }
+    default: throw new Error('Unsupported protocol version');
+  }
+  if (v2ItemTypes.includes(msg.type)) validateV2Context({...msg, itemId, segment});
+  return {...msg, itemId, segment, body};
+}
+
+export function compareV2Offers(leftId, leftRole, rightId, rightRole) {
+  requireUint32(leftId, 'itemId'); requireUint32(rightId, 'itemId');
+  if (![1,2].includes(leftRole) || ![1,2].includes(rightRole)) throw new Error('invalid role');
+  return Math.sign(leftId - rightId || leftRole - rightRole);
+}
+
+export function v2StreamLayout(headerLen, payloadSize) {
+  if (!Number.isInteger(headerLen) || headerLen < 50 || headerLen > 65536) throw new Error('invalid stream header length');
+  requireV2BigInt(payloadSize);
+  const streamPlaintextBytes = BigInt(headerLen) + payloadSize;
+  const count = (streamPlaintextBytes + 65535n) / 65536n;
+  if (count > 0xffffffffn) throw new RangeError('segment count overflow');
+  const totalCiphertextBytes = requireV2BigInt(streamPlaintextBytes + 16n * count);
+  return {streamPlaintextBytes, segmentCount:Number(count), totalCiphertextBytes};
+}
+
+export function makeV2Meta({keyId, direction, itemId, headerLen, payloadSize}) {
+  v2KeyBytes(keyId); directionByte(direction); requireUint32(itemId, 'itemId');
+  const layout = v2StreamLayout(headerLen, payloadSize);
+  return {kind:'encrypted-stream', protocolVersion:2, cryptoVersion:1, keyId, direction, itemId,
+    totalCiphertextBytes:String(layout.totalCiphertextBytes), maxSegmentPlaintextBytes:65536,
+    maxSegmentCiphertextBytes:65552, segmentCount:layout.segmentCount};
+}
+
+export function validateV2Meta(meta, expected) {
+  // Recognizable old/plain schemas are incompatible; malformed current v2
+  // fields below retain their precise validation errors.
+  if (meta && (['text', 'attachment', 'encrypted'].includes(meta.kind) ||
+      (meta.protocolVersion !== undefined && meta.protocolVersion !== 2))) {
+    throw new Error('Unsupported protocol version');
+  }
+  const fields = ['kind','protocolVersion','cryptoVersion','keyId','direction','itemId',
+    'totalCiphertextBytes','maxSegmentPlaintextBytes','maxSegmentCiphertextBytes','segmentCount'];
+  if (!meta || Object.keys(meta).length !== fields.length || !fields.every(field => Object.hasOwn(meta, field))) throw new Error('unsupported META fields');
+  if (meta.kind !== 'encrypted-stream' || meta.protocolVersion !== 2 || meta.cryptoVersion !== 1) throw new Error('Unsupported protocol version');
+  v2KeyBytes(meta.keyId); directionByte(meta.direction); requireUint32(meta.itemId, 'itemId');
+  requireUint32(meta.segmentCount, 'segmentCount');
+  if (!meta.segmentCount || meta.maxSegmentPlaintextBytes !== 65536 || meta.maxSegmentCiphertextBytes !== 65552) throw new Error('invalid segment limits');
+  if (!expected || ['keyId','direction','itemId'].some(field => meta[field] !== expected[field])) throw new Error('META context mismatch');
+  const total = parseCanonicalUint64(meta.totalCiphertextBytes);
+  const final = total - BigInt(meta.segmentCount - 1) * 65552n;
+  if (final < 17n || final > 65552n || (meta.segmentCount === 1 && final < 66n)) throw new Error('inconsistent ciphertext total');
+  return {...meta, totalCiphertextBytes:total};
+}
+
+export function encodeV2Header({kind, name, mimeType, payloadSize, payloadSha256}) {
+  const kindByte = kind === 'text' ? 1 : kind === 'attachment' ? 2 : 0;
+  if (!kindByte) throw new Error('invalid plaintext kind');
+  const n = v2Text(name), m = v2Text(mimeType);
+  requireUint16(n.length, 'name length'); requireUint16(m.length, 'MIME length');
+  v2StreamLayout(50 + n.length + m.length, payloadSize);
+  return concatBytes([v2Magic, new Uint8Array([2,kindByte,n.length>>8,n.length&255,m.length>>8,m.length&255]),
+    u64Bytes(payloadSize), hexToBytes(payloadSha256), n, m]);
+}
+
+export function decodeV2Header(raw) {
+  const p = normalizePayload(raw);
+  if (p.length < 50 || !bytesEqual(p.slice(0,4),v2Magic) || p[4] !== 2 || ![1,2].includes(p[5])) throw new Error('invalid AB2S header');
+  const n = (p[6]<<8)|p[7], m = (p[8]<<8)|p[9], headerLen = 50 + n + m;
+  if (headerLen > 65536 || p.length < headerLen) throw new Error('truncated or oversized header');
+  const payloadSize = readU64(p,10);
+  v2StreamLayout(headerLen,payloadSize);
+  return {kind:p[5]===1?'text':'attachment', name:v2FatalDecoder.decode(p.slice(50,50+n)),
+    mimeType:v2FatalDecoder.decode(p.slice(50+n,headerLen)), payloadSize,
+    payloadSha256:Array.from(p.slice(18,50),b=>b.toString(16).padStart(2,'0')).join(''), headerLen};
+}
+
+export function makeV2Iv(noncePrefix, itemId, segmentIndex) {
+  const prefix = normalizePayload(noncePrefix);
+  if (prefix.length !== 4) throw new Error('nonce prefix must be four bytes');
+  return concatBytes([prefix, u32Bytes(itemId), u32Bytes(segmentIndex)]);
+}
+
+export function makeV2Aad({cryptoVersion, keyId, direction, itemId, segmentIndex, segmentPlaintextLen, finalFlag}) {
+  if (cryptoVersion !== 1 || typeof finalFlag !== 'boolean') throw new Error('invalid segment crypto context');
+  if (!Number.isInteger(segmentPlaintextLen) || segmentPlaintextLen < 1 || segmentPlaintextLen > 65536 || (!finalFlag && segmentPlaintextLen !== 65536)) throw new Error('invalid segment plaintext length');
+  return concatBytes([ascii('AB2-AAD'),new Uint8Array([cryptoVersion]),v2KeyBytes(keyId),
+    new Uint8Array([directionByte(direction)]),u32Bytes(itemId),u32Bytes(segmentIndex),
+    u32Bytes(segmentPlaintextLen),new Uint8Array([Number(finalFlag)])]);
+}
+
+export function verifyV2Completion(meta, proof) {
+  const parsed = validateV2Meta(meta,meta);
+  const layout = v2StreamLayout(proof.headerLen,proof.payloadSize);
+  requireV2BigInt(proof.payloadBytes); requireV2BigInt(proof.streamPlaintextBytes);
+  if (proof.authenticatedSegments !== parsed.segmentCount || layout.segmentCount !== parsed.segmentCount ||
+      layout.totalCiphertextBytes !== parsed.totalCiphertextBytes || proof.streamPlaintextBytes !== layout.streamPlaintextBytes ||
+      proof.payloadBytes !== proof.payloadSize || !bytesEqual(hexToBytes(proof.payloadSha256),hexToBytes(proof.actualSha256))) {
+    throw new Error('stream completion verification failed');
+  }
+  return true;
+}
+
+export class V2StopAndWait {
+  constructor() { this.pending = null; this.capabilityItemId = null; }
+
+  begin(frame, itemId = this.capabilityItemId) {
+    if (this.pending) throw new Error('one outstanding frame allowed');
+    const ownedFrame = new Uint8Array(normalizePayload(frame));
+    const msg = parseV2Frame(ownedFrame,itemId);
+    validateV2Context(msg);
+    if (msg.type !== MSG.HELLO && msg.itemId !== this.capabilityItemId) throw new Error('AB2S capability proof required');
+    this.pending = {type:msg.type, seq:msg.seq, itemId:msg.itemId, segment:msg.segment, frame:ownedFrame};
+  }
+
+  receive(frame) {
+    if (!this.pending) return 'ignored';
+    const p = this.pending;
+    const raw = parseV2Envelope(frame);
+    if (p.type === MSG.HELLO) {
+      // KEY acknowledgements retain their old shape, but cannot prove AB2S.
+      if (raw.type === MSG.ACK && raw.payload.length === 3 &&
+          [MSG.KEY_OFFER, MSG.KEY_REPLY, MSG.KEY_CONFIRM].includes(raw.payload[0])) return 'ignored';
+      const missingProof = raw.type === MSG.ACK && raw.seq === 0 &&
+        (raw.payload.length !== 15 || !bytesEqual(raw.payload.slice(3, 7), v2Magic));
+      const unsupported = raw.type === MSG.ERROR && raw.seq === 0 &&
+        bytesEqual(raw.payload, ascii('Unsupported protocol version'));
+      if (missingProof || unsupported) {
+        this.abort();
+        throw new Error('Unsupported protocol version');
+      }
+    }
+    const msg = parseV2RoutingFrame(frame);
+    if (msg.itemId !== p.itemId) return 'ignored';
+    validateV2ControlBody(msg);
+    if (msg.type === MSG.ERROR && bytesEqual(msg.body, ascii('Unsupported protocol version'))) {
+      this.abort(); throw new Error('Unsupported protocol version');
+    }
+    if ([MSG.ERROR,MSG.BUSY,MSG.CANCEL].includes(msg.type)) {
+      this.abort();
+      return msg.type === MSG.ERROR ? 'error' : msg.type === MSG.BUSY ? 'busy' : 'cancel';
+    }
+    if (![MSG.ACK,MSG.NACK].includes(msg.type) || msg.ackedType !== p.type || msg.ackedSeq !== p.seq || msg.segment !== p.segment) return 'ignored';
+    if (msg.type === MSG.NACK) return 'retry';
+    if (p.type === MSG.HELLO) this.capabilityItemId = p.itemId;
+    if ([MSG.CANCEL,MSG.ITEM_DONE].includes(p.type)) this.capabilityItemId = null;
+    this.pending = null;
+    return 'ack';
+  }
+
+  abort() { this.pending = null; this.capabilityItemId = null; }
+}
+
+// Parser/order state only: no ciphertext accumulation or decryption. Task 4/6
+// supplies authenticated segment and hash receipts before verifyCompletion.
+export class V2ReceiveState {
+  constructor({keyId, direction, session = null}) {
+    v2KeyBytes(keyId); directionByte(direction);
+    this.keyId = keyId; this.direction = direction; this.session = session;
+    this.highWaterId = 0;
+    this.abort();
+  }
+
+  abort() {
+    this.itemId = null; this.meta = null; this.metaFragments = [];
+    this.segmentIndex = 0; this.chunkInSegment = 0; this.ciphertextBytes = 0n;
+    this.last = null; this.verified = false;
+  }
+
+  accept(raw) {
+    let msg;
+    try {
+      msg = parseV2RoutingFrame(raw,this.itemId);
+      if ([MSG.ERROR,MSG.BUSY].includes(msg.type) && msg.itemId !== this.itemId) return {action:'stale'};
+      validateV2ControlBody(msg);
+    }
+    catch (error) {
+      if (parseMessage(raw)?.type === MSG.HELLO && error.message === 'Unsupported protocol version') {
+        return {action:'error', frame:buildMessage(MSG.ERROR,0,ascii(error.message))};
+      }
+      this.abort(); throw error;
+    }
+    const context = `${msg.type}:${msg.seq}:${msg.itemId}:${msg.segment}`;
+    if (this.last?.context === context) {
+      if (!bytesEqual(this.last.payload,msg.payload)) { this.abort(); throw new Error('conflicting duplicate frame'); }
+      return {action:'duplicate', frame:this.last.ack.slice()};
+    }
+    if (msg.type === MSG.HELLO) {
+      if (msg.itemId <= this.highWaterId) return {action:'stale'};
+      if (this.itemId !== null) return {action:'busy',frame:buildV2Frame(MSG.BUSY,0,msg.itemId)};
+      this.session?.acceptStreamItemId(msg.itemId);
+      this.abort(); this.highWaterId = msg.itemId; this.itemId = msg.itemId;
+    } else if (this.itemId === null || msg.itemId !== this.itemId) {
+      return {action:'stale'};
+    } else {
+      try {
+        switch (msg.type) {
+          case MSG.ITEM_META: this.acceptMeta(msg); break;
+          case MSG.ITEM_DATA: this.acceptData(msg); break;
+          case MSG.ITEM_DONE:
+            if (!this.verified) throw new Error('completion verification required before DONE ACK');
+            this.finish(); break;
+          case MSG.CANCEL: this.finish(); break;
+          case MSG.ERROR:
+          case MSG.BUSY: this.abort(); return {action:msg.type === MSG.ERROR?'error':'busy'};
+          default: throw new Error('unexpected v2 item frame');
+        }
+      } catch (error) { this.abort(); throw error; }
+    }
+    const ack = buildMessage(MSG.ACK,0,makeV2AckPayload(msg));
+    this.last = {context, payload:msg.payload.slice(), ack};
+    return {action:'ack',frame:ack};
+  }
+
+  acceptMeta(msg) {
+    if (this.meta || msg.seq !== this.metaFragments.length) throw new Error('META order mismatch');
+    const count = (msg.payload[0]<<8)|msg.payload[1];
+    if (msg.seq >= count || (this.metaFragments.length && count !== ((this.metaFragments[0][0]<<8)|this.metaFragments[0][1]))) throw new Error('META fragment count mismatch');
+    this.metaFragments.push(msg.payload.slice());
+    if (this.metaFragments.length === count) {
+      const meta = decodeMeta(this.metaFragments);
+      this.meta = validateV2Meta(meta,{keyId:this.keyId,direction:this.direction,itemId:this.itemId});
+      this.metaFragments = [];
+    }
+  }
+
+  acceptData(msg) {
+    if (!this.meta || msg.segment !== this.segmentIndex || msg.seq !== this.chunkInSegment || this.segmentIndex >= this.meta.segmentCount) throw new Error('DATA context/order mismatch');
+    const segmentLength = this.segmentIndex === this.meta.segmentCount - 1
+      ? toSafeV2Number(this.meta.totalCiphertextBytes - BigInt(this.segmentIndex)*65552n) : 65552;
+    const offset = this.chunkInSegment * V2_DATA_SLICE_LEN;
+    const expectedLength = Math.min(V2_DATA_SLICE_LEN,segmentLength-offset);
+    if (expectedLength <= 0 || msg.body.length !== expectedLength) throw new Error('DATA slice length mismatch');
+    this.ciphertextBytes += BigInt(msg.body.length);
+    if (offset + msg.body.length === segmentLength) { this.segmentIndex++; this.chunkInSegment = 0; }
+    else this.chunkInSegment++;
+  }
+
+  verifyCompletion(proof) {
+    try {
+      if (!this.meta || this.segmentIndex !== this.meta.segmentCount || this.ciphertextBytes !== this.meta.totalCiphertextBytes) throw new Error('incomplete ciphertext');
+      verifyV2Completion({...this.meta,totalCiphertextBytes:String(this.meta.totalCiphertextBytes)},proof);
+      this.verified = true;
+    } catch (error) { this.abort(); throw error; }
+  }
+
+  finish() {
+    this.itemId = null; this.meta = null; this.metaFragments = [];
+    this.verified = false; this.ciphertextBytes = 0n;
+  }
+}
+
+function v2SegmentLength(meta, index) {
+  requireUint32(index, 'segment index');
+  if (index >= meta.segmentCount) throw new Error('segment index outside item');
+  return index === meta.segmentCount - 1
+    ? toSafeV2Number(BigInt(meta.totalCiphertextBytes) - BigInt(index) * 65552n) : 65552;
+}
+
+function v2SegmentAlgorithm(session, meta, index) {
+  const iv = makeV2Iv(session.noncePrefixes[meta.direction], meta.itemId, index);
+  const additionalData = makeV2Aad({...meta, segmentIndex:index,
+    segmentPlaintextLen:v2SegmentLength(meta, index) - 16, finalFlag:index === meta.segmentCount - 1});
+  return {name:'AES-GCM', iv, additionalData, tagLength:128};
+}
+
+function v2SourceIterator(source) {
+  const fileSource = typeof source.stream === 'function';
+  const stream = typeof source.stream === 'function' ? source.stream() : source;
+  const reader = typeof stream.getReader === 'function'
+    ? (fileSource ? stream.getReader({mode:'byob'}) : stream.getReader()) : null;
+  const iterator = reader ? null : stream[Symbol.asyncIterator]();
+  let ended = false, closed = false, closing = null, cancelRead = null;
+  return {
+    async next(consume) {
+      if (closed) throw new Error('inactive encrypted stream');
+      const cancelled = new Promise(resolve => { cancelRead = resolve; });
+      try {
+        const result = await Promise.race([
+          Promise.resolve().then(() => {
+            if (closed) throw new Error('inactive encrypted stream');
+            return reader ? (fileSource ? reader.read(new Uint8Array(65536)) : reader.read()) : iterator.next();
+          }).then(step => {
+            if (closed) throw new Error('inactive encrypted stream');
+            ended = Boolean(step.done);
+            return {value:consume(step)};
+          }),
+          cancelled,
+        ]);
+        if (result.cancelled) throw new Error('inactive encrypted stream');
+        return result.value;
+      } finally { cancelRead = null; }
+    },
+    close(cancel) {
+      if (cancel) { closed = true; cancelRead?.({cancelled:true}); }
+      if (!closing) closing = Promise.resolve().then(async () => {
+        let error;
+        try {
+          if (reader) { if (!ended) await reader.cancel(); }
+          else await iterator.return?.();
+        } catch (failure) { error = failure; }
+        if (reader) {
+          try { reader.releaseLock(); } catch (failure) { error ??= failure; }
+        }
+        return {error};
+      });
+      return closing;
+    },
+  };
+}
+
+class V2EncryptedStream {
+  #session; #keys; #source; #plain; #cipher = null; #used; #size;
+  #owner = null; #input = null; #cleanupError = null;
+  #started = false; #closed = false;
+  constructor(session, header, source) {
+    if (!session.isUnlocked()) throw new Error('crypto session is locked');
+    const encoded = encodeV2Header(header);
+    if (!source || (typeof source.stream !== 'function' && typeof source.getReader !== 'function' &&
+        typeof source[Symbol.asyncIterator] !== 'function')) throw new Error('stream source required');
+    if (source.locked === true) throw new Error('stream source is locked');
+    if (typeof source.stream === 'function' &&
+        (!Number.isSafeInteger(source.size) || BigInt(source.size) !== header.payloadSize)) throw new Error('file size mismatch');
+    this.#session = session; this.#keys = session.keys; this.#source = source;
+    this.#size = header.payloadSize;
+    this.#plain = new Uint8Array(V2_SEGMENT_PLAINTEXT);
+    this.#plain.set(encoded); this.#used = encoded.length;
+    this.meta = Object.freeze(makeV2Meta({keyId:session.keyId, direction:directionForRole(session.role),
+      itemId:session.allocateStreamItemId(), headerLen:encoded.length, payloadSize:header.payloadSize}));
+    Object.defineProperty(this, 'meta', {writable:false});
+  }
+  assertActive() {
+    if (this.#closed || !this.#session.isUnlocked() || this.#session.keys !== this.#keys ||
+        this.#session.streamOutboundId !== this.meta.itemId) throw new Error('inactive encrypted stream');
+  }
+  snapshot() {
+    return Object.freeze({plaintextBytes:this.#plain?.byteLength ?? 0, ciphertextBytes:this.#cipher?.byteLength ?? 0,
+      sourceBytes:this.#input?.byteLength ?? 0});
+  }
+  get cleanupError() { return this.#cleanupError; }
+  abort() {
+    this.#closed = true; this.#plain = null; this.#cipher = null; this.#source = null; this.#keys = null; this.#input = null;
+    this.#owner?.close(true).then(({error}) => { if (error) this.#cleanupError = error; });
+  }
+  [Symbol.asyncIterator]() {
+    this.assertActive();
+    if (this.#started) throw new Error('encrypted stream is single-use');
+    this.#started = true;
+    const iterator = this.#iterate();
+    return {
+      next:() => iterator.next(),
+      return:value => { this.abort(); return iterator.return(value); },
+      throw:error => { this.abort(); return iterator.throw(error); },
+      [Symbol.asyncIterator]() { return this; },
+    };
+  }
+  #readInput() {
+    return this.#owner.next(step => {
+      this.assertActive();
+      if (step.done) return true;
+      const bytes = normalizePayload(step.value);
+      if (bytes.length > 65536) throw new Error('source chunk exceeds 65536 bytes');
+      // Copy inside the synchronous consumption callback: no borrowed result or
+      // caller backing buffer crosses the subsequent crypto/read await.
+      this.#input = new Uint8Array(bytes);
+      return false;
+    });
+  }
+  async *#iterate() {
+    let offset = 0, payloadBytes = 0n, complete = false, primaryFailed = false;
+    try {
+      this.assertActive();
+      this.#owner = v2SourceIterator(this.#source);
+      this.#source = null;
+      for (let index = 0; index < this.meta.segmentCount; index++) {
+        this.assertActive();
+        const length = v2SegmentLength(this.meta, index) - 16;
+        while (this.#used < length) {
+          if (!this.#input) {
+            const ended = await this.#readInput();
+            this.assertActive();
+            if (ended) throw new Error('incomplete payload stream');
+            payloadBytes += BigInt(this.#input.length);
+            if (payloadBytes > this.#size) throw new Error('payload size mismatch');
+            offset = 0;
+          }
+          const take = Math.min(length - this.#used, this.#input.length - offset);
+          this.#plain.set(this.#input.subarray(offset, offset + take), this.#used);
+          this.#used += take; offset += take;
+          if (offset === this.#input.length) this.#input = null;
+        }
+        if (this.#input) { this.#input = this.#input.slice(offset); offset = 0; }
+        const final = index === this.meta.segmentCount - 1;
+        if (final) {
+          for (;;) {
+            const ended = await this.#readInput();
+            this.assertActive();
+            if (ended) break;
+            const extraLength = this.#input.length; this.#input = null;
+            if (extraLength) throw new Error('payload size mismatch');
+          }
+          if (payloadBytes !== this.#size || this.#input) throw new Error('payload size mismatch');
+        }
+        const algorithm = v2SegmentAlgorithm(this.#session, this.meta, index);
+        this.#cipher = new Uint8Array(await crypto.subtle.encrypt(algorithm,
+          this.#keys[this.meta.direction], this.#plain.subarray(0, length)));
+        this.assertActive();
+        this.#used = 0;
+        if (this.#input) {
+          this.#plain.set(this.#input); this.#used = this.#input.length;
+          this.#input = null;
+        }
+        if (final) this.#plain = null;
+        yield Object.freeze({index, final, bytes:this.#cipher});
+        this.#cipher = null;
+      }
+      complete = true;
+    } catch (error) { primaryFailed = true; throw error;
+    } finally {
+      this.#input = null; this.#plain = null; this.#cipher = null;
+      if (!complete) this.abort();
+      const cleanup = await this.#owner?.close(!complete);
+      this.#owner = null;
+      if (cleanup?.error) {
+        this.#cleanupError = cleanup.error;
+        if (!primaryFailed) { this.#closed = true; throw cleanup.error; }
+      }
+    }
+  }
+}
+
+// Input must already be authenticated. This parser owns only unfinished header
+// bytes; returned payload views belong to the caller, never to a replay cache.
+export class V2HeaderParser {
+  #buffer = new Uint8Array(50); #used = 0; #header = null; #failed = false;
+  get header() { return this.#header; }
+  push(raw) {
+    if (this.#failed) throw new Error('header parser aborted');
+    const bytes = normalizePayload(raw);
+    let offset = 0;
+    try {
+      while (!this.#header && offset < bytes.length) {
+        const take = Math.min(this.#buffer.length - this.#used, bytes.length - offset);
+        this.#buffer.set(bytes.subarray(offset, offset + take), this.#used);
+        this.#used += take; offset += take;
+        if (this.#used !== this.#buffer.length) continue;
+        const n = (this.#buffer[6] << 8) | this.#buffer[7];
+        const m = (this.#buffer[8] << 8) | this.#buffer[9];
+        const length = 50 + n + m;
+        v2StreamLayout(length, readU64(this.#buffer, 10));
+        if (this.#buffer.length < length) {
+          const expanded = new Uint8Array(length); expanded.set(this.#buffer); this.#buffer = expanded;
+        } else {
+          this.#header = Object.freeze(decodeV2Header(this.#buffer)); this.#buffer = null;
+        }
+      }
+      return bytes.subarray(offset);
+    } catch (error) { this.abort(); throw error; }
+  }
+  finish() {
+    if (!this.#header || this.#failed) { this.abort(); throw new Error('incomplete authenticated header'); }
+    return this.#header;
+  }
+  abort() { this.#buffer = null; this.#header = null; this.#failed = true; }
+}
+
+class V2SegmentReceiver {
+  #session; #keys; #meta; #cipher = null; #last = null; #tail = null;
+  #index = 0; #seq = 0; #offset = 0; #busy = false; #closed = false;
+  #header = null; #payloadBytes = 0n;
+  #authentication = null;
+  constructor(session, meta) {
+    if (!session.isUnlocked()) throw new Error('crypto session is locked');
+    this.#meta = validateV2Meta(meta, {keyId:session.keyId, direction:oppositeDirection(session.role), itemId:meta.itemId});
+    session.acceptStreamItemId(meta.itemId);
+    this.#session = session; this.#keys = session.keys;
+  }
+  snapshot() {
+    return Object.freeze({ciphertextBytes:this.#cipher?.byteLength ?? 0, retrySliceBytes:this.#tail?.byteLength ?? 0,
+      authenticatedSegments:this.#index, payloadBytes:this.#payloadBytes});
+  }
+  abort() { this.#closed = true; this.#cipher = null; this.#tail = null; this.#last = null; this.#header = null; this.#keys = null; }
+  assertActive() {
+    if (this.#closed || !this.#session.isUnlocked() || this.#session.keys !== this.#keys ||
+        this.#session.streamInboundId !== this.#meta.itemId) throw new Error('inactive segment receiver');
+  }
+  async push(context, raw) {
+    this.assertActive();
+    if (context.itemId !== this.#meta.itemId) throw new Error('stale item DATA');
+    let bytes = normalizePayload(raw);
+    let authenticating = false;
+    try {
+      requireUint32(context.segmentIndex, 'segment index');
+      requireUint16(context.chunkInSegment, 'chunk index');
+      if (bytes.length < 1 || bytes.length > 51) throw new Error('invalid DATA slice length');
+      if (this.#last?.index === context.segmentIndex && this.#last.seq === context.chunkInSegment) {
+        const previous = this.#tail ?? this.#cipher.subarray(this.#last.offset, this.#offset);
+        if (!bytesEqual(previous, bytes)) throw new Error('conflicting duplicate DATA');
+        raw = null; bytes = null; context = null;
+        if (this.#authentication) await this.#authentication;
+        this.assertActive();
+        return {action:'duplicate'};
+      }
+      if (this.#busy) throw new Error('concurrent segment input');
+      if (context.segmentIndex !== this.#index || context.chunkInSegment !== this.#seq) throw new Error('DATA order mismatch');
+      const length = v2SegmentLength(this.#meta, this.#index);
+      if (bytes.length !== Math.min(51, length - this.#offset)) throw new Error('DATA slice length mismatch');
+      this.#tail = null;
+      if (!this.#cipher) this.#cipher = new Uint8Array(length);
+      this.#cipher.set(bytes, this.#offset);
+      this.#last = {index:this.#index, seq:this.#seq, offset:this.#offset};
+      this.#offset += bytes.length; this.#seq++;
+      bytes = null; raw = null; context = null;
+      if (this.#offset !== length) return {action:'accepted'};
+      this.#busy = true;
+      authenticating = true;
+      this.#authentication = this.#authenticate();
+      return await this.#authentication;
+    } catch (error) { this.abort(); throw error; }
+    finally { if (authenticating) { this.#busy = false; this.#authentication = null; } }
+  }
+  async #authenticate() {
+    const algorithm = v2SegmentAlgorithm(this.#session, this.#meta, this.#index);
+    const plain = new Uint8Array(await crypto.subtle.decrypt(algorithm, this.#keys[this.#meta.direction], this.#cipher));
+    this.assertActive();
+    this.#tail = this.#cipher.slice(this.#last.offset);
+    this.#cipher = null;
+    let payload = plain;
+    if (this.#index === 0) {
+      const parser = new V2HeaderParser();
+      payload = parser.push(plain); this.#header = parser.finish();
+      const layout = v2StreamLayout(this.#header.headerLen, this.#header.payloadSize);
+      if (layout.totalCiphertextBytes !== this.#meta.totalCiphertextBytes || layout.segmentCount !== this.#meta.segmentCount) throw new Error('header META size mismatch');
+    }
+    this.#payloadBytes += BigInt(payload.length);
+    this.#index++; this.#seq = 0; this.#offset = 0;
+    return {action:'authenticated', header:this.#header, payload};
+  }
+  // A length/authentication receipt, NOT a hash verification or completed item.
+  finish() {
+    this.assertActive();
+    if (this.#busy || this.#index !== this.#meta.segmentCount || this.#payloadBytes !== this.#header?.payloadSize) {
+      this.abort(); throw new Error('incomplete authenticated stream');
+    }
+    return {...this.#header, authenticatedSegments:this.#index, payloadBytes:this.#payloadBytes,
+      streamPlaintextBytes:BigInt(this.#header.headerLen) + this.#payloadBytes};
+  }
 }
 
 export class ItemSender {
+  #streamWait = null;
+  #streamSettle = null;
+  #stream = null;
+
+  streamSnapshot() {
+    return Object.freeze({...this.#stream?.snapshot(),
+      ciphertextBytes:this.#stream?.snapshot().ciphertextBytes ?? 0,
+      frameBytes:this.#streamWait?.pending?.frame.byteLength ?? 0});
+  }
+
+  receiveStreamControl(raw) {
+    if (!this.#streamWait || !this.#streamSettle) return false;
+    try {
+      const result = this.#streamWait.receive(raw);
+      if (result === 'ignored') return false;
+      this.#streamSettle({result});
+    } catch (error) { this.#streamSettle({error}); }
+    return true;
+  }
+
+  abortEncryptedStream(error = new Error('encrypted send aborted')) {
+    this.#stream?.abort();
+    this.#streamSettle?.({error});
+  }
+
+  async #sendStreamFrame(raw) {
+    let frame = new Uint8Array(64); frame.set(raw); raw = null;
+    this.#streamWait.begin(frame, this.#stream.meta.itemId);
+    frame = null;
+    for (let attempt = 0; attempt <= this.retries; attempt++) {
+      this.#stream.assertActive();
+      let timer, written = false;
+      const control = new Promise(resolve => { this.#streamSettle = resolve; });
+      const deadline = new Promise(resolve => {
+        timer = setTimeout(() => resolve(written ? {result:'retry'} : {error:new Error('transport write timed out')}), this.timeoutMs);
+      });
+      try {
+        // The transport owns its copy; it cannot mutate the retained retry bytes.
+        const stream = this.#stream, wait = this.#streamWait;
+        const sent = Promise.resolve().then(() => {
+          stream.assertActive();
+          return this.sendFn(wait.pending.frame.slice());
+        }).then(() => { stream.assertActive(); written = true; });
+        const response = await Promise.race([sent.then(() => control), control.then(result => result.error ? result : sent.then(() => result)), deadline]);
+        this.#stream.assertActive();
+        if (response.error) throw response.error;
+        if (response.result === 'ack') return;
+        if (response.result !== 'retry') throw new Error(`Peer stream ${response.result}`);
+      } finally { clearTimeout(timer); this.#streamSettle = null; }
+    }
+    throw new Error('stream retry exhausted');
+  }
+
+  async sendEncryptedStream(stream, options = {}) {
+    if (this.#stream) throw new Error('one encrypted stream allowed');
+    stream.assertActive();
+    this.#stream = stream; this.#streamWait = new V2StopAndWait();
+    const itemId = stream.meta.itemId;
+    try {
+      await this.#sendStreamFrame(buildV2Frame(MSG.HELLO, 0, itemId));
+      stream.assertActive();
+      options.onProgress?.(0n);
+      stream.assertActive();
+      const fragments = encodeMeta(stream.meta);
+      for (let seq = 0; seq < fragments.length; seq++) {
+        await this.#sendStreamFrame(buildMessage(MSG.ITEM_META, seq, fragments[seq]));
+      }
+      for await (const segment of stream) {
+        for (let offset = 0, seq = 0; offset < segment.bytes.length; offset += 51, seq++) {
+          await this.#sendStreamFrame(buildV2Frame(MSG.ITEM_DATA, seq, itemId,
+            segment.index, segment.bytes.subarray(offset, offset + 51)));
+          stream.assertActive();
+          options.onProgress?.(BigInt(segment.index) * 65536n + BigInt(Math.min(offset + 51, segment.bytes.length - 16)));
+          stream.assertActive();
+        }
+      }
+      await this.#sendStreamFrame(buildV2Frame(MSG.ITEM_DONE, 0, itemId));
+    } finally {
+      stream.abort(); this.#streamWait.abort(); this.#streamWait = null; this.#stream = null;
+    }
+  }
+
   /**
    * @param {Function} sendFn Async callback that writes a Uint8Array frame.
    * @param {{timeoutMs?:number, retries?:number}} [options] ACK/NACK retry options.
@@ -1103,7 +1938,10 @@ export class ItemSender {
   }
 }
 
-export class ItemReceiver {
+export { ItemReceiver } from './airbridge-item-receiver.js';
+
+/* characterization-only:start */
+export class LegacyItemReceiver {
   /**
    * @param {{sendFn?:Function, busy?:boolean, nackDelayMs?:number}} [options] Optional response sender and initial busy state.
    */
@@ -1528,3 +2366,4 @@ export class ItemReceiver {
     await this.sendRecoverableNack(type, seq, NACK_REASON.MALFORMED);
   }
 }
+/* characterization-only:end */

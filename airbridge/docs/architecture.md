@@ -24,7 +24,7 @@ Pocket AirBridge is a browser-only, offline, end-to-end encrypted chat and attac
 ### PC-A — USB Chat Web App (WebHID)
 - Discovers and connects to Flipper Zero via `navigator.hid`.
 - Sends text messages and file attachments to PC-B.
-- Encrypts each complete item with AES-GCM before chunking. User-visible metadata and plaintext SHA-256 live inside the encrypted envelope.
+- Uses v2 AB2S: hashes/counts one File.stream() pass, then encrypts a second pass in 65,536-byte plaintext segments. Private metadata and SHA-256 live in authenticated segment zero.
 - Sends protocol messages: **HELLO → ITEM_META → ITEM_DATA[0…N] → ITEM_DONE**.
 - Waits for **ACK** after each chunk before sending the next (backpressure).
 - Receives incoming text messages and attachments from PC-B over USB.
@@ -37,7 +37,7 @@ Pocket AirBridge is a browser-only, offline, end-to-end encrypted chat and attac
 - Is a **blind stateless byte pipe**: frames arriving on one transport are forwarded verbatim to the other. The bridge does not parse protocol messages, track items, decrypt data, or wait for ACKs.
 - Buffers only a small in-flight event queue (8 slots of one 64-byte frame each); it never stores plaintext, session keys, decrypted files, or a full message or attachment.
 - Never decrypts chat data. E2E keys and plaintext exist only in the two browser endpoints.
-- Does **not** enforce half-duplex: the one-item-in-flight discipline is enforced entirely by the browser endpoints (lower `itemId` wins a collision).
+- Does **not** enforce half-duplex: browsers order collisions by `(itemId, role)`, with USB role 1 winning an equal-ID tie.
 - Renders a status screen: USB connection state, BLE connection state, and the forwarding counters `U->B` / `B->U` / `DROP` / `TXERR`. A green LED heartbeat blinks every 500 ms while the app runs.
 
 ## BLE Identity and GATT Model
@@ -73,7 +73,7 @@ values and BLE throughput require physical evidence.
 - Discovers and connects to Flipper Zero via `navigator.bluetooth`.
 - Subscribes to the AirBridge serial TX notify characteristic for incoming data.
 - Completes SAS-gated crypto unlock with PC-A before sending or accepting items.
-- Receives encrypted protocol messages, reassembles ciphertext, decrypts to a local `Blob`, and verifies inner SHA-256.
+- Receives one ciphertext segment at a time, authenticates it before accumulating plaintext chunks, verifies final payload size/SHA-256, then creates a local `Blob` directly from chunks.
 - Sends **ACK** after each successfully received chunk.
 - Sends text messages and file attachments to PC-A over BLE.
 - Offers reconstructed attachments as a browser download.
@@ -84,18 +84,18 @@ values and BLE throughput require physical evidence.
 
 ### PC-A sends a text message or attachment to PC-B
 
-1. PC-A sends **HELLO** to Flipper Zero over USB HID.
+1. After mutual SAS unlock and the first hash/count pass, PC-A allocates a monotonic item ID and sends v2 **HELLO** over USB HID.
 2. Flipper Zero forwards **HELLO** to PC-B over BLE.
-3. PC-A encrypts the item and sends **ITEM_META** with only encrypted transport metadata.
+3. PC-A requires the item-bound AB2S HELLO ACK before sending **ITEM_META** with transport-only fields. An old/plain peer fails with `Unsupported protocol version`; no fallback exists.
 4. Flipper Zero forwards **ITEM_META** to PC-B.
-5. **Loop for each chunk:**
-   a. PC-A sends **ITEM_DATA** (chunk index + payload).
+5. **Loop for each segment and chunk in the second stream pass:**
+   a. PC-A sends **ITEM_DATA** (header chunk index, item/segment prefix, at most 51 ciphertext bytes).
    b. Flipper Zero buffers the chunk and forwards it to PC-B.
-   c. PC-B receives the chunk, stores it, and sends **ACK**.
+   c. PC-B accepts the slice into one bounded ciphertext segment and sends a contextual **ACK**. The final slice waits for segment authentication before plaintext enters the private accumulator.
    d. Flipper Zero forwards **ACK** to PC-A.
    e. PC-A advances to the next chunk.
 6. PC-A sends **ITEM_DONE**.
-7. PC-B verifies ciphertext hash, decrypts, verifies plaintext SHA-256, and displays the message or enables the download button.
+7. PC-B verifies all segment/header/payload counts and incremental plaintext SHA-256, constructs a Blob from authenticated chunks, delivers the verified item, then ACKs DONE. No download exists before verification.
 
 ### PC-B sends a text message or attachment to PC-A
 
@@ -123,13 +123,13 @@ also pins the decompressed HTML size and carries explicit `ABND` magic/version.
 |----------|-----------|
 | **Vendor HID Bridge data path** | The selected composite USB personality exposes keyboard and vendor collections to the host. Bridge frames use only the vendor HID collection on usage page `0xFF00`; no keyboard reports are emitted in Bridge mode or on bridge data paths. Keyboard reports are limited to the explicit, user-confirmed Deploy flow; see the "Honest framing" section in README.md. |
 | **AirBridge BLE notifications** | The custom serial TX characteristic uses GATT notify, which Chromium exposes through `characteristicvaluechanged`; low overhead suits small data. |
-| **Small chunks (~60 bytes payload)** | Fits within a single 64-byte HID report, avoiding report-fragmentation complexity for the MVP. |
+| **51-byte encrypted DATA slices** | Eight payload bytes bind item and segment; the five-byte header and 59-byte outer payload still fit one 64-byte report. |
 | **ACK-per-chunk backpressure** | Ensures Flipper Zero never buffers more than a couple of frames. Simple, reliable for demo. |
-| **Browser E2E encryption and SHA-256 verification** | The browsers use SAS-verified P-256/HKDF/AES-GCM before any item transfer. SHA-256 still verifies ciphertext and the decrypted inner item. The receiver verifies before ACKing `ITEM_DONE` and reports mismatches with an `ERROR` frame. |
-| **Half-duplex, one item in flight** | Prevents collisions when both sides try to send simultaneously. Lower `itemId` wins. Enforced by the browser endpoints; the bridge stays a dumb pipe. |
+| **Browser E2E encryption and SHA-256 verification** | Unchanged cryptoVersion 1 SAS/P-256/HKDF protects v2 segmented AES-GCM. Authenticate each segment before retaining plaintext; final payload SHA-256 and counts precede Blob/DONE ACK. |
+| **Half-duplex, one item in flight** | Lexicographic `(itemId, role)` ordering, USB winning ties; enforced in browsers, not firmware. |
 | **Stateless bridge** | The Flipper only copies bytes between transports. Keeping all protocol state in the endpoints means the firmware cannot desync from either side, and a bridge restart never corrupts protocol state. |
 | **Fail-closed SAS unlock** | Sending stays disabled until both browser endpoints accept the same six-digit SAS and receive a matching peer confirmation. Plaintext item frames before unlock are terminal protocol errors. |
-| **Exact-frame NACK only** | NACK retries current-item outer frames by type and sequence. It is not byte-range resume and it does not survive a new session. |
+| **Exact-frame NACK only** | Match type, sequence, AB2S, itemId and segment. Retry only the outstanding frame; no byte-range or cross-session resume. Conflicting duplicates and AEAD failures are terminal. |
 | **Evidence-gated stealth work** | Typing jitter and per-device DIS serials are implemented. BLE service UUID hiding and Windows USB tree comparison remain deferred until hardware and Windows evidence exist. |
 
 ## Half-Duplex Rules
@@ -137,11 +137,39 @@ also pins the decompressed HTML size and carries explicit `ABND` magic/version.
 Because both PC-A and PC-B can initiate sends, the **browser endpoints** enforce strict half-duplex discipline. The Flipper bridge is stateless and enforces none of this itself; it forwards every frame in both directions unconditionally.
 
 1. **Only one item in flight at a time.** An item is a text message or an attachment transfer.
-2. **Collision resolution:** If both sides send a `HELLO` simultaneously, the side with the lower `itemId` wins. The other side receives `BUSY` and must retry after a backoff.
+2. **Collision resolution:** Order simultaneous HELLOs by `(itemId, role)`; lower ID wins and USB role 1 wins ties. The losing operation terminates; a fresh attempt burns a fresh ID.
 3. **No interleaving:** Once an `ITEM_META` is accepted, all subsequent `ITEM_DATA` chunks and the final `ITEM_DONE` must come from the same side before the other side may start a new item.
 4. **Cancel:** Either side may send `CANCEL` to abort the current in-flight item, including the receiver. The bridge forwards `CANCEL` transparently; both endpoints discard partial data and return to idle.
 
 ## Browser Requirements
+
+### Memory, security and lifecycle contract
+
+[Protocol v2](protocol.md) centralizes exact fields, segment math, IV/AAD,
+monotonic ID allocation and retry semantics. See the root
+[ADR 0001](../../docs/adr/0001-airbridge-protocol-v2-streaming.md) for alternatives.
+The unchanged cryptoVersion 1 handshake does not imply v1 item compatibility.
+An incompatible peer locks both user-facing paths with
+`Unsupported protocol version`; load current pages, reconnect and confirm fresh
+SAS. Ordinary corruption/authentication errors remain distinct and fail closed.
+
+Ciphertext is segment-bounded; retained authenticated plaintext is intentionally
+**O(file size)** in browser memory until final size/hash verification and Blob
+creation. The final Blob is built directly from chunks, not a giant Uint8Array.
+Completed cards own their object URLs; removal/replacement/page disposal revokes
+exactly once without leaving a live revoked link. Active cancellation,
+disconnect, crypto reset and errors invalidate generation tokens and release
+partial buffers; stale asynchronous callbacks cannot mutate the next item.
+
+V2 removes the historical **4 MiB/4096-chunk demo ceiling**, not practical bounds:
+uint32 IDs/segment counts, uint64 sizes, browser heap/API limits, Blob/download/
+storage capacity, BLE/USB throughput and transfer time. No whole-item sender or
+ciphertext buffering, disk/OPFS/File System Access receive, save picker,
+direct-to-disk path or mixed-version fallback is supported. Text is memory-backed.
+SAS authenticates browser peers, not the relay hardware; endpoint compromise and
+traffic analysis remain outside this confidentiality guarantee.
+
+### Platform requirements
 
 - **Chromium-based browser** (Chrome, Edge, Brave) on both PCs.
 - WebHID requires a secure context (`https://` or `localhost`) and a user gesture.

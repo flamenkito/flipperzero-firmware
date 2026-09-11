@@ -1,360 +1,295 @@
-# Pocket AirBridge — Message Protocol Specification
+# Pocket AirBridge — Protocol v2
 
-## Transport Layer
+This is the normative current chat specification. Protocol v2 (`AB2S`) keeps
+`cryptoVersion:1`, P-256 ECDH, HKDF, AES-GCM and mutual SAS confirmation.
+There is no v1/v2 fallback or plaintext mode. See
+[ADR 0001](../../docs/adr/0001-airbridge-protocol-v2-streaming.md) for the decision
+and [architecture](architecture.md) for ownership and security boundaries.
 
-- **USB HID**: Vendor-defined Usage Page `0xFF00`, Usage `0x01`. Report size: 64 bytes.
-- **BLE GATT**: AirBridge serial service used as a byte pipe. The browser uses the on-air UUIDs generated in `web/airbridge-identity.js`: service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27`, and RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`. MTU assumed ≥64 bytes.
+## Transport and framing
 
-Because a single HID report is 64 bytes, the protocol message fits within one report. The maximum payload per message is **59 bytes** (64 minus 5-byte header). For the MVP, chunk payload is capped at **59 bytes**. Larger files are simply split into more chunks.
+USB vendor HID uses usage page `0xFF00`, usage `0x01`, report ID 0 and 64-byte
+reports. BLE AirBridge serial is a byte pipe carrying the same frames. Its
+generated UUIDs live in `web/airbridge-identity.js`: service
+`7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify
+`87825ec0-7398-8cb7-3242-b083eaa34f27`, RX write
+`152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery and DIS accompany serial; there is
+no BLE HIDS. Identity, bonding and radio settings are described in
+[architecture](architecture.md); negotiated throughput requires hardware evidence.
 
-### BLE identity and service composition
+All multibyte chat integers are big-endian. The five-byte outer header is:
 
-The FAP reads `ble_name`, `ble_mac`, `ble_appearance`, `ble_mfg_company`,
-`ble_mfg_hex`, `ble_dis_mfr`, `ble_dis_model`, `ble_dis_serial`, and
-`ble_dis_pnp` from `/ext/apps_data/pocket_airbridge/config`. These values set
-the advertising identity and DIS values for the AirBridge BLE profile. The
-profile includes Battery, DIS, and AirBridge serial. It has no HIDS service;
-Web Bluetooth uses the serial service for chat and attachment relay traffic.
+| Offset | Bytes | Field |
+|---|---:|---|
+| 0 | 1 | `type:u8` |
+| 1 | 2 | `seq:u16be` |
+| 3 | 2 | `len:u16be`, at most 59 |
+| 5 | len | payload |
 
-If `ble_dis_serial` is omitted, the FAP derives a stable default DIS serial from
-an FNV-1a hash of the local firmware UID and formats it as `HP` plus eight
-uppercase hex digits. Explicit config still wins, and the raw Flipper UID is not
-copied into the DIS string.
+Parsers accept exactly `5 + len` bytes or one 64-byte report with zero padding.
+Truncation, excess bytes and nonzero padding fail closed. Outer payload capacity
+is 59 bytes; encrypted DATA capacity is **51 bytes**, not 59.
 
-The Bridge watchdog reasserts serial-only advertising every 2.5 seconds and
-restarts advertising only when GAP is idle, without disconnecting an active link.
-The BLE profile cannot emit keyboard reports. Deploy typing is available only
-through the explicit USB Deploy prompt. Bonding is enabled: each host's first pairing uses MITM numeric
-comparison, and later reconnects use the stored bond silently. The serial service's
-additional UUIDs are flow control notify
-`d2d968bf-cbd8-568f-d24c-5bbddb824f25` and status notify/read/write
-`bebb7113-63db-bbae-bb45-37dbbf73b6b3`.
+## Item wire layouts
 
-## Wire Format
+`magic` means four ASCII bytes `AB2S`. `itemId` and `segment` are uint32be.
+`V2_CONTROL_SEGMENT = 0xffffffff` is the control-context sentinel, not an extra
+field on HELLO/META/DONE/CANCEL. All control outer `seq` values are zero except
+META fragment indices. DATA `seq` is the chunk index within its segment.
 
-Every message is a binary blob with the following layout:
+| Type | Payload |
+|---|---|
+| HELLO `0x01` | `itemId[4] || magic[4]` |
+| ITEM_META `0x02` | `fragmentCount:u16be || JSON slice[1..57]` |
+| ITEM_DATA `0x03` | `itemId[4] || segmentIndex[4] || ciphertextSlice[0..51]` |
+| ACK `0x04` | `ackedType:u8 || ackedSeq:u16be || magic[4] || itemId[4] || segment[4]` (15 bytes) |
+| NACK `0x05` | ACK context followed by `reason:u8` (16 bytes) |
+| ITEM_DONE `0x06` | `itemId[4]` |
+| ERROR `0x07` | `magic[4] || itemId[4] || reasonUtf8[0..51]` after capability proof |
+| BUSY `0x08` | `magic[4] || itemId[4]` |
+| CANCEL `0x09` | `itemId[4]` |
+| KEY_OFFER `0x0a` | Crypto public-key fragment from USB |
+| KEY_REPLY `0x0b` | Crypto public-key fragment from BLE |
+| KEY_CONFIRM `0x0c` | Crypto SAS confirmation |
+| KEY_ABORT `0x0d` | `version:u8 || reason:u8 || optional UTF-8 detail` |
 
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0      | 1    | `type` | Message type identifier |
-| 1      | 2    | `seq`  | Sequence number (big-endian uint16) |
-| 3      | 2    | `len`  | Payload length in bytes (big-endian uint16) |
-| 5      | N    | `payload` | Variable-length payload (N = `len`) |
+The framing parser can represent an empty DATA slice; the segment receiver
+requires exactly the next expected nonempty slice length (1..51). The context
+prefix is excluded from ciphertext totals and plaintext hashes. META has no
+item prefix: the accepted HELLO binds it, and every META ACK binds that item.
 
-Total message size: `5 + len` bytes. `len` may be `0`.
+### Explicit incompatibility
 
-## Message Types
+The extended HELLO ACK proves `AB2S` before the sender emits any META or DATA.
+A v1 four-byte HELLO, absent/malformed HELLO magic, plain/legacy ACK, absent or
+malformed ACK capability proof, or a peer explicitly rejecting streaming fails
+with the exact reason **`Unsupported protocol version`**. Before capability is
+established the receiver sends legacy UTF-8 ERROR containing that exact reason,
+not an item-scoped error that an old peer cannot read. This is graceful failure,
+not compatibility. KEY ACKs cannot prove item capability.
 
-| Code | Name   | Direction | Payload Description |
-|------|--------|-----------|---------------------|
-| `0x01` | **HELLO** | Any → Bridge → Other | Item initialization. Payload: 4-byte `itemId` (big-endian uint32). |
-| `0x02` | **ITEM_META**  | Any → Bridge → Other | Item metadata fragment. Payload: 2-byte total-fragment count followed by a UTF-8 JSON slice. |
-| `0x03` | **ITEM_DATA**  | Any → Bridge → Other | Item chunk. Payload: raw binary chunk. |
-| `0x04` | **ACK**   | Any → Bridge → Other | Confirm receipt of a chunk or control frame. Payload: 3 bytes — `acked_type` (1 byte) + `acked_seq` (2-byte big-endian uint16). |
-| `0x05` | **NACK**  | Any → Bridge → Other | Recoverable retransmission request. Payload: 4 bytes — `nacked_type` (1 byte) + `nacked_seq` (2-byte big-endian uint16) + `reason` (1 byte). |
-| `0x06` | **ITEM_DONE**  | Any → Bridge → Other | Item transfer complete. Payload: empty. |
-| `0x07` | **ERROR** | Any → Any | Fatal error. Payload: UTF-8 error string. |
-| `0x08` | **BUSY**  | Any → Bridge → Other | Receiver is busy with another item and rejected the HELLO. Payload: empty. |
-| `0x09` | **CANCEL**| Any → Bridge → Other | Abort the current in-flight item. May originate from the sender **or** the receiver. Payload: empty. |
-| `0x0A` | **KEY_OFFER** | USB → Bridge → BLE | Crypto v1 public-key fragment from the USB endpoint. |
-| `0x0B` | **KEY_REPLY** | BLE → Bridge → USB | Crypto v1 public-key fragment from the BLE endpoint. |
-| `0x0C` | **KEY_CONFIRM** | Any → Bridge → Other | Post-SAS unlock confirmation for the current transcript. |
-| `0x0D` | **KEY_ABORT** | Any → Bridge → Other | Abort crypto handshake/session. Payload: `version:u8`, `reason:u8`, optional UTF-8 detail. |
+An unlocked peer that advertises AB2S but later supplies plaintext/old META is
+also rejected with that reason before accepting META or any DATA. It is not
+possible to detect such a lying peer's future META at HELLO; fragmented bytes
+must first arrive for validation. No valid META event, segment receiver or
+plaintext accumulator is created for that schema. Current-v2 malformed fields,
+bad framing, wrong context, invalid UTF-8, authentication and hash errors keep
+their own errors; they are not broadly relabeled as incompatibility.
 
-## Always-On End-to-End Crypto v1
+Both USB and BLE show/log the same incompatibility reason, lock the failed
+session and require reconnect plus a fresh mutually confirmed session. Use the
+current v2 page on both endpoints; do not retry an old peer in plaintext.
+Items before crypto unlock are rejected with the same reason and clear keys.
+General connection/KEY errors remain non-item-scoped.
 
-The browser endpoints require crypto immediately after transport connect. The
-Flipper remains a blind relay: it forwards `KEY_*`, `HELLO`, `ITEM_META`,
-`ITEM_DATA`, `ITEM_DONE`, `ACK`, `NACK`, `ERROR`, `BUSY`, and `CANCEL` frames without
-decrypting or storing user plaintext. There is no plaintext compatibility mode:
-`HELLO`, `ITEM_META`, `ITEM_DATA`, or `ITEM_DONE` received before mutual unlock
-is a terminal protocol error.
+## Always-on browser-only crypto (unchanged crypto v1)
 
-### Handshake
+USB role is `1`, BLE role is `2`. USB sends KEY_OFFER after connect; BLE sends
+KEY_REPLY after validating it. Public keys are 65-byte uncompressed P-256 points
+`0x04 || X32 || Y32`. At `seq=0`, key fragments contain
+`version:u8 || role:u8 || totalLen:u16be || keyBytes[0..55]`; subsequent fragments
+contain at most 59 bytes. KEY_OFFER/REPLY/CONFIRM retain **three-byte ACKs**
+`ackedType:u8 || ackedSeq:u16be`. Identical key retries are idempotent; conflicts
+abort. Handshake ACK timeout is 1000 ms, with up to three attempts; timeout
+KEY_ABORT reason is 3, conflict is 4, SAS mismatch is 2.
 
-- `AIRBRIDGE_CRYPTO_V1 = 1`.
-- Roles are fixed: USB is `1`, BLE is `2`.
-- USB sends `KEY_OFFER` after transport connect. BLE sends `KEY_REPLY` only
-  after validating the complete offer.
-- Public keys are WebCrypto P-256 ECDH raw uncompressed points (`65` bytes,
-  `0x04 || X32 || Y32`). Fragmentation uses normal frame `seq`:
-  - `seq=0`: `version:u8`, `role:u8`, `total_len:u16be`, then up to 55 key bytes.
-  - `seq>0`: remaining key bytes, up to 59 bytes.
-- Every `KEY_OFFER`, `KEY_REPLY`, and `KEY_CONFIRM` fragment is ACKed with the
-  existing ACK payload shape `[acked_type, acked_seq:u16be]`. Senders retry each
-  handshake frame after a 1000 ms ACK timeout, up to 3 attempts, then send
-  `KEY_ABORT` reason `3` (`timeout`). Duplicate identical key fragments are
-  ACKed idempotently; conflicting duplicate payloads abort with reason `4`
-  (`conflict`).
-- The transcript is
-  `"PocketAirBridge-crypto-v1" || 0x01 || usbPubRaw || 0x02 || blePubRaw`.
-- Both browsers compute `sasInt = first20bits(SHA-256("PocketAirBridge SAS v1" || transcript))`
-  and display `(sasInt % 1000000)` as exactly six decimal digits.
-- `KEY_CONFIRM` is sent only after local SAS acceptance. Payload:
-  `version:u8`, `status:u8` (`1` = accepted; `2` is reserved and does not
-  unlock), `transcript_hash16` (first 16 bytes of `SHA-256(transcript)`). A
-  browser enters `Unlocked` only after local SAS acceptance and a matching peer
-  `KEY_CONFIRM` are both true. SAS mismatch sends `KEY_ABORT` reason `2` and
-  clears keys.
+The transcript is `ascii("PocketAirBridge-crypto-v1") || 0x01 || usbPubRaw ||
+0x02 || blePubRaw`. SAS is the first 20 bits of
+`SHA-256(ascii("PocketAirBridge SAS v1") || transcript)` modulo 1000000, displayed
+as six digits. KEY_CONFIRM is `version:u8 || status:u8 || transcriptHash16`,
+where status 1 means accepted (2 is reserved, does not unlock) and
+`transcriptHash16` is the first 16 bytes of SHA-256(transcript). Local acceptance
+and matching peer confirmation are both required. Mismatch clears keys.
 
-### Key derivation
+ECDH derives 256 shared bits. HKDF-SHA256 uses salt
+`SHA-256(ascii("PocketAirBridge salt v1") || transcript)` and these info strings:
 
-Each endpoint derives ECDH shared bits with
-`deriveBits({name:"ECDH", public: remotePub}, localPriv, 256)`, imports those
-bits as HKDF material, and uses HKDF-SHA256 with
-`salt = SHA-256("PocketAirBridge salt v1" || transcript)`.
-
-Derived outputs:
-
-| Use | HKDF info |
+| Output | HKDF info |
 |---|---|
 | USB→BLE AES-GCM-256 key | `PocketAirBridge v1 USB->BLE item key` |
 | BLE→USB AES-GCM-256 key | `PocketAirBridge v1 BLE->USB item key` |
-| Key ID (first 16 bytes, base64url no padding) | `PocketAirBridge v1 key id` |
-| USB→BLE nonce prefix (4 bytes) | `PocketAirBridge v1 usb-to-ble nonce prefix` |
-| BLE→USB nonce prefix (4 bytes) | `PocketAirBridge v1 ble-to-usb nonce prefix` |
+| 16-byte key ID, canonical unpadded base64url | `PocketAirBridge v1 key id` |
+| USB→BLE 4-byte nonce prefix | `PocketAirBridge v1 usb-to-ble nonce prefix` |
+| BLE→USB 4-byte nonce prefix | `PocketAirBridge v1 ble-to-usb nonce prefix` |
 
-Directional IVs are `prefix32 || item_counter:u64be`. The counter starts at `0`
-per handshake/direction and increments once per encrypted item. Receivers reject
-replayed `(keyId, direction, itemCounter)` values within a session.
+SAS authenticates browser peers, not Flipper hardware identity. Browser device
+permission and first-pairing BLE numeric comparison are separate consent gates.
+Stored BLE bonds permit subsequent reconnects. The Flipper never possesses
+plaintext or session keys; endpoint compromise remains outside this protection.
 
-### Encrypted item envelope
+## Outer META: transport-only JSON
 
-After unlock, the application wraps the complete user-visible item into an
-inner plaintext envelope and AES-GCM encrypts that envelope before chunking.
-Outer `ITEM_DATA` frames carry only WebCrypto AES-GCM output bytes
-(`ciphertext || 16-byte tag`).
+`encodeMeta` fragments UTF-8 JSON with a two-byte total-fragment count in every
+frame and zero-based header `seq`. Count/order and exact duplicates are checked.
+After reassembly, **only these ten fields** are permitted:
 
-Inner plaintext envelope:
-
-| Field | Encoding |
+| Field | Required value/validation |
 |---|---|
-| Magic | ASCII `AB1` |
-| `itemId` | `u32be` |
-| `kind` | `u8`: `1=text`, `2=attachment` |
-| `nameLen`, `mimeLen` | `u16be`, `u16be` |
-| `plainSize` | `u64be` |
-| `plainSha256` | 32 raw digest bytes |
-| `name`, `mime`, `data` | UTF-8 name, UTF-8 MIME, raw item bytes |
+| `kind` | `"encrypted-stream"` |
+| `protocolVersion` | 2 |
+| `cryptoVersion` | 1 |
+| `keyId` | Current key ID: 16 decoded bytes, canonical 22-character base64url |
+| `direction` | `"usb-to-ble"` or `"ble-to-usb"`, matching peer role/key |
+| `itemId` | HELLO's uint32 ID |
+| `totalCiphertextBytes` | Canonical unsigned decimal uint64 **string** |
+| `maxSegmentPlaintextBytes` | 65536 |
+| `maxSegmentCiphertextBytes` | 65552 |
+| `segmentCount` | Positive uint32 |
 
-Outer metadata has `kind:"encrypted"` and crypto transport fields only:
-`cryptoVersion`, `alg:"AES-GCM-256"`, `keyId`, `direction`, `iv` (base64),
-`encryptedSize`, `encryptedSha256`, and original `itemId`. `encryptedSha256`
-is lowercase hex over the exact WebCrypto output bytes and verifies ciphertext
-reassembly before decrypt; the inner `plainSha256` is verified after decrypt for
-user-visible integrity.
+Parse totals with BigInt and `^(0|[1-9][0-9]*)$`. Reject JSON numbers, signs,
+leading zeros, exponent notation, overflow, extra/missing fields, context
+mismatch and inconsistent totals before DATA. Final ciphertext length must be
+17..65552 bytes (at least 66 for a single segment's mandatory header).
+Outer META reveals transport sizes, direction, key ID and item ID, but not
+private kind/name/MIME/payload size/hash.
 
-AES-GCM AAD is canonical bytes:
-`"AB1-AAD" || cryptoVersion:u8 || itemId:u32be || direction:u8 || iv12 || encryptedSize:u64be`.
-`direction` is `"usb-to-ble"` (`1`) for the USB→BLE key and
-`"ble-to-usb"` (`2`) for the BLE→USB key. Receivers reject metadata whose
-direction, key ID, IV prefix, selected key, sender role, or AAD does not match.
+## Private stream header and segment math
 
-## ITEM_META Payload Schema (JSON)
+Segment zero starts with this authenticated binary header, followed by payload:
 
-Metadata is sent as one or more `ITEM_META` frames because the JSON usually exceeds the 59-byte frame payload limit. Each `ITEM_META` frame uses:
+| Field | Bytes/encoding |
+|---|---|
+| magic | 4 ASCII `AB2S` |
+| version | u8 = 2 |
+| kind | u8: 1=text, 2=attachment |
+| nameLen, mimeLen | u16be each, UTF-8 byte lengths |
+| payloadSize | u64be |
+| payloadSha256 | 32 raw digest bytes |
+| name, MIME | nameLen then mimeLen UTF-8 bytes, fatal decoding |
 
-| Field | Location | Description |
-|-------|----------|-------------|
-| Fragment index | Message header `seq` | Zero-based metadata fragment index. |
-| Total fragments | Payload bytes `0..1` | Big-endian uint16 count of metadata fragments. |
-| JSON slice | Payload bytes `2..N` | Consecutive UTF-8 bytes from the metadata JSON document. |
-
-The receiver ACKs every `ITEM_META` frame with the same fragment index in the ACK payload. After all metadata fragments arrive, the receiver concatenates the JSON slices in `seq` order and parses the result.
-
-```json
-{
-  "kind": "text",
-  "name": "message.txt",
-  "mimeType": "text/plain",
-  "size": 120,
-  "chunks": 3,
-  "hash": "sha256:a1b2c3..."
-}
-```
-
-- `kind`: `"text"` for a plain text message, `"attachment"` for a file.
-- `name`: display name or filename.
-- `size`: total item size in bytes.
-- `chunks`: total number of `ITEM_DATA` chunks expected.
-- `hash`: lowercase hex SHA-256 hash of the entire item, prefixed with `sha256:`.
-
-## State Machines
-
-### Sender State Machine (Local ItemSender)
+`headerLen = 50 + nameLen + mimeLen`, with `headerLen <= 65536`. The whole
+header fits segment zero. Parser/input and DATA-slice splits are supported;
+metadata spanning AEAD segments is not.
 
 ```
-[IDLE] --(user composes message or selects file)--> [READY]
-[READY] --(send HELLO with itemId)--> [WAITING_HELLO_ACK]
-[WAITING_HELLO_ACK] --(receive ACK for HELLO)--> [SENDING_ITEM_META]
-[SENDING_ITEM_META] --(receive ACK for each ITEM_META fragment)--> [SENDING_ITEM_DATA]
-[SENDING_ITEM_DATA] --(send chunk, wait ACK)--> [SENDING_ITEM_DATA]
-[SENDING_ITEM_DATA] --(all chunks ACKed)--> [SENDING_ITEM_DONE]
-[SENDING_ITEM_DONE] --(receive ACK for ITEM_DONE)--> [COMPLETE]
-[Any] --(receive ERROR)--> [FAILED]
-[Any] --(receive CANCEL)--> [CANCELLED]
+streamPlaintextBytes = headerLen + payloadSize
+segmentCount = max(1, ceil(streamPlaintextBytes / 65536))
+totalCiphertextBytes = streamPlaintextBytes + 16 * segmentCount
+finalCiphertextLen = totalCiphertextBytes - (segmentCount - 1) * 65552
 ```
 
-### Receiver State Machine (Local ItemReceiver)
+Every non-final plaintext segment is 65,536 bytes; AES-GCM adds a 16-byte tag,
+giving 65,552 bytes. This envelope occupies **1,286 DATA frames**: 1,285 full
+51-byte slices and one 17-byte slice, indices `0..1285`. It is not 1,286 *full*
+slices. The next segment resets header `seq` to zero and increments segmentIndex.
+Keep uint64 sizes, counters, equality, progress and arithmetic in BigInt. Number
+conversion at a browser API boundary requires `<= Number.MAX_SAFE_INTEGER` first.
+
+### Per-segment IV/AAD and nonce domains
+
+Each segment uses its existing direction's AES-GCM-256 key and a 128-bit tag:
 
 ```
-[IDLE] --(user pairs device)--> [CONNECTING]
-[CONNECTING] --(connected, wait HELLO)--> [WAITING_HELLO]
-[WAITING_HELLO] --(receive HELLO)--> [WAITING_ITEM_META]
-[WAITING_ITEM_META] --(receive all ITEM_META fragments)--> [RECEIVING_ITEM_DATA]
-[RECEIVING_ITEM_DATA] --(receive ITEM_DATA chunk)--> (store, send ACK)
-[RECEIVING_ITEM_DATA] --(receive ITEM_DONE)--> [VERIFYING]
-[VERIFYING] --(hash matches)--> [COMPLETE]
-[VERIFYING] --(hash mismatch)--> [FAILED]
-[Any] --(receive ERROR)--> [FAILED]
-[Any] --(receive CANCEL)--> [CANCELLED]
+IV = noncePrefix(direction)[4] || itemId:u32be || segmentIndex:u32be
+AAD = ascii("AB2-AAD") || cryptoVersion:u8 || keyId[16 decoded bytes]
+      || directionByte:u8 || itemId:u32be || segmentIndex:u32be
+      || segmentPlaintextLen:u32be || finalFlag:u8
 ```
 
-### Bridge State Machine (Flipper Zero)
+Direction byte 1 is USB→BLE and 2 is BLE→USB; finalFlag is 1 only for the last
+segment, otherwise 0. AAD contains only pre-decryption values. Private size/hash
+are authenticated as segment-zero plaintext, **not** included in AAD.
+Build the IV suffix with explicit uint32 byte writes or an eight-byte BigInt
+write; JavaScript `itemId << 32` is forbidden (shift count wraps modulo 32).
 
-**Not implemented.** The shipped Flipper firmware is a stateless byte pipe: it
-holds no per-item state, does not parse these message types, and does not wait
-for ACKs. Every frame that arrives on one transport is forwarded verbatim to
-the other. All states below live in the browser endpoints (the sender and
-receiver state machines above), which is also where half-duplex discipline is
-enforced.
+Uniqueness is per session/direction key, then monotonic itemId, then unique
+segmentIndex. Equal IDs in opposite directions are safe under distinct keys and
+prefixes. Never reuse the v1 whole-item IV/counter path for segments or mix v1
+and v2 nonce domains within a session. Item ID, segment index or segment-count
+overflow fails rather than wraps; ID exhaustion clears the crypto session.
 
-## Chunking Rules
+## Sender, receiver, retries and lifecycle
 
-1. **Chunk index** is the `seq` field in the `ITEM_DATA` message header.
-2. Chunk indices start at `0` and increment by `1`.
-3. The last chunk may be smaller than the maximum payload size.
-4. Total chunks = `ceil(itemSize / MAX_PAYLOAD)`.
+Sender states: Hashing → HELLO/capability → META → Sending DATA → DONE/Verifying
+→ Ready, or terminal Failed/Cancelled. Attachments use two independent
+`File.stream()` acquisitions, never `tee()` or whole-file materialization.
+Pass 1 hashes incrementally and counts bytes. Only after success, immediately
+before HELLO, `AirBridgeCryptoSession` allocates a strictly monotonic uint32 ID.
+Pass 2 rebuilds the header and encrypts segments; byte count must match pass 1
+and File.size. The authoritative digest is pass 1, not a digest collected while
+sending. An allocated ID is burned on success, cancel, error, timeout or retry.
+Only fresh ECDH keys reset counters. Text remains memory-backed.
 
-## Half-Duplex Discipline
+Receiver states: idle → hello → meta → data → done → terminal. Monotonic IDs,
+item/segment/seq, exact lengths and order are checked. Authenticate each complete
+ciphertext segment before releasing any of its plaintext to the private receive
+accumulator. Retain at most one 65,552-byte ciphertext segment plus a 51-byte
+retry slice. Sender retains one plaintext segment, one ciphertext segment and
+one exact outstanding frame, plus bounded source/residual storage. These are
+protocol working-set bounds, not total JS/native/browser heap bounds.
 
-Both sides can initiate transfers, so the **browser endpoints** enforce strict half-duplex rules (the bridge itself is stateless and enforces nothing):
+The accumulator deliberately retains **O(file size) authenticated plaintext**
+chunks, incrementally hashes payload only, then verifies all segments, header/
+stream/payload counts and final SHA-256 at DONE. Only after verification create
+`new Blob(chunks, {type:mime})` without a giant concatenated Uint8Array, deliver
+the verified item callback, and ACK DONE. No completed card, download or URL may
+exist before successful verification. A completed card owns its Blob/object URL.
+Removal, replacement, invalidation and page disposal revoke that URL exactly
+once; remove/invalidate the card atomically so no live link points at a revoked
+URL. Releasing references is not guaranteed secure memory erasure.
 
-1. **One item in flight:** Only one `HELLO` / `ITEM_META` / `ITEM_DATA` / `ITEM_DONE` sequence may be active at any time across the entire bridge.
-2. **Collision resolution:** If both sides send `HELLO` simultaneously, the side with the lower `itemId` wins. The other side receives `BUSY` and must retry after a backoff.
-3. **No interleaving:** Once an `ITEM_META` is accepted, all `ITEM_DATA` chunks and `ITEM_DONE` for that item must complete before a new `HELLO` from either side is accepted.
-4. **Cancel:** Either side may send `CANCEL` at any time to abort the current in-flight item — the sender can cancel its own transfer, and the receiver can cancel a transfer it is receiving. The bridge forwards `CANCEL` transparently; the receiving side discards partial data, resets its receiving state, and returns to idle. The peer receiving a `CANCEL` ACKs it and also returns to idle.
+One item and one outstanding frame at a time. Collision ordering is lexicographic
+`(itemId, role)`; USB role 1 wins equal-ID ties. No interleaving. ACK/NACK matches
+type, seq, magic, itemId and segment. Controls use the sentinel; DATA uses its
+real segment. NACK reasons remain 1=missing, 2=malformed,
+3=auth-failed-retryable, 4=busy-window; these codes do not authorize retrying an
+AEAD failure. Retry only the exact current frame, not byte offsets or resume.
+`ItemSender` defaults are 2000 ms and 3 retransmissions; chat's
+`createChatOutbound` selects 5000 ms and 4 retransmissions. A still-pending write
+times out instead of starting a concurrent retry. Exhaustion terminates the
+operation; the outbound owner performs one best-effort item-bound CANCEL.
 
-## Consent Model
+An exact currently retryable duplicate is re-ACKed without second append/hash.
+An authentication-pending duplicate waits for that authentication; a conflicting
+duplicate is terminal, invalidating the original operation too. There is no
+unbounded frame/replay cache. Ignore identifiable stale item-scoped ERROR/BUSY;
+stale item traffic never enters the active item. Current malformed framing,
+AEAD failure, final size/hash mismatch and conflicting/order errors are terminal,
+not an authentication NACK loop. Failure produces no verified Blob/DONE ACK.
 
-Transport and browser access still require explicit platform consent gates:
+Cancellation before ID/HELLO emits no frame. After HELLO, cancel is one
+best-effort item-bound CANCEL. Receiver timeout, cancel, ERROR, disconnect and
+crypto reset invalidate generation ownership and clear ciphertext, accumulated
+plaintext and pending work. Check ownership around reads, crypto awaits, writes,
+retry waits and callbacks; late item-N work cannot mutate item N+1. Ordinary
+cancel/item faults permit a fresh higher-ID item in the still-confirmed session;
+incompatibility requires a new confirmed session. No byte-range/cross-session
+resume, whole-item sender/ciphertext buffering, disk/OPFS/File System Access
+receive, save picker or direct-to-disk path is implemented.
 
-1. **First BLE pairing numeric comparison on the Flipper screen** — the AirBridge serial service requires MITM-authenticated pairing; the user confirms the code once for each host. Bonding is enabled, so later reconnects from that host reuse the stored bond silently.
-2. **Browser permission pickers** — WebHID (PC-A) and Web Bluetooth (PC-B) require a user gesture and an explicit device-selection dialog before a browser receives its initial device grant. A previously granted browser can reconnect with `getDevices()` without reopening the picker.
+## Practical limits
 
-A transfer therefore requires first-pairing physical consent on the Flipper plus
-explicit initial per-browser consent on both PCs. Application-level
-confidentiality and authenticity come from the SAS-verified browser-to-browser
-E2E crypto v1 handshake described above; plaintext item frames before mutual
-unlock fail closed, and there is no unencrypted compatibility mode.
+V2 removes the old AirBridge **4 MiB/4096-chunk demo ceiling**; it does not mean
+infinity. uint32 IDs and segment counts, uint64 sizes, browser safe-integer API
+boundaries, browser heap, Blob/download/storage capacity, BLE/USB throughput and
+transfer time remain finite constraints. uint32 segment count bounds stream
+plaintext to roughly 256 TiB even before browser limits. In-memory authenticated
+receive normally reaches heap limits much earlier. Historical hardware throughput
+was about 0.5–2 KB/s, not a promise for v2 or all hosts. Chat data is not compressed.
 
-## ACK/NACK Semantics
+## USB-only bootstrap (separate, unchanged protocol)
 
-- **ACK** payload is 3 bytes: `acked_type` (1 byte) followed by `acked_seq` (2-byte big-endian uint16). It names both the message type and the sequence being confirmed, so HELLO, ITEM_META, ITEM_DATA, ITEM_DONE, and CANCEL ACKs can never be confused with one another even though they share sequence numbers.
-- **NACK** payload is 4 bytes: `nacked_type` (1 byte), `nacked_seq` (2-byte big-endian uint16), and `reason` (1 byte). Reasons are `1=missing`, `2=malformed`, `3=auth-failed-retryable`, and `4=busy-window`.
-- NACK references the outer protocol frame type and sequence only: `ITEM_META`, `ITEM_DATA`, or `ITEM_DONE`. It never requests byte offsets, plaintext offsets, or transfer resume.
-- The sender may proceed to the next frame only after receiving an ACK matching both the type and sequence of the current one. A matching NACK retransmits only the exact referenced frame when retry budget remains.
-- The receiver verifies the SHA-256 hash of the reassembled item **before** ACKing `ITEM_DONE`. Identifiable missing outer frames are NACKed. Hash mismatch, oversized metadata, AES-GCM authentication failure after full ciphertext reassembly, and non-identifiable validation failures send **ERROR** with a UTF-8 reason string. A sender that receives **ERROR** while a send is in flight treats the send as failed and surfaces the peer's reason to the user.
-- The receiver sends NACK for the next expected outer frame when it observes a sequence gap or malformed recoverable frame and no correct frame arrives within 750 ms. Duplicate frames whose payload matches an already accepted frame are ACKed idempotently; conflicting duplicates are NACKed as malformed.
-- If no ACK or NACK is received within 2000 ms for an in-flight item frame, the sender retries the same frame. Retry budget is 3 retransmissions per `(frame_type, seq)` per item; the sender retains current-item frames until `ITEM_DONE` ACK or terminal `ERROR` so retransmission is byte-exact.
-- Retry exhaustion sends terminal **ERROR** and fails the transfer. AES-GCM authentication failure after full ciphertext decrypt is also terminal **ERROR**, not a NACK loop; outer NACK is only for identifiable missing or malformed protocol frames before decrypt.
-- Defensive receiver behavior worth knowing:
-  - `ITEM_DATA` received before any `ITEM_META` is dropped silently (logged locally, no ERROR sent). This absorbs stale frames from a cancelled or yielded transfer without poisoning the next one.
-  - Metadata declaring more than 4096 chunks or more than 4 MiB is rejected with **ERROR** (bounded demo memory).
+USB Deploy is explicit on-device consent: LEFT/RIGHT selects the prompt, OK
+confirms cursor placement, `TYPING…` stays visible during typing, BACK aborts.
+Bridge data paths never emit keyboard reports. `bootstrap.js` requests only
+`app-usb.html.gz`; there is no BLE deploy output. The canonical builder owns
+`airbridge/dist/app-usb.html`, its `.gz` SD container and the generated digest
+header. Bundle regeneration/freshness is a separate integration gate, not implied
+by source-level v2 tests.
 
-## Example Transfer Flow (text message, 120 bytes, PC-A to PC-B)
+The FAP authenticates normalized printable ASCII bootstrap bytes and the complete
+SD bundle container against pinned SHA-256 before execution/delivery. Container:
+`ABND[4] || version:u8=1 || reservedZero[3] || htmlSize:u32le || gzipBytes`.
+It validates magic/version/reserved/size/gzip magic and digest, strips 12 bytes,
+and streams only gzip. Request is byte `0x42` in a 64-byte vendor HID report,
+accepted only in post-consent Deploy waiting state. In Bridge it is ordinary
+relay data. In other Deploy states the FAP shows `DEPLOY NOT ARMED`.
 
-```
-PC-A (USB)      Bridge          PC-B (BLE)
-----------      ------          ----------
-  |               |                  |
-  |--- HELLO ---->|                  |
-  |               |--- HELLO ------->|
-  |               |<-- ACK(HELLO) ---|
-  |<-- ACK -------|                  |
-  |               |                  |
-  |--- ITEM_META(0) -->|            |
-  |               |--- ITEM_META(0) ->|
-  |               |<-- ACK(0) -------|
-  |<-- ACK(0) ----|                  |
-  |--- ITEM_META(1) -->|            |
-  |               |--- ITEM_META(1) ->|
-  |               |<-- ACK(1) -------|
-  |<-- ACK(1) ----|                  |
-  |               |                  |
-  |--- ITEM_DATA(0) -->|            |
-  |               |--- ITEM_DATA(0) ->|
-  |               |<-- ACK(0) -------|
-  |<-- ACK(0) ----|                  |
-  |               |                  |
-  |--- ITEM_DATA(1) -->|            |
-  |               |--- ITEM_DATA(1) ->|
-  |               |<-- ACK(1) -------|
-  |<-- ACK(1) ----|                  |
-  |               |                  |
-  |--- ITEM_DONE ->|                |
-  |               |--- ITEM_DONE --->|
-  |               |<-- ACK(DONE) ----|
-  |<-- ACK -------|                  |
-  |               |                  |
-```
-
-## Error Handling
-
-- Any side may send **ERROR** at any time to abort the current item.
-- Any side may send **CANCEL** at any time to abort the current item gracefully.
-- Upon receiving ERROR, both sides transition to `[FAILED]`, discard buffers, and display the error message to the user.
-- Upon receiving CANCEL, both sides transition to `[CANCELLED]`, discard partial data, and display a cancellation notice.
-- The bridge forwards ERROR and CANCEL messages transparently in both directions.
-
-## Bootstrap Stream Protocol (Deploy Flow)
-
-This is a separate, deliberately simpler protocol from the chat protocol above. It exists for USB Deploy: a one-shot, download-only transfer of the app bundle from the Flipper to a just-typed bootstrap page on the target PC.
-
-| Deploy control | Typed bootstrap | Bundle | Delivery channel |
-|---|---|---|---|
-| **LEFT/RIGHT → USB Deploy, then OK** | `bootstrap.js` | `app-usb.html.gz` | USB vendor HID |
-
-The FAP loads this pair from `/ext/apps_data/pocket_airbridge/`. No per-chunk
-ACK is used for the bootstrap stream; USB interrupt IN reports are hardware-reliable.
-
-Before typing or streaming, the FAP authenticates both SD-loaded executable
-assets against SHA-256 values generated into
-`applications_user/pocket_airbridge/airbridge_assets_digest.h`. The bootstrap
-digest covers the normalized, newline-free printable ASCII bytes. The bundle
-digest covers its complete on-SD container:
-
-| Offset | Size | Field |
-|---:|---:|---|
-| 0 | 4 | Magic `ABND` |
-| 4 | 1 | Bundle format version (`1`) |
-| 5 | 3 | Reserved zero bytes |
-| 8 | 4 | Little-endian decompressed HTML size |
-| 12 | remaining | Gzip payload, beginning `1F 8B` |
-
-The FAP rejects the container unless its magic, version, reserved bytes,
-decompressed size, gzip magic, size cap, and pinned SHA-256 all match. It then
-strips the 12-byte container header and sends only the gzip payload, preserving
-the browser-facing stream format below.
-
-1. **Request (bootstrap → FAP):** byte 0 = `0x42` (`'B'`, bundle request), sent as a 64-byte USB report.
-2. **Header (FAP → bootstrap):** the first response carries a 4-byte little-endian `total_len` (bundle size in bytes) followed by a 4-byte little-endian `checksum` (the additive uint32 sum of all file bytes). USB pads the report to 64 bytes.
-3. **Data (FAP → bootstrap):** the bundle bytes follow in order in zero-padded 64-byte USB reports.
-4. **Verify, inflate, and load:** the bootstrap accumulates exactly `total_len` compressed bytes, recomputes the additive checksum, inflates the gzip with `DecompressionStream("gzip")`, and boots the transferred HTML only when the values match.
-5. **Failure:** if `DecompressionStream("gzip")` is unavailable, the landing page shows `Transfer unsupported - retry` before device selection. On checksum mismatch it shows `Transfer corrupt - retry`; if no stream begins or completes before the bootstrap timeout, it shows `Transfer timed out - retry`. In each case the Connect button re-arms, so the user can click Connect again to restart the download.
-
-The FAP only treats `0x42` as a bundle request while the screen is the post-consent Deploy waiting state. In Bridge mode, a report whose first byte is `0x42` remains ordinary relay data and cannot start Deploy streaming. In other non-waiting Deploy states, the FAP shows `DEPLOY NOT ARMED` instead of silently hanging the operator in an ambiguous state.
-
-The additive wire checksum detects stream corruption for the bootstrap. It is
-not the SD trust mechanism; the FAP's pinned SHA-256 authenticates the complete
-bundle container before any payload byte is streamed.
-
-## Known Limitations (MVP)
-
-- End-to-end encryption is browser-only and SAS-authenticated; it does not authenticate the Flipper hardware identity beyond browser picker consent and BLE pairing.
-- Single item in flight at a time (half-duplex, enforced by the browser endpoints).
-- Single receiver per session.
-- No byte-range resume or cross-session transfer resume; NACK only retries exact current-item outer frames.
-- Deploy bundles are gzip-compressed; chat items are encrypted but not compressed.
-- Runtime BLE radio values are not implied by static firmware settings. The current firmware configures and supports a local ATT MTU maximum of 414, enables DLE, prefers 2M PHY, and requests a 7.5 to 45 ms interval; negotiated MTU is peer-driven, and negotiated MTU/PHY/DLE/interval and throughput need hardware logs.
-- Fixed small chunk size optimized for HID report size, not throughput. Observed throughput on hardware is roughly **0.5–2 KB/s** — fine for text and small attachments, slow for anything larger.
+The first response carries `totalLen:u32le || additiveChecksum:u32le`, padded to
+64 bytes; subsequent reports contain sequential zero-padded gzip bytes, without
+chat ACKs. Bootstrap accumulates totalLen, checks the additive uint32 sum,
+inflates with `DecompressionStream("gzip")` and boots HTML. This additive checksum
+is corruption detection, not the SD trust mechanism. Failure copy remains
+`Transfer unsupported - retry`, `Transfer corrupt - retry` or
+`Transfer timed out - retry`; Connect re-arms. Bootstrap behavior is not changed
+by chat protocol v2.

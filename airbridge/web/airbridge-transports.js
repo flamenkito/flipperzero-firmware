@@ -13,7 +13,6 @@ const PINNED_PIDS = new Set(
 );
 const HID_REPORT_ID = 0x00;
 const HID_REPORT_LEN = 64;
-const HEADER_LEN = 5;
 
 const SERIAL_UUIDS = [
   {
@@ -36,20 +35,10 @@ function normalizeFrame(frame) {
   throw new TypeError('frame must be a Uint8Array, ArrayBuffer, or typed array');
 }
 
-function stripFramePadding(data) {
-  const frame = normalizeFrame(data);
-  if (frame.length < HEADER_LEN) return frame;
-
-  const payloadLen = (frame[3] << 8) | frame[4];
-  const frameLen = HEADER_LEN + payloadLen;
-  if (frameLen > frame.length) return frame;
-  return frame.slice(0, frameLen);
-}
-
 /**
  * Thin WebHID transport adapter for Pocket AirBridge USB frames.
  * It only opens/closes the HID device, writes 64-byte reports, and forwards
- * received frames after trimming HID padding based on the protocol length byte.
+ * owned complete reports so the protocol parser can validate their padding.
  */
 export class WebHIDAdapter {
   /**
@@ -123,8 +112,8 @@ export class WebHIDAdapter {
   }
 
   /**
-   * Register the callback fired for each incoming unpadded frame.
-   * @param {Function} callback Receives a Uint8Array frame.
+   * Register the callback fired for each incoming complete report.
+   * @param {Function} callback Receives an owned 64-byte Uint8Array report.
    * @returns {Function} Unsubscribe callback.
    */
   onReceive(callback) {
@@ -165,7 +154,9 @@ export class WebHIDAdapter {
   handleInputReport(event) {
     if (event.reportId !== HID_REPORT_ID || !this.receiveCallback) return;
     const data = event.data;
-    this.receiveCallback(stripFramePadding(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)));
+    if (data.byteLength !== HID_REPORT_LEN) return;
+    const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    this.receiveCallback(new Uint8Array(bytes));
   }
 
   handleDisconnect(event) {
