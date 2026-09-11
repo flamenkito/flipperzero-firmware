@@ -22,6 +22,8 @@ controls, and the UI never accepts arbitrary commands.
 | Surface raised | `--ab-surface-raised` | `#202020` | Hovered/selected row |
 | Ink | `--ab-ink` | `#f0f3ee` | Primary text |
 | Ink muted | `--ab-ink-muted` | `#a8b1a8` | Metadata and help |
+| Ink faint | `--ab-ink-faint` | `#6f766c` | Disabled ink |
+| Grid | `--ab-grid` | `#232823` | Background graph line |
 | Rule | `--ab-rule` | `#333333` | 1px pane separation |
 | Rule strong | `--ab-rule-strong` | `#5b665b` | Control outlines |
 | Signal | `--ab-signal` | `#9eea6a` | Verified/connected actions |
@@ -98,14 +100,30 @@ Spacing uses a 4px base: `--ab-space-1` (4px), `--ab-space-2` (8px),
 ### Terminal control
 - **Structure:** a native button, input, or file control rendered as a square
   command affordance with a concise label such as `[ CONNECT USB ]`.
+- **Tiers:** literal CSS class `btn-primary` uses `--ab-signal` ink for the
+  forward action of a cluster: Connect, Send, Send Attachment, Accept SAS.
+  The secondary tier uses default `--ab-ink` ink: Disconnect, Clear, Remove.
+  Literal CSS class `btn-danger` uses default `--ab-ink` ink at rest and
+  `--ab-failure` ink and border on hover/focus/active: Abort Crypto, Cancel Transfer.
 - **States:** default, hover, active, focus-visible, disabled, busy.
+  CSS-generated `[ ]` brackets form the resting enclosure; a 1px border appears
+  on hover/focus/active. Disabled controls use `--ab-ink-faint` at full opacity,
+  never an opacity wash; disabled styling takes precedence over tier feedback.
+- **Dimensions:** uniform `2.5rem` minimum block size; `.clear-btn` uses the
+  small tier at `2rem` minimum block size.
+- **File selector:** `::file-selector-button` uses the small secondary tier
+  (`2rem` minimum block size), with a border rather than brackets because
+  pseudo-elements cannot nest.
 - **Accessibility:** native labels, keyboard operation, 2px focus outline, and
   no destructive-looking command language.
 - **Motion:** 120ms color/opacity/transform feedback; reduced motion removes
   transforms.
 
 ### Transcript row and attachment card
-- **Structure:** endpoint prompt (`you@usb>` or `peer@ble>`), timestamp, body or
+- **Structure:** full-width rows, never right-aligned bubbles, with a 2px leading
+  rule colored by side: you = `--ab-signal`, peer = `--ab-rule-strong`,
+  system = `--ab-pending`. Real-text prompt labels (`you@usb>`, `peer@ble>`,
+  `system>`) are never replaced by a zero-font-size swap. Include timestamp, body or
   file facts, verification, segmented progress, and download/remove controls.
 - **States:** hashing, sending, receiving, verifying, ready, cancelled, failed.
 - **Accessibility:** phase attributes and existing live/progress semantics remain
@@ -154,3 +172,4 @@ verified state, but never as a general shadow or decorative animation.
 |---|---|---|---|
 | Native offline monospace stack | Both chat endpoints | No external font may add a network dependency or inflate the bundle | Replace only with an in-tree licensed font and new bundle proof |
 | Static atmosphere only | Shared stylesheet | Heavy CRT/VHS motion would impair readability and distract from transfer state | Keep unless user requests a tested accessible alternative |
+| CSS-generated brackets | Terminal controls | Presentational `[ ]` brackets may be announced by some screen readers; native text labels remain meaningful | UI maintainer / replace with aria-hidden markup if assistive-technology testing finds disruptive announcements |
