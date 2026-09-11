@@ -1,0 +1,42 @@
+{
+  "name": "recording_derived_bulerias_6",
+  "timebase": {"cycle_counts": 6, "subdivisions_per_count": 2, "pulse_seconds": 0.314667, "pulse_bpm": 190.68, "paired_pulse_bpm": 95.34, "cycle_seconds": 1.888002},
+  "sections": [
+    {
+      "name": "intro",
+      "cycles": 4,
+      "layers": []
+    },
+    {
+      "name": "palmas",
+      "cycles": 4,
+      "layers": ["palmas"]
+    },
+    {
+      "name": "palmas_perc",
+      "cycles": 12,
+      "layers": ["palmas", "perc"]
+    }
+  ],
+  "palmas_velocity_by_count": [0.35, 0.55, 0.65, 1.0, 0.65, 1.0],
+  "perc_low_velocity_by_count": [0.6, 0.9, 0.55, 0.85, 0.6, 0.0],
+  "offbeat_ticks": [
+    {"count": 2, "subdivision": "+", "velocity": 0.55},
+    {"count": 3, "subdivision": "+", "velocity": 0.55},
+    {"count": 4, "subdivision": "+", "velocity": 0.8}
+  ],
+  "speaker_model": {
+    "polyphony": 1,
+    "palmas": [
+      {"offset_ms": 0, "duration_ms": 8, "frequency_hz": 2850},
+      {"offset_ms": 9, "duration_ms": 9, "frequency_hz": 2250},
+      {"offset_ms": 19, "duration_ms": 12, "frequency_hz": 1750}
+    ],
+    "low_hit": [
+      {"offset_ms": 0, "duration_ms": 10, "frequency_hz": 330},
+      {"offset_ms": 10, "duration_ms": 12, "frequency_hz": 260},
+      {"offset_ms": 22, "duration_ms": 16, "frequency_hz": 205}
+    ],
+    "note": "At simultaneous low-hit and clap positions, play the low hit first and delay the clap by 42 ms."
+  }
+}

@@ -1,0 +1,7 @@
+If:
+  PathMatch: ((player_|ui_|adapters_).*\.[ch]|fakes/.*\.h)
+CompileFlags:
+  CompilationDatabase: None
+  Compiler: /usr/bin/clang
+  Remove: [-isystem*, -m*, -D*, -I*]
+  Add: [-x, c, -std=c11, -pthread, -I/Users/asutov/projects/flipperzero-firmware/applications_user/flooper/tests/fakes]

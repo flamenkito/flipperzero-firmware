@@ -1,0 +1,106 @@
+{
+  "schema_version": 2,
+  "schema_revision": 1,
+  "name": "recording_derived_bulerias_6",
+  "display_name": "BULERIAS",
+  "palo": "bulerias",
+  "timebase": {
+    "count_labels": [6, 1, 2, 3, 4, 5],
+    "pulse_us": 314667,
+    "subdivisions_per_count": 2
+  },
+  "layers": ["palmas", "perc"],
+  "voices": [
+    {
+      "id": "palmas",
+      "priority": 3,
+      "slices": [
+        {"offset_us": 0, "duration_us": 8000, "frequency_hz": 2850, "gain": 1.0},
+        {"offset_us": 9000, "duration_us": 9000, "frequency_hz": 2250, "gain": 0.85},
+        {"offset_us": 19000, "duration_us": 12000, "frequency_hz": 1750, "gain": 0.7}
+      ]
+    },
+    {
+      "id": "low_hit",
+      "priority": 2,
+      "slices": [
+        {"offset_us": 0, "duration_us": 10000, "frequency_hz": 330, "gain": 0.85},
+        {"offset_us": 10000, "duration_us": 12000, "frequency_hz": 260, "gain": 1.0},
+        {"offset_us": 22000, "duration_us": 16000, "frequency_hz": 205, "gain": 0.85}
+      ]
+    },
+    {
+      "id": "tick",
+      "priority": 1,
+      "slices": [
+        {"offset_us": 0, "duration_us": 9000, "frequency_hz": 1450, "gain": 1.0},
+        {"offset_us": 10000, "duration_us": 6000, "frequency_hz": 2050, "gain": 0.7}
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "id": "silence",
+      "events": []
+    },
+    {
+      "id": "palmas",
+      "events": [
+        {"count": 6, "offset_us": 0, "voice": "palmas", "layer": "palmas", "velocity": 0.35},
+        {"count": 1, "offset_us": 0, "voice": "palmas", "layer": "palmas", "velocity": 0.55},
+        {"count": 2, "offset_us": 0, "voice": "palmas", "layer": "palmas", "velocity": 0.65},
+        {"count": 3, "offset_us": 0, "voice": "palmas", "layer": "palmas", "velocity": 1.0},
+        {"count": 4, "offset_us": 0, "voice": "palmas", "layer": "palmas", "velocity": 0.65},
+        {"count": 5, "offset_us": 0, "voice": "palmas", "layer": "palmas", "velocity": 1.0}
+      ]
+    },
+    {
+      "id": "palmas_perc",
+      "events": [
+        {"count": 6, "offset_us": 0, "voice": "low_hit", "layer": "perc", "velocity": 0.6},
+        {"count": 6, "offset_us": 42000, "voice": "palmas", "layer": "palmas", "velocity": 0.35},
+        {"count": 1, "offset_us": 0, "voice": "low_hit", "layer": "perc", "velocity": 0.9},
+        {"count": 1, "offset_us": 42000, "voice": "palmas", "layer": "palmas", "velocity": 0.55},
+        {"count": 2, "offset_us": 0, "voice": "low_hit", "layer": "perc", "velocity": 0.55},
+        {"count": 2, "offset_us": 42000, "voice": "palmas", "layer": "palmas", "velocity": 0.65},
+        {"count": 2, "offset_us": 157334, "voice": "tick", "layer": "perc", "velocity": 0.55},
+        {"count": 3, "offset_us": 0, "voice": "low_hit", "layer": "perc", "velocity": 0.85},
+        {"count": 3, "offset_us": 42000, "voice": "palmas", "layer": "palmas", "velocity": 1.0},
+        {"count": 3, "offset_us": 157334, "voice": "tick", "layer": "perc", "velocity": 0.55},
+        {"count": 4, "offset_us": 0, "voice": "low_hit", "layer": "perc", "velocity": 0.6},
+        {"count": 4, "offset_us": 42000, "voice": "palmas", "layer": "palmas", "velocity": 0.65},
+        {"count": 4, "offset_us": 157334, "voice": "tick", "layer": "perc", "velocity": 0.8},
+        {"count": 5, "offset_us": 0, "voice": "palmas", "layer": "palmas", "velocity": 1.0}
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "name": "INTRO",
+      "pattern_id": "silence",
+      "cycles": 4,
+      "layers": []
+    },
+    {
+      "name": "PALMAS",
+      "pattern_id": "palmas",
+      "cycles": 4,
+      "layers": ["palmas"]
+    },
+    {
+      "name": "PALMAS+PERC",
+      "pattern_id": "palmas_perc",
+      "cycles": 12,
+      "layers": ["palmas", "perc"]
+    }
+  ],
+  "loop": {"start_section": 0, "repeat": true},
+  "render": {"master_volume": 0.65, "monophonic": true, "overlap_policy": "higher_priority_then_louder"},
+  "ui": {
+    "accent_counts": [3]
+  },
+  "metadata": {
+    "origin": "Migration of the original bulerias JSON using the previous implementation specification.",
+    "note": "Synthetic speaker proxy, not sampled palmas. Count 5 keeps the original velocity 1.0. Offbeat count fields are labels; halfway offsets round to 157334 us."
+  }
+}

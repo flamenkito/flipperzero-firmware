@@ -1,0 +1,12 @@
+App(
+    appid="flooper",
+    name="FLOOPER",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="flooper_app",
+    requires=["gui"],
+    stack_size=4096,
+    sources=["*.c", "!tests"],
+    fap_category="Music",
+    fap_version="0.2",
+    fap_file_assets="assets",
+)

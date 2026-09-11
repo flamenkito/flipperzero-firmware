@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "name": "compas_por_tangos_recording_derived",
+  "palo": "tangos",
+  "timebase": {
+    "cycle_counts": 4,
+    "count_labels": [1, 2, 3, 4],
+    "subdivisions_per_count": 4,
+    "pulse_us": 719819,
+    "pulse_seconds": 0.719819,
+    "pulse_bpm": 83.354,
+    "cycle_us": 2879274,
+    "cycle_seconds": 2.879274
+  },
+  "loop": {"start_section": 0, "repeat": true},
+  "sections": [
+    {
+      "name": "COMPAS",
+      "cycles": 1,
+      "layers": ["guitar_proxy"]
+    }
+  ],
+  "voices": [
+    {
+      "id": "low_pluck",
+      "priority": 3,
+      "slices": [
+        {"offset_us": 0, "duration_us": 10000, "frequency_hz": 360, "gain": 0.9},
+        {"offset_us": 10000, "duration_us": 12000, "frequency_hz": 285, "gain": 1.0},
+        {"offset_us": 22000, "duration_us": 15000, "frequency_hz": 220, "gain": 0.82}
+      ]
+    },
+    {
+      "id": "bright_strum",
+      "priority": 3,
+      "slices": [
+        {"offset_us": 0, "duration_us": 8000, "frequency_hz": 2700, "gain": 1.0},
+        {"offset_us": 9000, "duration_us": 9000, "frequency_hz": 2150, "gain": 0.82},
+        {"offset_us": 19000, "duration_us": 11000, "frequency_hz": 1650, "gain": 0.68}
+      ]
+    },
+    {
+      "id": "muted_strum",
+      "priority": 2,
+      "slices": [
+        {"offset_us": 0, "duration_us": 7000, "frequency_hz": 1250, "gain": 0.78},
+        {"offset_us": 8000, "duration_us": 7000, "frequency_hz": 1850, "gain": 0.58}
+      ]
+    }
+  ],
+  "events": [
+    {"count": 1, "offset_us": 0, "voice": "low_pluck", "source_intensity": 1.0, "velocity": 1.0},
+    {"count": 1, "offset_us": 216000, "voice": "muted_strum", "source_intensity": 0.112, "velocity": 0.27},
+    {"count": 1, "offset_us": 388000, "voice": "bright_strum", "source_intensity": 0.246, "velocity": 0.41},
+    {"count": 1, "offset_us": 562000, "voice": "muted_strum", "source_intensity": 0.321, "velocity": 0.47},
+    {"count": 2, "offset_us": 0, "voice": "bright_strum", "source_intensity": 0.701, "velocity": 0.78},
+    {"count": 2, "offset_us": 203000, "voice": "muted_strum", "source_intensity": 0.235, "velocity": 0.4},
+    {"count": 2, "offset_us": 390000, "voice": "muted_strum", "source_intensity": 0.285, "velocity": 0.44},
+    {"count": 2, "offset_us": 572000, "voice": "muted_strum", "source_intensity": 0.072, "velocity": 0.23},
+    {"count": 3, "offset_us": 0, "voice": "low_pluck", "source_intensity": 0.613, "velocity": 0.71},
+    {"count": 3, "offset_us": 202000, "voice": "muted_strum", "source_intensity": 0.108, "velocity": 0.27},
+    {"count": 3, "offset_us": 389000, "voice": "muted_strum", "source_intensity": 0.253, "velocity": 0.41},
+    {"count": 3, "offset_us": 563000, "voice": "muted_strum", "source_intensity": 0.191, "velocity": 0.35},
+    {"count": 4, "offset_us": 0, "voice": "bright_strum", "source_intensity": 0.699, "velocity": 0.78},
+    {"count": 4, "offset_us": 195000, "voice": "muted_strum", "source_intensity": 0.236, "velocity": 0.4},
+    {"count": 4, "offset_us": 392000, "voice": "muted_strum", "source_intensity": 0.255, "velocity": 0.41},
+    {"count": 4, "offset_us": 567000, "voice": "muted_strum", "source_intensity": 0.105, "velocity": 0.26}
+  ],
+  "render": {
+    "master_volume": 0.65,
+    "monophonic": true,
+    "overlap_policy": "higher_priority_then_louder",
+    "note": "Voices are Flipper square-wave proxies for the guitar attacks, not sampled guitar audio."
+  },
+  "analysis": {
+    "source_duration_seconds": 240.081,
+    "observed_complete_cycles": 83,
+    "tempo_stability": "very_stable",
+    "section_changes_detected": false,
+    "primary_attack_anchor_count": 1,
+    "phrase_note": "Count 4 contains active pickup motion into the next count 1.",
+    "timing_note": "Internal attacks are intentionally microtimed near, but not exactly on, an even 16th-note grid."
+  }
+}

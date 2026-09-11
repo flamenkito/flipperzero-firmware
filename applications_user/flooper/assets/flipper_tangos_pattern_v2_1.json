@@ -1,0 +1,81 @@
+{
+  "schema_version": 2,
+  "schema_revision": 1,
+  "name": "compas_por_tangos_recording_derived",
+  "display_name": "TANGOS",
+  "palo": "tangos",
+  "timebase": {
+    "count_labels": [4, 1, 2, 3],
+    "pulse_us": 719819,
+    "subdivisions_per_count": 4
+  },
+  "layers": ["guitar_proxy"],
+  "voices": [
+    {
+      "id": "low_pluck",
+      "priority": 3,
+      "slices": [
+        {"offset_us": 0, "duration_us": 10000, "frequency_hz": 360, "gain": 0.9},
+        {"offset_us": 10000, "duration_us": 12000, "frequency_hz": 285, "gain": 1.0},
+        {"offset_us": 22000, "duration_us": 15000, "frequency_hz": 220, "gain": 0.82}
+      ]
+    },
+    {
+      "id": "bright_strum",
+      "priority": 3,
+      "slices": [
+        {"offset_us": 0, "duration_us": 8000, "frequency_hz": 2700, "gain": 1.0},
+        {"offset_us": 9000, "duration_us": 9000, "frequency_hz": 2150, "gain": 0.82},
+        {"offset_us": 19000, "duration_us": 11000, "frequency_hz": 1650, "gain": 0.68}
+      ]
+    },
+    {
+      "id": "muted_strum",
+      "priority": 2,
+      "slices": [
+        {"offset_us": 0, "duration_us": 7000, "frequency_hz": 1250, "gain": 0.78},
+        {"offset_us": 8000, "duration_us": 7000, "frequency_hz": 1850, "gain": 0.58}
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "id": "compas",
+      "events": [
+        {"count": 4, "offset_us": 0, "voice": "low_pluck", "layer": "guitar_proxy", "velocity": 1.0, "source_intensity": 1.0},
+        {"count": 4, "offset_us": 216000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.27, "source_intensity": 0.112},
+        {"count": 4, "offset_us": 388000, "voice": "bright_strum", "layer": "guitar_proxy", "velocity": 0.41, "source_intensity": 0.246},
+        {"count": 4, "offset_us": 562000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.47, "source_intensity": 0.321},
+        {"count": 1, "offset_us": 0, "voice": "bright_strum", "layer": "guitar_proxy", "velocity": 0.78, "source_intensity": 0.701},
+        {"count": 1, "offset_us": 203000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.4, "source_intensity": 0.235},
+        {"count": 1, "offset_us": 390000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.44, "source_intensity": 0.285},
+        {"count": 1, "offset_us": 572000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.23, "source_intensity": 0.072},
+        {"count": 2, "offset_us": 0, "voice": "low_pluck", "layer": "guitar_proxy", "velocity": 0.71, "source_intensity": 0.613},
+        {"count": 2, "offset_us": 202000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.27, "source_intensity": 0.108},
+        {"count": 2, "offset_us": 389000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.41, "source_intensity": 0.253},
+        {"count": 2, "offset_us": 563000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.35, "source_intensity": 0.191},
+        {"count": 3, "offset_us": 0, "voice": "bright_strum", "layer": "guitar_proxy", "velocity": 0.78, "source_intensity": 0.699},
+        {"count": 3, "offset_us": 195000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.4, "source_intensity": 0.236},
+        {"count": 3, "offset_us": 392000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.41, "source_intensity": 0.255},
+        {"count": 3, "offset_us": 567000, "voice": "muted_strum", "layer": "guitar_proxy", "velocity": 0.26, "source_intensity": 0.105}
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "name": "COMPAS",
+      "pattern_id": "compas",
+      "cycles": 1,
+      "layers": ["guitar_proxy"]
+    }
+  ],
+  "loop": {"start_section": 0, "repeat": true},
+  "render": {"master_volume": 0.65, "monophonic": true, "overlap_policy": "higher_priority_then_louder"},
+  "ui": {
+    "accent_counts": [4]
+  },
+  "metadata": {
+    "origin": "Normalization of the previously proposed tangos v2 draft; not a new audio analysis.",
+    "note": "Synthetic guitar-attack proxies, not sampled guitar. Timings and velocities are inherited proposals, not hardware-calibrated measurements. cycle_us is derived as 4 * 719819 = 2879276."
+  }
+}
