@@ -20,15 +20,15 @@
   <h2 id="connectionTitle">Connection</h2>
   <div class="connection-row">
     <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span id="connectionStatus">Disconnected</span></span>
-      <button id="connectBtn" type="button">Connect USB</button>
+      <button id="connectBtn" type="button" class="btn-primary">Connect USB</button>
     <button id="disconnectBtn" type="button" disabled>Disconnect</button>
     <span id="deviceName" class="mono">No device</span>
   </div>
   <div class="connection-row">
     <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">SEC</span><span id="cryptoState" class="mono">E2E locked</span></span>
-    <span class="mono">SAS <strong id="sasCode">------</strong></span>
-    <button id="acceptSasBtn" type="button" disabled>Accept SAS</button>
-    <button id="abortCryptoBtn" type="button" disabled>Abort Crypto</button>
+    <span class="status-pill">SAS <strong id="sasCode">------</strong></span>
+    <button id="acceptSasBtn" type="button" class="btn-primary" disabled>Accept SAS</button>
+    <button id="abortCryptoBtn" type="button" class="btn-danger" disabled>Abort Crypto</button>
   </div>
 </section>
 
@@ -40,11 +40,11 @@
     <div id="transcript" aria-live="polite"><div class="empty">Connect, then send a message or attachment.</div></div>
     <form id="textForm" class="composer shell-stack">
       <input id="textInput" type="text" aria-label="Message" placeholder="Type a message…" autocomplete="off" disabled>
-      <button id="sendTextBtn" type="submit" disabled>Send</button>
+      <button id="sendTextBtn" type="submit" class="btn-primary" disabled>Send</button>
     </form>
     <div class="attachment-row">
       <input id="fileInput" type="file" aria-label="Attachment" aria-describedby="attachmentLimits" disabled>
-      <button id="sendFileBtn" type="button" disabled>Send Attachment</button>
+      <button id="sendFileBtn" type="button" class="btn-primary" disabled>Send Attachment</button>
     </div>
     <p class="hint" id="attachmentLimits">Encrypted attachments are held in browser memory until verified, then offered as Blob downloads. Available memory, storage and transfer time limit practical file size; this is not disk streaming.</p>
   </section>
@@ -55,7 +55,7 @@
     <div id="throughput" class="throughput">--</div>
     <p id="transferFailure" class="hint error" role="alert" hidden></p>
     <div class="transfer-actions">
-      <button id="cancelBtn" type="button" hidden>Cancel Transfer</button>
+      <button id="cancelBtn" type="button" class="btn-danger" hidden>Cancel Transfer</button>
     </div>
     <div class="panel-heading">
       <h2>Status Log</h2>
