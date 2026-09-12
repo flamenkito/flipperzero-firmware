@@ -25,7 +25,7 @@ controls, and the UI never accepts arbitrary commands.
 | Ink faint | `--ab-ink-faint` | `#6f766c` | Disabled ink |
 | Rule | `--ab-rule` | `#333333` | 1px pane separation |
 | Rule strong | `--ab-rule-strong` | `#5b665b` | Control outlines |
-| Signal | `--ab-signal` | `#9eea6a` | Verified/connected actions |
+| Signal | `--ab-signal` | `#9eea6a` | Primary action, active or verified status, and one compact success marker |
 | Signal active | `--ab-signal-active` | `#c4ff92` | Hover/focus signal |
 | Pending | `--ab-pending` | `#e0ae4f` | SAS and non-failure attention |
 | Failure | `--ab-failure` | `#f06c62` | Failure, abort, cancellation |
@@ -36,6 +36,9 @@ controls, and the UI never accepts arbitrary commands.
 - Color augments clear text and shape; no state is color-only.
 - The canvas is a flat dark fill: no graph-paper grid, repeating gradients,
   scanlines, noise, or other decorative textures, including outside readable panes.
+- Mint is reserved for a primary action, active or verified status, and one compact
+  success marker. Pane captions, routine log lines, hashes, download links, and
+  inactive state labels use neutral ink.
 
 ## 3. Typography
 
@@ -67,6 +70,12 @@ Spacing uses a 4px base: `--ab-space-1` (4px), `--ab-space-2` (8px),
 
 ### Shell
 
+- The operator chrome is a compact tabline followed by a statusline, each a single
+  14px to 16px bar. The tabline identifies `[airbridge]` and its endpoint, and may
+  show the `MODE=mock` segment. The statusline uses space-separated `KEY=value`
+  fields, for example `USB=connected SEC=verified SAS=729981 ✓ state=ready`.
+- `MODE=mock` is an accessible disclosure with invocation help available through
+  keyboard and touch operation.
 - The `scroll-body-shell` has a persistent console rail and a single document
   scroll owner; `100dvh`, never `100vh`, bounds full-height shells.
 - At wide widths, the workspace is a three-column console: a 17.5rem
@@ -75,15 +84,24 @@ Spacing uses a 4px base: `--ab-space-1` (4px), `--ab-space-2` (8px),
 - At `--ab-bp-compact` (64rem), the three regions collapse to one task-ordered
   column: connection/security, chat workspace, then transfer/log diagnostics.
   At `--ab-bp-narrow` (44rem), this remains the single readable column.
-- Long device names, filenames, hashes, logs, and errors use
-  `overflow-wrap: anywhere`; 375px has no primary-content horizontal scrollbar.
+- Long device names, filenames, hashes, logs, and errors use appropriate
+  truncation or wrapping without a 375px primary-content horizontal scrollbar.
+  Log records remain single-line rows and make their complete text available.
 
 ## 5. Components
 
 ### Console rail
-- **Structure:** product mark, endpoint label, connection/security facts, action cluster.
+- **Structure:** tabline/statusline operator chrome, compact connection/security
+  facts, and an action cluster. Pane captions are `[connection]`, `[transcript]`,
+  `[transfer]`, and `[log]`; persistent per-pane shell prompts are not used.
 - **States:** disconnected, connecting, connected, locked, SAS pending, verified,
   aborted.
+- **Status ownership:** `#panelState.dataset.phase` remains the authoritative
+  transfer phase, using its existing values. It is separate from the derived
+  statusline display state. The display-state renderer has sole ownership of the
+  statusline node and applies this precedence: disconnected is `idle`; connected
+  and crypto locked is `locked`; connected and unlocked with transfer phase
+  `Ready` is `ready`; otherwise display the active transfer phase in lowercase.
 - **Accessibility:** semantic header and text status alongside the square LED;
   focus is never hidden.
 - **Motion:** status state changes only; no decorative pulse.
@@ -111,8 +129,10 @@ Spacing uses a 4px base: `--ab-space-1` (4px), `--ab-space-2` (8px),
 - **Dimensions:** uniform `2.5rem` minimum block size; `.clear-btn` uses the
   small tier at `2rem` minimum block size.
 - **File selector:** `::file-selector-button` uses the small secondary tier
-  (`2rem` minimum block size), with a border rather than brackets because
-  pseudo-elements cannot nest.
+  (`2rem` minimum block size), with a solid `--ab-rule` enclosure rather than
+  brackets because pseudo-elements cannot nest. The native selector and its
+  button share the command family's height, surface, ink, and 1px border
+  vocabulary.
 - **Accessibility:** native labels, keyboard operation, 2px focus outline, and
   no destructive-looking command language.
 - **Motion:** 120ms color/opacity/transform feedback; reduced motion removes
@@ -125,8 +145,32 @@ Spacing uses a 4px base: `--ab-space-1` (4px), `--ab-space-2` (8px),
   `system>`) are never replaced by a zero-font-size swap. Include timestamp, body or
   file facts, verification, segmented progress, and download/remove controls.
 - **States:** hashing, sending, receiving, verifying, ready, cancelled, failed.
+- **Buffer behavior:** one lifecycle-owned transcript scroll controller exists
+  per transcript. It owns pinned state, unread count, resize observation, and
+  disposal. When a pinned buffer appends or resizes, it re-pins at the bottom;
+  otherwise it preserves the visible records and exposes `↓ N new` outside the
+  transcript's `aria-live` region. Click, manual return to bottom, and clear
+  reset the count. Observers and listeners dispose on teardown or detachment,
+  including detached synthetic hosts.
+- **Empty state:** an empty transcript is the first top-left
+  `.message.system.empty` terminal row, with `system>` as its sender. It is not a
+  centered placeholder.
+- **Attachments:** the default card summarizes name, size, short `sha256:` hash,
+  and verification. A closed-by-default details control contains the full hash in
+  de-emphasized text. The complete hash remains in card text and the card dataset
+  even while its visual detail is collapsed.
 - **Accessibility:** phase attributes and existing live/progress semantics remain
-  unchanged; names and hashes wrap rather than vanish.
+  unchanged. Names remain available, and complete hashes remain available through
+  card text and the collapsed details control.
+
+### Activity log
+- **Structure:** discrete, single-line rows with pinned-scroll behavior. A pinned
+  log follows appended records; an unpinned log preserves the operator's place.
+  `↑ N earlier` sits outside the scrolling record list, reports hidden earlier
+  rows, and exposes them by keyboard or pointer activation.
+- **Text availability:** clipped rows retain their full message through an
+  accessible text alternative such as a title attribute. Hashes do not wrap
+  mid-record.
 
 ### Status LED and tag
 - **Structure:** square marker plus plain-language state label.
@@ -160,6 +204,12 @@ verified state, but never as a general shadow or decorative animation.
   labels, and status text independent of color.
 - The connection/SAS/send/cancel/recovery journey must be keyboard reachable, at
   200% zoom, with reduced motion, and at a 375px viewport.
+- At narrow widths, the composer uses two compact rows: `[input][Send]`, then
+  `[file selector][Send Attachment]`, with a single terse helper line. The file
+  selector remains a coherent native control rather than a mismatched enclosure.
+- Scroll indicators remain outside live regions so unread-count changes do not
+  interrupt transcript or log announcements. Mock-mode help, transcript jumps,
+  and log-history controls are keyboard and touch accessible.
 - The console's dense technical language is paired with direct recovery wording;
   critical transfer state is never hover-only or dependent on memory.
 - Personas: keyboard-first operator; low-vision operator at 200% zoom; distracted
