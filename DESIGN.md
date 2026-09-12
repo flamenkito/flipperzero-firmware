@@ -4,7 +4,7 @@
 
 Pocket AirBridge is an **AirBridge Relay Console**: a deliberately hackerish,
 Linux-terminal-like workspace for an offline encrypted relay. Its signature is a
-near-black shell assembled from hard-edged graphite panes, 1px grid gaps, and
+flat near-black vim/neovim-style shell assembled from hard-edged graphite panes, 1px rules, and
 text-first prompts. Signal mint identifies a verified connection; amber is only
 for pending attention; red is reserved for an actual abort or failure. It never
 pretends to be a real shell: command-shaped controls are semantic browser
@@ -16,14 +16,13 @@ controls, and the UI never accepts arbitrary commands.
 
 | Role | Token | Value | Usage |
 |---|---|---:|---|
-| Canvas | `--ab-canvas` | `#0c0c0c` | Shell and page background |
+| Canvas | `--ab-canvas` | `#0c0c0c` | Flat terminal shell and page background |
 | Surface | `--ab-surface` | `#1a1a1a` | Primary pane |
 | Surface inset | `--ab-surface-inset` | `#111111` | Transcript, log, inputs |
 | Surface raised | `--ab-surface-raised` | `#202020` | Hovered/selected row |
 | Ink | `--ab-ink` | `#f0f3ee` | Primary text |
 | Ink muted | `--ab-ink-muted` | `#a8b1a8` | Metadata and help |
 | Ink faint | `--ab-ink-faint` | `#6f766c` | Disabled ink |
-| Grid | `--ab-grid` | `#232823` | Background graph line |
 | Rule | `--ab-rule` | `#333333` | 1px pane separation |
 | Rule strong | `--ab-rule-strong` | `#5b665b` | Control outlines |
 | Signal | `--ab-signal` | `#9eea6a` | Verified/connected actions |
@@ -35,8 +34,8 @@ controls, and the UI never accepts arbitrary commands.
 
 - No decorative color gradient, glass, drop shadow, or branded radio imagery.
 - Color augments clear text and shape; no state is color-only.
-- The sole optional atmosphere is a static, low-contrast scanline/noise texture
-  outside readable panes.
+- The canvas is a flat dark fill: no graph-paper grid, repeating gradients,
+  scanlines, noise, or other decorative textures, including outside readable panes.
 
 ## 3. Typography
 
@@ -142,8 +141,8 @@ Spacing uses a 4px base: `--ab-space-1` (4px), `--ab-space-2` (8px),
 | Feedback | 120ms | Press, hover, focus |
 | State | 180ms | Status and progress state change |
 
-Only `transform`, `opacity`, `color`, and `filter` animate. The optional scanline
-texture is static; `prefers-reduced-motion` disables non-essential transforms.
+Only `transform`, `opacity`, `color`, and `filter` animate.
+`prefers-reduced-motion` disables non-essential transforms.
 Transfer lifecycle changes, focus, and progress are the only meaningful motion.
 
 ## 7. Depth & Surface
@@ -171,5 +170,4 @@ verified state, but never as a general shadow or decorative animation.
 | Item | Location | Why accepted | Owner / Exit |
 |---|---|---|---|
 | Native offline monospace stack | Both chat endpoints | No external font may add a network dependency or inflate the bundle | Replace only with an in-tree licensed font and new bundle proof |
-| Static atmosphere only | Shared stylesheet | Heavy CRT/VHS motion would impair readability and distract from transfer state | Keep unless user requests a tested accessible alternative |
 | CSS-generated brackets | Terminal controls | Presentational `[ ]` brackets may be announced by some screen readers; native text labels remain meaningful | UI maintainer / replace with aria-hidden markup if assistive-technology testing finds disruptive announcements |

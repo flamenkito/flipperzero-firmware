@@ -13,7 +13,6 @@
   --ab-ink: #f0f3ee;
   --ab-ink-muted: #a8b1a8;
   --ab-ink-faint: #6f766c;
-  --ab-grid: #232823;
   --ab-rule: #333333;
   --ab-rule-strong: #5b665b;
   --ab-signal: #9eea6a;
@@ -46,8 +45,7 @@ body {
   padding: var(--ab-space-4);
   color: var(--ab-ink);
   background-color: var(--ab-canvas);
-  background-image: linear-gradient(var(--ab-grid) 1px, transparent 1px), linear-gradient(90deg, var(--ab-grid) 1px, transparent 1px);
-  background-size: 32px 32px;
+  background-image: none;
   font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: var(--ab-type-body);
   font-variant-numeric: tabular-nums;
@@ -277,7 +275,7 @@ input[type="file"]:disabled::file-selector-button { cursor: not-allowed; }
 }
 
 @media (max-width: 44rem) {
-  body { padding: var(--ab-space-2); background-size: 24px 24px; }
+  body { padding: var(--ab-space-2); }
   .console-header, .card { padding: var(--ab-space-2); }
   .connection-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
   .connection-row > .status-pill, .connection-row > span { grid-column: 1 / -1; }
