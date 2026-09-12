@@ -12,6 +12,8 @@
   --ab-surface-raised: #202020;
   --ab-ink: #f0f3ee;
   --ab-ink-muted: #a8b1a8;
+  --ab-ink-faint: #6f766c;
+  --ab-grid: #232823;
   --ab-rule: #333333;
   --ab-rule-strong: #5b665b;
   --ab-signal: #9eea6a;
@@ -44,7 +46,7 @@ body {
   padding: var(--ab-space-4);
   color: var(--ab-ink);
   background-color: var(--ab-canvas);
-  background-image: linear-gradient(var(--ab-rule) 1px, transparent 1px), linear-gradient(90deg, var(--ab-rule) 1px, transparent 1px);
+  background-image: linear-gradient(var(--ab-grid) 1px, transparent 1px), linear-gradient(90deg, var(--ab-grid) 1px, transparent 1px);
   background-size: 32px 32px;
   font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: var(--ab-type-body);
@@ -56,7 +58,7 @@ button, input { font: inherit; }
 button, input, .card, .status-pill, .mock-banner { border-radius: 0; }
 
 h1, h2, p { margin: 0; }
-h1 { font-size: var(--ab-type-display); line-height: 1.1; letter-spacing: -0.04em; }
+h1 { font-size: var(--ab-type-display); line-height: 1.1; letter-spacing: normal; }
 h2 { color: var(--ab-ink); font-size: var(--ab-type-heading); letter-spacing: 0.06em; text-transform: uppercase; }
 h2::before { color: var(--ab-signal); content: "$ "; }
 p { color: var(--ab-ink-muted); }
@@ -75,10 +77,11 @@ p { color: var(--ab-ink-muted); }
 }
 
 .console-kicker::before, .panel-kicker::before { color: var(--ab-signal); content: "> "; }
-.page-intro { max-inline-size: 72ch; }
+.page-intro { max-inline-size: 72ch; text-wrap: pretty; }
 .mono { font-family: inherit; }
 
-.shell-stack { display: grid; gap: var(--ab-space-3); margin-block-start: var(--ab-space-3); }
+.shell-stack { display: grid; gap: var(--ab-space-3); }
+main.shell-stack, .composer.shell-stack { margin-block-start: var(--ab-space-3); }
 
 .card {
   min-inline-size: 0;
@@ -99,6 +102,7 @@ p { color: var(--ab-ink-muted); }
 
 .connection-row { flex-wrap: wrap; }
 .connection-row + .connection-row { margin-block-start: var(--ab-space-2); }
+.attachment-row { margin-block-start: var(--ab-space-2); }
 .transfer-actions { margin-block-start: var(--ab-space-3); }
 .transfer-actions button { flex: 1; }
 
@@ -109,7 +113,7 @@ p { color: var(--ab-ink-muted); }
   gap: var(--ab-space-3);
 }
 .chat-workspace { min-inline-size: 0; }
-.connection-rail, .diagnostic-rail { align-self: stretch; }
+.connection-rail, .diagnostic-rail { align-self: stretch; align-content: start; }
 
 .status-pill {
   display: inline-flex;
@@ -121,6 +125,8 @@ p { color: var(--ab-ink-muted); }
   color: var(--ab-ink-muted);
   font-size: var(--ab-type-meta);
 }
+
+.status-pill strong { color: var(--ab-ink); letter-spacing: 0.12em; }
 
 .dot {
   inline-size: 8px;
@@ -162,42 +168,31 @@ body.mock .mock-banner { display: block; }
   border: 1px solid var(--ab-rule);
   background: var(--ab-surface-inset);
 }
-#transcript { block-size: min(55dvh, 34rem); padding: var(--ab-space-2); }
+#transcript { display: flex; flex-direction: column; block-size: min(55dvh, 34rem); padding: var(--ab-space-2); }
 #log { block-size: 10rem; margin: 0; padding: var(--ab-space-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.empty { margin-block: 8rem; color: var(--ab-ink-muted); text-align: center; }
-.message { display: flex; margin-block: var(--ab-space-2); }
-.message.you { justify-content: flex-end; }
-.message.system { justify-content: center; }
+.empty { margin: auto; color: var(--ab-ink-muted); text-align: center; }
+.message { display: block; margin-block: var(--ab-space-2); }
 
 .bubble {
-  inline-size: fit-content;
-  max-inline-size: min(82%, 42rem);
+  display: block;
+  inline-size: 100%;
+  max-inline-size: none;
   min-inline-size: 0;
-  padding: var(--ab-space-2);
+  padding: var(--ab-space-1) var(--ab-space-2);
   border-inline-start: 2px solid var(--ab-rule-strong);
-  background: var(--ab-surface);
+  background: transparent;
+  text-align: start;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-.you .bubble { border-inline-start-color: var(--ab-signal); background: var(--ab-surface-raised); }
-.system .bubble { border-inline-start-color: var(--ab-pending); color: var(--ab-ink-muted); text-align: center; }
+.message.you .bubble { border-inline-start-color: var(--ab-signal); background: var(--ab-surface); }
+.message.system .bubble { border-inline-start-color: var(--ab-pending); color: var(--ab-ink-muted); text-align: start; }
 .meta-line { display: flex; justify-content: space-between; gap: var(--ab-space-3); margin-block-end: var(--ab-space-1); }
-.sender { color: var(--ab-ink); font-weight: 700; }
-.sender::after { color: var(--ab-ink-muted); content: ">"; font-size: var(--ab-type-meta); }
-body[data-endpoint="usb"] .message.you .sender::before { color: var(--ab-signal); content: "you@usb"; font-size: 0; }
-body[data-endpoint="usb"] .message.you .sender { font-size: 0; }
-body[data-endpoint="usb"] .message.you .sender::before { font-size: var(--ab-type-meta); }
-body[data-endpoint="usb"] .message.peer .sender::before { content: "peer@ble"; }
-body[data-endpoint="ble"] .message.you .sender::before { color: var(--ab-signal); content: "you@ble"; font-size: 0; }
-body[data-endpoint="ble"] .message.you .sender { font-size: 0; }
-body[data-endpoint="ble"] .message.you .sender::before { font-size: var(--ab-type-meta); }
-body[data-endpoint="ble"] .message.peer .sender::before { content: "peer@usb"; }
-body[data-endpoint] .message.peer .sender { font-size: 0; }
-body[data-endpoint] .message.peer .sender::before { color: var(--ab-ink); font-size: var(--ab-type-meta); }
-body[data-endpoint] .message.system .sender { font-size: var(--ab-type-meta); }
+.sender { color: var(--ab-ink); font-weight: 700; font-size: var(--ab-type-meta); }
+.message.you .sender { color: var(--ab-signal); }
 
-.attachment-card { display: grid; min-inline-size: 0; gap: var(--ab-space-1); overflow-wrap: anywhere; }
+.attachment-card { display: grid; min-inline-size: 0; max-inline-size: 42rem; gap: var(--ab-space-1); overflow-wrap: anywhere; }
 .attachment-name { color: var(--ab-ink); font-weight: 700; overflow-wrap: anywhere; }
 .hash-ok { color: var(--ab-signal); }
 .hash-error, .error { color: var(--ab-failure); }
@@ -220,35 +215,61 @@ body[data-endpoint] .message.system .sender { font-size: var(--ab-type-meta); }
 
 button {
   flex: 0 0 auto;
-  min-block-size: 2.25rem;
+  min-block-size: 2.5rem;
   padding-inline: var(--ab-space-3);
-  border: 1px solid var(--ab-rule-strong);
+  border: 1px solid transparent;
   color: var(--ab-ink);
-  background: var(--ab-surface);
+  background: transparent;
   cursor: pointer;
-  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
   white-space: nowrap;
   transition: color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out, transform 120ms ease-out;
 }
 button::before { color: var(--ab-ink-muted); content: "[ "; }
 button::after { color: var(--ab-ink-muted); content: " ]"; }
-button:hover:not(:disabled) { border-color: var(--ab-signal); color: var(--ab-signal-active); background: var(--ab-surface-raised); }
+button:is(:hover, :focus-visible):not(:disabled) { border-color: var(--ab-rule-strong); background: var(--ab-surface-raised); }
 button:active:not(:disabled) { transform: translateY(1px); }
-button:disabled, input:disabled { cursor: not-allowed; opacity: 0.48; }
+button.btn-primary, button.btn-primary::before, button.btn-primary::after { color: var(--ab-signal); }
+button.btn-primary:is(:hover, :focus-visible):not(:disabled) { color: var(--ab-signal-active); border-color: var(--ab-signal); }
+button.btn-danger:is(:hover, :focus-visible, :active):not(:disabled) { color: var(--ab-failure); border-color: var(--ab-failure); }
+button.btn-danger:is(:hover, :focus-visible, :active):not(:disabled)::before,
+button.btn-danger:is(:hover, :focus-visible, :active):not(:disabled)::after { color: var(--ab-failure); }
+button:disabled, button:disabled::before, button:disabled::after { color: var(--ab-ink-faint); }
+button:disabled, input:disabled { cursor: not-allowed; }
 button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--ab-signal-active); outline-offset: 2px; }
 
 input[type="text"], input[type="file"] {
   min-inline-size: 0;
   inline-size: 100%;
-  min-block-size: 2.25rem;
+  block-size: 2.5rem;
   padding: var(--ab-space-2);
   border: 1px solid var(--ab-rule-strong);
   color: var(--ab-ink);
   background: var(--ab-surface-inset);
 }
 input[type="text"]::placeholder { color: var(--ab-ink-muted); opacity: 1; }
-input[type="file"] { color: var(--ab-ink-muted); border-style: dashed; }
-.clear-btn { min-block-size: 1.9rem; color: var(--ab-ink-muted); font-size: var(--ab-type-meta); }
+input[type="file"] { padding: var(--ab-space-1) var(--ab-space-2); color: var(--ab-ink-muted); border-style: dashed; }
+input[type="file"]::file-selector-button {
+  font: inherit;
+  font-size: var(--ab-type-meta);
+  line-height: 1.5;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ab-ink);
+  background: var(--ab-surface);
+  border: 1px solid var(--ab-rule-strong);
+  border-radius: 0;
+  padding-block: var(--ab-space-1);
+  padding-inline: var(--ab-space-2);
+  margin-inline-end: var(--ab-space-2);
+  cursor: pointer;
+}
+input[type="file"]:hover:not(:disabled)::file-selector-button { color: var(--ab-signal-active); border-color: var(--ab-signal); }
+input:disabled, input[type="file"]:disabled::file-selector-button { color: var(--ab-ink-faint); border-color: var(--ab-rule); }
+input[type="file"]:disabled::file-selector-button { cursor: not-allowed; }
+.clear-btn { min-block-size: 2rem; color: var(--ab-ink-muted); font-size: var(--ab-type-meta); }
 
 @media (max-width: 64rem) {
   .grid { grid-template-columns: 1fr; }
@@ -258,13 +279,15 @@ input[type="file"] { color: var(--ab-ink-muted); border-style: dashed; }
 @media (max-width: 44rem) {
   body { padding: var(--ab-space-2); background-size: 24px 24px; }
   .console-header, .card { padding: var(--ab-space-2); }
+  .connection-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  .connection-row > .status-pill, .connection-row > span { grid-column: 1 / -1; }
   .composer, .attachment-row { align-items: stretch; flex-direction: column; }
-  .bubble { max-inline-size: 94%; }
-  .empty { margin-block: 5rem; }
+  .clear-btn { min-block-size: 2.5rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+  button:active:not(:disabled) { transform: none; }
 }
 
 </style>
@@ -283,15 +306,15 @@ input[type="file"] { color: var(--ab-ink-muted); border-style: dashed; }
   <h2 id="connectionTitle">Connection</h2>
   <div class="connection-row">
     <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span id="connectionStatus">Disconnected</span></span>
-      <button id="connectBtn" type="button">Connect USB</button>
+      <button id="connectBtn" type="button" class="btn-primary">Connect USB</button>
     <button id="disconnectBtn" type="button" disabled>Disconnect</button>
     <span id="deviceName" class="mono">No device</span>
   </div>
   <div class="connection-row">
     <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">SEC</span><span id="cryptoState" class="mono">E2E locked</span></span>
-    <span class="mono">SAS <strong id="sasCode">------</strong></span>
-    <button id="acceptSasBtn" type="button" disabled>Accept SAS</button>
-    <button id="abortCryptoBtn" type="button" disabled>Abort Crypto</button>
+    <span class="status-pill">SAS <strong id="sasCode">------</strong></span>
+    <button id="acceptSasBtn" type="button" class="btn-primary" disabled>Accept SAS</button>
+    <button id="abortCryptoBtn" type="button" class="btn-danger" disabled>Abort Crypto</button>
   </div>
 </section>
 
@@ -303,11 +326,11 @@ input[type="file"] { color: var(--ab-ink-muted); border-style: dashed; }
     <div id="transcript" aria-live="polite"><div class="empty">Connect, then send a message or attachment.</div></div>
     <form id="textForm" class="composer shell-stack">
       <input id="textInput" type="text" aria-label="Message" placeholder="Type a message…" autocomplete="off" disabled>
-      <button id="sendTextBtn" type="submit" disabled>Send</button>
+      <button id="sendTextBtn" type="submit" class="btn-primary" disabled>Send</button>
     </form>
     <div class="attachment-row">
       <input id="fileInput" type="file" aria-label="Attachment" aria-describedby="attachmentLimits" disabled>
-      <button id="sendFileBtn" type="button" disabled>Send Attachment</button>
+      <button id="sendFileBtn" type="button" class="btn-primary" disabled>Send Attachment</button>
     </div>
     <p class="hint" id="attachmentLimits">Encrypted attachments are held in browser memory until verified, then offered as Blob downloads. Available memory, storage and transfer time limit practical file size; this is not disk streaming.</p>
   </section>
@@ -318,7 +341,7 @@ input[type="file"] { color: var(--ab-ink-muted); border-style: dashed; }
     <div id="throughput" class="throughput">--</div>
     <p id="transferFailure" class="hint error" role="alert" hidden></p>
     <div class="transfer-actions">
-      <button id="cancelBtn" type="button" hidden>Cancel Transfer</button>
+      <button id="cancelBtn" type="button" class="btn-danger" hidden>Cancel Transfer</button>
     </div>
     <div class="panel-heading">
       <h2>Status Log</h2>
@@ -3140,7 +3163,13 @@ function addMessage(transcriptEl, { side, kind, text, meta, data, hash, pending 
   metaLine.className = 'meta-line';
   const senderLabel = document.createElement('span');
   senderLabel.className = 'sender';
-  senderLabel.textContent = side === 'you' ? 'You' : side === 'peer' ? 'Peer' : 'System';
+  const endpoint = document.body?.dataset.endpoint;
+  if (endpoint) {
+    const peerEndpoint = endpoint === 'usb' ? 'ble' : 'usb';
+    senderLabel.textContent = side === 'you' ? `you@${endpoint}>` : side === 'peer' ? `peer@${peerEndpoint}>` : 'system>';
+  } else {
+    senderLabel.textContent = side === 'you' ? 'You' : side === 'peer' ? 'Peer' : 'System';
+  }
   const time = document.createElement('span');
   time.textContent = timeLabel();
   metaLine.append(senderLabel, time);
