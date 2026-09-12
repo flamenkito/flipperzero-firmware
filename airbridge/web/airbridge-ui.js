@@ -129,7 +129,13 @@ export function addMessage(transcriptEl, { side, kind, text, meta, data, hash, p
   metaLine.className = 'meta-line';
   const senderLabel = document.createElement('span');
   senderLabel.className = 'sender';
-  senderLabel.textContent = side === 'you' ? 'You' : side === 'peer' ? 'Peer' : 'System';
+  const endpoint = document.body?.dataset.endpoint;
+  if (endpoint) {
+    const peerEndpoint = endpoint === 'usb' ? 'ble' : 'usb';
+    senderLabel.textContent = side === 'you' ? `you@${endpoint}>` : side === 'peer' ? `peer@${peerEndpoint}>` : 'system>';
+  } else {
+    senderLabel.textContent = side === 'you' ? 'You' : side === 'peer' ? 'Peer' : 'System';
+  }
   const time = document.createElement('span');
   time.textContent = timeLabel();
   metaLine.append(senderLabel, time);

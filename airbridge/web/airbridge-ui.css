@@ -165,38 +165,27 @@ body.mock .mock-banner { display: block; }
 #log { block-size: 10rem; margin: 0; padding: var(--ab-space-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .empty { margin: auto; color: var(--ab-ink-muted); text-align: center; }
-.message { display: flex; margin-block: var(--ab-space-2); }
-.message.you { justify-content: flex-end; }
-.message.system { justify-content: center; }
+.message { display: block; margin-block: var(--ab-space-2); }
 
 .bubble {
-  inline-size: fit-content;
-  max-inline-size: min(82%, 42rem);
+  display: block;
+  inline-size: 100%;
+  max-inline-size: none;
   min-inline-size: 0;
-  padding: var(--ab-space-2);
+  padding: var(--ab-space-1) var(--ab-space-2);
   border-inline-start: 2px solid var(--ab-rule-strong);
-  background: var(--ab-surface);
+  background: transparent;
+  text-align: start;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-.you .bubble { border-inline-start-color: var(--ab-signal); background: var(--ab-surface-raised); }
-.system .bubble { border-inline-start-color: var(--ab-pending); color: var(--ab-ink-muted); text-align: center; }
+.message.you .bubble { border-inline-start-color: var(--ab-signal); background: var(--ab-surface); }
+.message.system .bubble { border-inline-start-color: var(--ab-pending); color: var(--ab-ink-muted); text-align: start; }
 .meta-line { display: flex; justify-content: space-between; gap: var(--ab-space-3); margin-block-end: var(--ab-space-1); }
-.sender { color: var(--ab-ink); font-weight: 700; }
-.sender::after { color: var(--ab-ink-muted); content: ">"; font-size: var(--ab-type-meta); }
-body[data-endpoint="usb"] .message.you .sender::before { color: var(--ab-signal); content: "you@usb"; font-size: 0; }
-body[data-endpoint="usb"] .message.you .sender { font-size: 0; }
-body[data-endpoint="usb"] .message.you .sender::before { font-size: var(--ab-type-meta); }
-body[data-endpoint="usb"] .message.peer .sender::before { content: "peer@ble"; }
-body[data-endpoint="ble"] .message.you .sender::before { color: var(--ab-signal); content: "you@ble"; font-size: 0; }
-body[data-endpoint="ble"] .message.you .sender { font-size: 0; }
-body[data-endpoint="ble"] .message.you .sender::before { font-size: var(--ab-type-meta); }
-body[data-endpoint="ble"] .message.peer .sender::before { content: "peer@usb"; }
-body[data-endpoint] .message.peer .sender { font-size: 0; }
-body[data-endpoint] .message.peer .sender::before { color: var(--ab-ink); font-size: var(--ab-type-meta); }
-body[data-endpoint] .message.system .sender { font-size: var(--ab-type-meta); }
+.sender { color: var(--ab-ink); font-weight: 700; font-size: var(--ab-type-meta); }
+.message.you .sender { color: var(--ab-signal); }
 
-.attachment-card { display: grid; min-inline-size: 0; gap: var(--ab-space-1); overflow-wrap: anywhere; }
+.attachment-card { display: grid; min-inline-size: 0; max-inline-size: 42rem; gap: var(--ab-space-1); overflow-wrap: anywhere; }
 .attachment-name { color: var(--ab-ink); font-weight: 700; overflow-wrap: anywhere; }
 .hash-ok { color: var(--ab-signal); }
 .hash-error, .error { color: var(--ab-failure); }
@@ -287,7 +276,6 @@ input[type="file"]:disabled::file-selector-button { cursor: not-allowed; }
   .connection-row > .status-pill, .connection-row > span { grid-column: 1 / -1; }
   .composer, .attachment-row { align-items: stretch; flex-direction: column; }
   .clear-btn { min-block-size: 2.5rem; }
-  .bubble { max-inline-size: 94%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

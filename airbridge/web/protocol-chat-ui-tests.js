@@ -4,6 +4,37 @@ function check(value, message) { if (!value) throw new Error(message); }
 
 export function chatUiTests() {
   return [
+    ...[
+      ['USB', 'usb', [['you', 'you@usb>'], ['peer', 'peer@ble>']]],
+      ['BLE', 'ble', [['you', 'you@ble>'], ['peer', 'peer@usb>']]],
+      ['system on USB', 'usb', [['system', 'system>']]],
+      ['system on BLE', 'ble', [['system', 'system>']]],
+      ['endpoint absent', undefined, [['you', 'You'], ['peer', 'Peer'], ['system', 'System']]],
+    ].map(([name, endpoint, labels]) => [`Chat prompt labels: ${name}`, () => {
+      const originalEndpoint = document.body.dataset.endpoint;
+      const transcript = document.createElement('section');
+      transcript.setAttribute('aria-live', 'polite');
+      try {
+        if (endpoint === undefined) delete document.body.dataset.endpoint;
+        else document.body.dataset.endpoint = endpoint;
+        document.body.append(transcript);
+        for (const [side, expected] of labels) {
+          const text = '<img src=x onerror=alert(1)> & message';
+          const row = ui.addMessage(transcript, {side, kind:'text', text});
+          const sender = row.querySelector('.bubble > .meta-line > .sender');
+          check(sender?.textContent === expected, `${side}: expected ${expected}, got ${sender?.textContent}`);
+          check(sender.childNodes.length === 1 && sender.firstChild.nodeType === Node.TEXT_NODE, 'prompt is not real text');
+          check(row.className === `message ${side}`, 'row class hooks changed');
+          check(sender.nextElementSibling?.textContent, 'timestamp missing');
+          check(row.querySelector('.bubble').lastElementChild.textContent === text && !row.querySelector('img'), 'message became markup');
+        }
+        check(transcript.getAttribute('aria-live') === 'polite', 'transcript live semantics changed');
+      } finally {
+        if (originalEndpoint === undefined) delete document.body.dataset.endpoint;
+        else document.body.dataset.endpoint = originalEndpoint;
+        transcript.remove();
+      }
+    }]),
     ['Chat detached outbound card rolls back its new URL and keeps the rejection identity', () => {
       // Given a pending card detached after its sender owns it.
       const row=ui.addMessage(document.body,{side:'you',kind:'attachment',meta:{name:'file'},pending:true});
