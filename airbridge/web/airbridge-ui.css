@@ -5,6 +5,8 @@
   --ab-surface-raised: #202020;
   --ab-ink: #f0f3ee;
   --ab-ink-muted: #a8b1a8;
+  --ab-ink-faint: #6f766c;
+  --ab-grid: #232823;
   --ab-rule: #333333;
   --ab-rule-strong: #5b665b;
   --ab-signal: #9eea6a;
@@ -37,7 +39,7 @@ body {
   padding: var(--ab-space-4);
   color: var(--ab-ink);
   background-color: var(--ab-canvas);
-  background-image: linear-gradient(var(--ab-rule) 1px, transparent 1px), linear-gradient(90deg, var(--ab-rule) 1px, transparent 1px);
+  background-image: linear-gradient(var(--ab-grid) 1px, transparent 1px), linear-gradient(90deg, var(--ab-grid) 1px, transparent 1px);
   background-size: 32px 32px;
   font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: var(--ab-type-body);
@@ -213,35 +215,61 @@ body[data-endpoint] .message.system .sender { font-size: var(--ab-type-meta); }
 
 button {
   flex: 0 0 auto;
-  min-block-size: 2.25rem;
+  min-block-size: 2.5rem;
   padding-inline: var(--ab-space-3);
-  border: 1px solid var(--ab-rule-strong);
+  border: 1px solid transparent;
   color: var(--ab-ink);
-  background: var(--ab-surface);
+  background: transparent;
   cursor: pointer;
-  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
   white-space: nowrap;
   transition: color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out, transform 120ms ease-out;
 }
 button::before { color: var(--ab-ink-muted); content: "[ "; }
 button::after { color: var(--ab-ink-muted); content: " ]"; }
-button:hover:not(:disabled) { border-color: var(--ab-signal); color: var(--ab-signal-active); background: var(--ab-surface-raised); }
+button:is(:hover, :focus-visible):not(:disabled) { border-color: var(--ab-rule-strong); background: var(--ab-surface-raised); }
 button:active:not(:disabled) { transform: translateY(1px); }
-button:disabled, input:disabled { cursor: not-allowed; opacity: 0.48; }
+button.btn-primary, button.btn-primary::before, button.btn-primary::after { color: var(--ab-signal); }
+button.btn-primary:is(:hover, :focus-visible):not(:disabled) { color: var(--ab-signal-active); border-color: var(--ab-signal); }
+button.btn-danger:is(:hover, :focus-visible, :active):not(:disabled) { color: var(--ab-failure); border-color: var(--ab-failure); }
+button.btn-danger:is(:hover, :focus-visible, :active):not(:disabled)::before,
+button.btn-danger:is(:hover, :focus-visible, :active):not(:disabled)::after { color: var(--ab-failure); }
+button:disabled, button:disabled::before, button:disabled::after { color: var(--ab-ink-faint); }
+button:disabled, input:disabled { cursor: not-allowed; }
 button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--ab-signal-active); outline-offset: 2px; }
 
 input[type="text"], input[type="file"] {
   min-inline-size: 0;
   inline-size: 100%;
-  min-block-size: 2.25rem;
+  block-size: 2.5rem;
   padding: var(--ab-space-2);
   border: 1px solid var(--ab-rule-strong);
   color: var(--ab-ink);
   background: var(--ab-surface-inset);
 }
 input[type="text"]::placeholder { color: var(--ab-ink-muted); opacity: 1; }
-input[type="file"] { color: var(--ab-ink-muted); border-style: dashed; }
-.clear-btn { min-block-size: 1.9rem; color: var(--ab-ink-muted); font-size: var(--ab-type-meta); }
+input[type="file"] { padding: var(--ab-space-1) var(--ab-space-2); color: var(--ab-ink-muted); border-style: dashed; }
+input[type="file"]::file-selector-button {
+  font: inherit;
+  font-size: var(--ab-type-meta);
+  line-height: 1.5;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ab-ink);
+  background: var(--ab-surface);
+  border: 1px solid var(--ab-rule-strong);
+  border-radius: 0;
+  padding-block: var(--ab-space-1);
+  padding-inline: var(--ab-space-2);
+  margin-inline-end: var(--ab-space-2);
+  cursor: pointer;
+}
+input[type="file"]:hover:not(:disabled)::file-selector-button { color: var(--ab-signal-active); border-color: var(--ab-signal); }
+input:disabled, input[type="file"]:disabled::file-selector-button { color: var(--ab-ink-faint); border-color: var(--ab-rule); }
+input[type="file"]:disabled::file-selector-button { cursor: not-allowed; }
+.clear-btn { min-block-size: 2rem; color: var(--ab-ink-muted); font-size: var(--ab-type-meta); }
 
 @media (max-width: 64rem) {
   .grid { grid-template-columns: 1fr; }
@@ -252,10 +280,12 @@ input[type="file"] { color: var(--ab-ink-muted); border-style: dashed; }
   body { padding: var(--ab-space-2); background-size: 24px 24px; }
   .console-header, .card { padding: var(--ab-space-2); }
   .composer, .attachment-row { align-items: stretch; flex-direction: column; }
+  .clear-btn { min-block-size: 2.5rem; }
   .bubble { max-inline-size: 94%; }
   .empty { margin-block: 5rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+  button:active:not(:disabled) { transform: none; }
 }
