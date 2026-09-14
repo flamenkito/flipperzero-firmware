@@ -8,498 +8,148 @@
 <title>Pocket AirBridge — BLE Chat</title>
 </head>
 <body data-endpoint="ble">
-<header class="console-header">
-  <div class="console-kicker">AIRBRIDGE / PC-B / WEB BLUETOOTH</div>
-  <h1>Pocket AirBridge — BLE Chat</h1>
-  <p class="page-intro">PC-B chat endpoint over Web Bluetooth. Send text or attachments through the AirBridge.</p>
-</header>
-<div class="mock-banner">Mock mode bypasses Web Bluetooth. Use <span class="mono">?mock=1&amp;mockPeer=demo</span> on both pages for paired chat, or <span class="mono">?mock=1</span> alone for the in-page sender verifier.</div>
-
-<main class="grid shell-stack">
-<section class="card shell-stack connection-rail" aria-labelledby="connectionTitle">
-  <h2 id="connectionTitle">Connection</h2>
-  <div class="connection-row">
-    <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span id="connectionStatus">Disconnected</span></span>
-    <button id="connectBtn" type="button" class="btn-primary">Connect BLE</button>
-    <button id="disconnectBtn" type="button" disabled>Disconnect</button>
+<header class="console-chrome">
+  <nav class="tabline" aria-label="AirBridge endpoint">
+    <h1 class="visually-hidden">Pocket AirBridge — BLE Chat</h1>
+    <span class="tabline-product">airbridge</span>
+    <span class="tabline-endpoint">ble/web-bt</span>
+    <span id="headerStatus" class="header-status" aria-label="Connection summary">No device · idle</span>
+    <details class="console-menu">
+      <summary>console</summary>
+      <div class="console-menu-panel">
+        <button id="connectBtn" type="button" class="btn-primary">Connect BLE</button>
+        <button id="disconnectBtn" type="button" disabled>Disconnect</button>
+        <span class="endpoint-helper-slot"><span class="hint endpoint-helper" id="pickerHint">Pick the HP Wireless device in the list.</span></span>
+      </div>
+    </details>
+    <details class="mock-banner">
+      <summary>MODE=mock</summary>
+      <span class="mock-help">Mock mode bypasses Web Bluetooth. Use <span class="mono">?mock=1&amp;mockPeer=demo</span> on both pages for paired chat, or <span class="mono">?mock=1</span> alone for the in-page sender verifier.</span>
+    </details>
+  </nav>
+  <div class="statusline" aria-label="Connection and encryption status">
+    <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span class="status-field"><span aria-hidden="true">BLE=</span><span id="connectionStatus">disconnected</span></span></span>
+    <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span class="status-field"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">SEC</span><span aria-hidden="true">=</span><span id="cryptoState" class="mono">locked</span></span></span>
+    <span class="status-pill"><span class="status-field">SAS=<strong id="sasCode">------</strong></span><span class="sas-verified" aria-label="verified" hidden>✓</span></span>
+    <span id="displayState" class="status-state">state=idle</span>
     <span id="deviceName" class="mono">No device</span>
   </div>
-  <div class="connection-row">
-    <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">SEC</span><span id="cryptoState" class="mono">E2E locked</span></span>
-    <span class="status-pill">SAS <strong id="sasCode">------</strong></span>
-    <button id="acceptSasBtn" type="button" class="btn-primary" disabled>Accept SAS</button>
-    <button id="abortCryptoBtn" type="button" class="btn-danger" disabled>Abort Crypto</button>
+</header>
+
+  <div id="sasBanner" class="sas-banner" hidden>
+    <div class="sas-banner-main">
+      <span class="sas-banner-caption">compare this code with your peer</span>
+      <strong id="sasBannerCode" class="sas-banner-code">------</strong>
+    </div>
+    <span class="sas-banner-text">If the six digits match on both screens, accept on both sides to open the secure channel. If they differ, abort and reconnect.</span>
+    <div class="sas-banner-actions">
+      <button id="acceptSasBtn" type="button" class="btn-primary" disabled>Accept SAS</button>
+      <button id="abortCryptoBtn" type="button" class="btn-danger" disabled>Abort Crypto</button>
+    </div>
   </div>
-  <p class="hint" id="pickerHint">Pick the HP Wireless device in the list.</p>
-</section>
+
+<main id="app" class="grid shell-stack">
 
   <section class="card chat-workspace" aria-labelledby="chatTitle">
     <div class="panel-heading">
-      <h2 id="chatTitle">Chat Transcript</h2>
+      <h2 id="chatTitle">transcript</h2>
       <button id="clearTranscriptBtn" type="button" class="clear-btn">Clear</button>
     </div>
-    <div id="transcript" aria-live="polite"><div class="empty">Connect, then send a message or attachment.</div></div>
+    <div id="transcript" aria-live="polite"><article class="message system empty"><div class="bubble"><div class="meta-line"><span class="sender">system&gt;</span></div><div>Connect, then send a message or attachment.</div></div></article></div>
+    <button type="button" class="transcript-jump" hidden>↓ 0 new</button>
     <form id="textForm" class="composer shell-stack">
+      <button id="attachBtn" type="button" aria-label="Attach file">+</button>
+      <span id="fileChip" class="file-chip" hidden><span class="file-chip-text"></span><button id="fileChipClear" type="button" aria-label="Clear attachment">×</button></span>
+      <input id="fileInput" type="file" class="file-input-hidden" aria-label="Attachment" aria-describedby="attachmentLimits" disabled>
       <input id="textInput" type="text" aria-label="Message" placeholder="Type a message…" autocomplete="off" disabled>
       <button id="sendTextBtn" type="submit" class="btn-primary" disabled>Send</button>
+      <button id="sendFileBtn" type="button" class="btn-primary send-file-hidden" disabled>Send Attachment</button>
     </form>
-    <div class="attachment-row">
-      <input id="fileInput" type="file" aria-label="Attachment" aria-describedby="attachmentLimits" disabled>
-      <button id="sendFileBtn" type="button" class="btn-primary" disabled>Send Attachment</button>
-    </div>
-    <p class="hint" id="attachmentLimits">Encrypted attachments are held in browser memory until verified, then offered as Blob downloads. Available memory, storage and transfer time limit practical file size; this is not disk streaming.</p>
+    <p class="hint composer-subtext" id="attachmentLimits">Files stay in memory until verified.</p>
   </section>
 
   <aside class="card shell-stack diagnostic-rail" aria-labelledby="transferTitle">
-    <h2 id="transferTitle">Transfer State</h2>
+    <h2 id="transferTitle">transfer</h2>
     <div id="panelState" class="panel-state" data-phase="Ready" role="status">Ready</div>
+    <div id="transferDetail" class="transfer-detail" hidden></div>
     <div id="throughput" class="throughput">--</div>
     <p id="transferFailure" class="hint error" role="alert" hidden></p>
     <div class="transfer-actions">
       <button id="cancelBtn" type="button" class="btn-danger" hidden>Cancel Transfer</button>
     </div>
     <div class="panel-heading">
-      <h2>Status Log</h2>
+      <h2>log</h2>
       <button id="clearLogBtn" type="button" class="clear-btn">Clear</button>
     </div>
     <pre id="log">Waiting…</pre>
+    <button type="button" class="log-earlier" hidden>↑ 0 earlier</button>
   </aside>
 </main>
 
 <script src="./vendor/js-sha256-0.11.1.js"></script>
 <script type="module">
 import { createChatOutbound } from './airbridge-chat-outbound.js';
-import { renderReceivedItem, routeReceiveControl } from './airbridge-chat-receive.js';
-import { installMockStreamPeer } from './airbridge-mock-stream-peer.js';
-import { createPairedChatMock } from './airbridge-chat-mock.js';
-import { discardTranscriptDownloads, setTransferPhase } from './airbridge-ui.js';
-import { AirBridgeCryptoSession, buildMessage, CRYPTO_ROLE, CRYPTO_STATE, ItemReceiver, MAX_PAYLOAD, MSG, parseMessage } from './airbridge-protocol.js';
-import { createTimingRecorder, recordCancel, recordFlipperCounters } from './airbridge-evidence.js';
+import { AirBridgeCryptoSession, CRYPTO_ROLE, ItemReceiver } from './airbridge-protocol.js';
+import { createChatPage } from './airbridge-chat-page.js';
 import { WebBluetoothAdapter } from './airbridge-transports.js';
-import { addMessage, addSystemMessage, clearTranscript, createLogger, createThroughputMeter, escapeHtml, formatBytes, renderAttachmentCard, shortHash, timeLabel, updateCardProgress } from './airbridge-ui.js';
+import { addMessage, createLogger } from './airbridge-ui.js';
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 const mockMode = new URLSearchParams(location.search).get('mock') === '1';
 const mockPeer = new URLSearchParams(location.search).get('mockPeer');
 const evidenceMode = new URLSearchParams(location.search).get('evidence') === '1';
+const debugMode = new URLSearchParams(location.search).get('debug') === '1';
 
 let transport = null;
-let unsubscribeReceive = null;
-let unsubscribeDisconnect = null;
 let outbound = null;
 let receiver = null;
 let cryptoSession = null;
-let isConnecting = false;
 let isSending = false;
 let inboundMeta = null;
 let inboundHelloItemId = null;
-let inboundChunks = 0;
-let pendingReceiveRow = null;
-let transferMeter = null;
-let inboundTiming = null;
 
 const $ = id => document.getElementById(id);
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-if (mockMode) document.body.classList.add('mock');
-
 const logger = createLogger($('log'));
 const log = logger.log;
-const evidenceRecords = [];
+const transcriptController = addMessage.createTranscriptController($('transcript'), document.querySelector('.transcript-jump'));
 
-function publishEvidence(record) {
-  if (!evidenceMode) return record;
-  evidenceRecords.push(record);
-  globalThis.dispatchEvent?.(new CustomEvent('airbridge:evidence', { detail: record }));
-  if (record.completeTimeMs != null) {
-    const state = record.errorState ? ` error=${record.errorState}` : '';
-    log(`Evidence ${record.operation}: ${record.bundleBytes} bytes, first=${record.firstReportLatencyMs} ms, total=${record.completeTimeMs} ms, ${record.transferKbps} KB/s.${state}`, record.errorState ? 'warn' : 'ok');
-  }
-  return record;
-}
+const ctx = {
+  get transport() { return transport; },
+  set transport(value) { transport = value; },
+  get outbound() { return outbound; },
+  set outbound(value) { outbound = value; },
+  get receiver() { return receiver; },
+  set receiver(value) { receiver = value; },
+  get cryptoSession() { return cryptoSession; },
+  set cryptoSession(value) { cryptoSession = value; },
+  get isSending() { return isSending; },
+  set isSending(value) { isSending = value; },
+  get inboundMeta() { return inboundMeta; },
+  set inboundMeta(value) { inboundMeta = value; },
+  get inboundHelloItemId() { return inboundHelloItemId; },
+  set inboundHelloItemId(value) { inboundHelloItemId = value; },
+  $, logger, log, transcriptController,
+  isMockMode: mockMode, mockPeerName: mockPeer, evidenceMode, debugMode,
+};
 
-globalThis.AirBridgeEvidence = Object.freeze({
-  records: evidenceRecords,
-  record: publishEvidence,
-  recordFlipperCounters: counters => publishEvidence(recordFlipperCounters(counters, { mock: mockMode, hardware: !mockMode })),
+function wireProtocolEvents() { return page.wireReceiverEvents(); }
+async function handleFrame(frame) { return page.handleInboundFrame(frame); }
+async function connect() { return page.connect(); }
+async function disconnect() { return page.disconnect(); }
+function updateCryptoPanel(status) { return page.updateCryptoPanel(status); }
+function updateControls() { return page.updateControls(); }
+function setSending(value) { return page.setSending(value); }
+async function sendText() { return page.sendText(); }
+async function sendSelectedFile() { return page.sendSelectedFile(); }
+
+const page = createChatPage(ctx, {
+  endpoint: 'ble',
+  cryptoRole: CRYPTO_ROLE.BLE,
+  TransportAdapter: WebBluetoothAdapter,
+  mockPeerRole: CRYPTO_ROLE.USB,
+  mockNames: { local: 'Mock BLE (PC-B)', peer: 'Mock USB peer' },
+  readyLog: 'Web Bluetooth mode ready. Use Chrome/Edge on localhost or HTTPS.',
+  evidenceEndpoint: 'ble-chat',
 });
-if (evidenceMode) {
-  window.__airbridgeEvidence = evidenceRecords;
-  window.recordAirBridgeFlipperCounters = globalThis.AirBridgeEvidence.recordFlipperCounters;
-}
-
-function setConnectionStatus(status, deviceName = '') {
-  const labels = { connected: 'Connected', connecting: 'Connecting', disconnected: 'Disconnected' };
-  $('connectionStatus').textContent = labels[status];
-  $('deviceName').textContent = deviceName || 'No device';
-  const pillClass = status === 'connected'
-    ? 'status-connected'
-    : status === 'connecting'
-      ? 'status-connecting'
-      : 'status-disconnected';
-  $('statusPill').className = `status-pill ${pillClass}`;
-  $('pickerHint').hidden = status === 'connected';
-  updateControls();
-}
-
-function updateCryptoPanel(status = cryptoSession?.getStatus()) {
-  const state = status?.state ?? CRYPTO_STATE.REQUIRED;
-  const unlocked = state === CRYPTO_STATE.UNLOCKED;
-  if (!unlocked) outbound?.cancel();
-  const pending = state === CRYPTO_STATE.SAS_PENDING;
-  const aborted = state === CRYPTO_STATE.ABORTED;
-  $('cryptoState').textContent = `E2E ${unlocked ? 'unlocked' : pending ? (status.localAccepted ? 'waiting peer' : 'verify SAS') : aborted ? 'aborted' : 'locked'}`;
-  $('cryptoPill').className = `status-pill crypto-pill ${unlocked ? 'crypto-unlocked' : pending ? 'crypto-pending' : aborted ? 'crypto-aborted' : 'crypto-locked'}`;
-  $('cryptoLock').textContent = 'SEC';
-  $('sasCode').textContent = status?.sas ?? '------';
-  $('acceptSasBtn').disabled = !pending || status.localAccepted;
-  $('abortCryptoBtn').disabled = !cryptoSession || state === CRYPTO_STATE.REQUIRED;
-  updateControls();
-}
-
-function isCryptoUnlocked() {
-  return Boolean(cryptoSession?.isUnlocked());
-}
-
-async function sendProtocolError(reason) {
-  if (!transport?.isConnected()) return;
-  await transport.send(buildMessage(MSG.ERROR, 0, encoder.encode(reason)));
-}
-
-function resetTransferPanel() {
-  setTransferPhase('Ready', {bytes:0n,total:null,reset:true});
-  transferMeter = null;
-}
-
-function setSending(value, itemId = null, panelText = null) {
-  isSending = value;
-  receiver?.setBusy(value);
-  if (panelText === 'cancelled') setTransferPhase('Cancelled');
-  updateControls();
-}
-
-function updateControls() {
-  const connected = Boolean(transport?.isConnected());
-  const unlocked = isCryptoUnlocked();
-  const isReceiving = inboundHelloItemId != null;
-  const canCancel = isSending || isReceiving || Boolean(inboundMeta);
-  $('connectBtn').disabled = connected || isConnecting;
-  $('disconnectBtn').disabled = !connected || isConnecting;
-  $('textInput').disabled = !connected || !unlocked || isSending || isReceiving;
-  $('sendTextBtn').disabled = !connected || !unlocked || isSending || isReceiving || !$('textInput').value.trim();
-  $('fileInput').disabled = !connected || !unlocked || isSending || isReceiving;
-  $('sendFileBtn').disabled = !connected || !unlocked || isSending || isReceiving || !$('fileInput').files?.length;
-  $('cancelBtn').hidden = !connected || !canCancel;
-  $('cancelBtn').disabled = !connected || !canCancel;
-}
-
-function metaTransferSize(meta) {
-  return Number(meta?.totalCiphertextBytes ?? 0);
-}
-
-function metaChunkCount(meta) {
-  return meta?.chunks ?? Math.max(1, Math.ceil(metaTransferSize(meta) / MAX_PAYLOAD));
-}
-
-async function connect() {
-  if (transport) { await safeDisconnectTransport(); handleDisconnected(); }
-  isConnecting = true;
-  setConnectionStatus('connecting');
-  log(mockMode ? 'Connecting to in-page mock BLE transport...' : 'Opening Web Bluetooth picker...');
-  try {
-    transport = mockMode
-      ? (mockPeer ? createPairedChatMock('ble', mockPeer) : createMockBleTransport())
-      : new WebBluetoothAdapter({ onDisconnect: handleDisconnected });
-    await transport.connect();
-    cryptoSession = new AirBridgeCryptoSession({ role: CRYPTO_ROLE.BLE, sendFn: frame => transport.send(frame), onStateChange: updateCryptoPanel });
-    receiver = new ItemReceiver({ session:cryptoSession, sendFn: frame => transport.send(frame) });
-    outbound = createChatOutbound({session:cryptoSession, transport, setBusy:setSending, log});
-    wireProtocolEvents();
-    unsubscribeReceive = transport.onReceive(handleFrame);
-    unsubscribeDisconnect = transport.onDisconnect?.(handleDisconnected) ?? null;
-    setConnectionStatus('connected', transport.getName());
-    log(`Connected: ${transport.getName()}`, 'ok');
-    cryptoSession.start().catch(error => log(`Crypto handshake failed: ${error.message}`, 'error'));
-  } catch (error) {
-    await safeDisconnectTransport();
-    setConnectionStatus('disconnected');
-    log(`Connection error: ${error.message}`, 'error');
-  } finally {
-    isConnecting = false;
-    updateControls();
-  }
-}
-
-async function disconnect() {
-  await safeDisconnectTransport();
-  handleDisconnected();
-}
-
-async function safeDisconnectTransport() {
-  receiver?.dispose();
-  outbound?.dispose();
-  unsubscribeReceive?.();
-  unsubscribeReceive = null;
-  unsubscribeDisconnect?.();
-  unsubscribeDisconnect = null;
-  if (transport?.dispose) {
-    await transport.dispose();
-  } else if (transport?.isConnected()) {
-    await transport.disconnect();
-  }
-}
-
-function handleDisconnected() {
-  const wasActive = isSending || inboundHelloItemId != null;
-  discardTranscriptDownloads($('transcript'));
-  receiver?.dispose();
-  outbound?.dispose();
-  outbound = null;
-  transport = null;
-  receiver = null;
-  cryptoSession?.clearKeys();
-  cryptoSession = null;
-  inboundMeta = null;
-  inboundHelloItemId = null;
-  inboundTiming?.fail('disconnected');
-  inboundTiming = null;
-  inboundChunks = 0;
-  pendingReceiveRow = null;
-  updateCryptoPanel();
-  setSending(false);
-  if (wasActive) setTransferPhase('Cancelled');
-  else resetTransferPanel();
-  setConnectionStatus('disconnected');
-  log('Disconnected.', 'warn');
-}
-
-function wireProtocolEvents() {
-  receiver.on('ack', detail => cryptoSession?.receiveAck(detail.message));
-  receiver.on('nack', detail => cryptoSession?.receiveNack(detail.message));
-  receiver.on('rejected', () => log('Rejected peer HELLO while this side is busy.', 'warn'));
-  receiver.on('cancel', handlePeerCancel);
-  receiver.on('hello', detail => {
-    inboundHelloItemId = detail.itemId;
-    inboundTiming = createTimingRecorder({ operation: 'chat-receive', direction: 'inbound', mock: mockMode, hardware: !mockMode, sink: publishEvidence });
-    inboundTiming.markFirstReport();
-    setTransferPhase('Receiving', {bytes:0n,total:null,reset:true});
-    updateControls();
-    log(`Peer HELLO item=${detail.itemId ?? 'unknown'}`);
-  });
-  receiver.on('meta', meta => {
-    if (isCryptoUnlocked() && meta.kind !== 'encrypted-stream') {
-      receiver.resetItem();
-      sendProtocolError('plaintext metadata rejected').catch(() => {});
-      cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
-      log('Rejected plaintext metadata after crypto unlock.', 'error');
-      return;
-    }
-    inboundMeta = meta;
-    inboundChunks = 0;
-    if (inboundTiming) {
-  inboundTiming.record.operation = meta.kind === 'text' ? 'chat-text' : 'attachment';
-      inboundTiming.record.itemId = meta.itemId ?? null;
-      inboundTiming.record.details = { ...inboundTiming.record.details, itemId: meta.itemId, kind: meta.kind, name: meta.name };
-      inboundTiming.record.metadata = inboundTiming.record.details;
-    }
-    const totalChunks = metaChunkCount(meta);
-    inboundTiming?.setBytes(metaTransferSize(meta));
-    transferMeter = createThroughputMeter();
-    transferMeter.tick(0, totalChunks, 0);
-    updateControls();
-    setTransferPhase('Receiving', {bytes:0n,total:null});
-    log(`Receiving ${meta.kind || 'item'}: ${meta.name || '(unnamed)'} (${formatBytes(metaTransferSize(meta))})`);
-    if (meta.kind !== 'text' && meta.kind !== 'encrypted-stream') {
-      pendingReceiveRow = addMessage($('transcript'), {
-        side: 'peer',
-        kind: 'attachment',
-        meta,
-        pending: true,
-        progress: { percent: 0, label: 'Receiving…' },
-      });
-    }
-  });
-  receiver.on('data', ({ plaintextBytes }) => {
-    setTransferPhase('Receiving', {bytes:plaintextBytes,total:null});
-    inboundTiming?.tickTransferBytes(Number(plaintextBytes));
-  });
-  receiver.on('item', handleIncomingItem);
-  receiver.on('error', error => {
-    setTransferPhase('Failed');
-    inboundTiming?.fail(error.message || error);
-    inboundTiming = null;
-    inboundMeta = null;
-    inboundHelloItemId = null;
-    updateControls();
-    log(`Protocol error: ${error.message || error}`, 'error');
-  });
-  receiver.on('invalid', error => {
-    inboundTiming?.fail(error.message || error);
-    inboundTiming = null;
-    log(`Invalid frame: ${error.message}`, 'error');
-  });
-}
-
-async function handleFrame(frame) {
-  const control = routeReceiveControl(frame, receiver);
-  if (control) return control;
-  if (outbound?.receive(frame)) return;
-  const parsed = parseMessage(frame);
-  if (parsed?.type === MSG.ACK) {
-    cryptoSession?.receiveAck(parsed);
-    return;
-  }
-
-  if (parsed?.type === MSG.NACK) {
-    cryptoSession?.receiveNack(parsed);
-    return;
-  }
-
-  if (cryptoSession?.isCryptoFrame(parsed)) {
-    try {
-      await cryptoSession.onMessage(parsed);
-    } catch (error) {
-      log(`Crypto handshake failed: ${error.message}`, 'error');
-    }
-    return;
-  }
-
-  if ((parsed?.type === MSG.HELLO || parsed?.type === MSG.ITEM_META || parsed?.type === MSG.ITEM_DATA || parsed?.type === MSG.ITEM_DONE) && !isCryptoUnlocked()) {
-    await sendProtocolError('Unsupported protocol version');
-    cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
-    setTransferPhase('Failed');
-    log('Unsupported protocol version', 'error');
-    return;
-  }
-
-  if (parsed?.type === MSG.ITEM_DONE && frame.byteLength >= 9 && receiver?.snapshot().itemId === new DataView(frame.buffer, frame.byteOffset).getUint32(5)) setTransferPhase('Verifying');
-  return receiver?.onMessage(frame);
-}
-
-function handlePeerCancel() {
-  inboundTiming?.fail('cancelled-by-peer');
-  inboundTiming = null;
-  inboundMeta = null;
-  inboundHelloItemId = null;
-  inboundChunks = 0;
-  transferMeter = null;
-  setSending(false, null, 'cancelled');
-  addSystemMessage($('transcript'), 'Transfer cancelled by peer');
-  log('Transfer cancelled by peer', 'warn');
-  if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled by peer', 'cancelled');
-}
-
-async function handleIncomingItem(item) {
-  await renderReceivedItem($('transcript'), item);
-  if (!item.isCurrent()) return;
-  inboundTiming?.complete({ bundleBytes: Number(item.size), transferBytes: Number(item.size), direction: 'inbound' });
-  inboundTiming = null;
-  inboundMeta = null;
-  inboundHelloItemId = null;
-  updateControls();
-  setTransferPhase('Ready', {bytes:item.size,total:item.size});
-  log(`Received ${item.kind} ${item.name}; SHA-256 verified.`, 'ok');
-  inboundChunks = 0;
-}
-
-async function sendText() {
-  const text = $('textInput').value.trim();
-  if (!text) return;
-  await outbound?.sendText(text);
-}
-
-async function sendSelectedFile() {
-  const file = $('fileInput').files?.[0];
-  if (!file) return;
-  await outbound?.sendFile(file);
-}
-
-function createMockBleTransport() {
-  const ble = createEndpoint('Mock BLE (PC-B)');
-  const usb = createEndpoint('Mock USB peer');
-  ble.link(usb);
-  usb.link(ble);
-  installMockStreamPeer(usb, CRYPTO_ROLE.USB);
-  return ble;
-}
-
-function createEndpoint(name) {
-  return {
-    name,
-    peer: null,
-    connected: false,
-    receiveCallback: null,
-    disconnectCallback: null,
-    link(peer) { this.peer = peer; },
-    async connect() { this.connected = true; this.peer.connected = true; },
-    async disconnect() { this.connected = false; if (this.peer) this.peer.connected = false; this.disconnectCallback?.(); },
-    async send(frame) {
-      if (!this.connected) throw new Error(`${this.name} is not connected`);
-      const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
-      const message = parseMessage(frame);
-      if (message.type >= MSG.KEY_OFFER || (message.type === MSG.ACK && message.payload.length === 3)) await sleep(8);
-      else await Promise.resolve();
-      this.peer?.receiveCallback?.(bytes.slice());
-    },
-    onReceive(callback) { this.receiveCallback = callback; return () => { if (this.receiveCallback === callback) this.receiveCallback = null; }; },
-    onDisconnect(callback) { this.disconnectCallback = callback; return () => { if (this.disconnectCallback === callback) this.disconnectCallback = null; }; },
-    isConnected() { return this.connected; },
-    getName() { return this.name; },
-  };
-}
-
-$('connectBtn').addEventListener('click', connect);
-$('disconnectBtn').addEventListener('click', disconnect);
-$('textForm').addEventListener('submit', event => {
-  event.preventDefault();
-  if (!$('sendTextBtn').disabled) sendText();
-});
-$('sendFileBtn').addEventListener('click', sendSelectedFile);
-$('acceptSasBtn').addEventListener('click', () => cryptoSession?.acceptSas().catch(error => log(`SAS accept failed: ${error.message}`, 'error')));
-$('abortCryptoBtn').addEventListener('click', () => cryptoSession?.rejectSas().catch(error => log(`Crypto abort failed: ${error.message}`, 'error')));
-$('cancelBtn').addEventListener('click', async () => {
-  if (isSending && outbound) { outbound.cancel(); return; }
-  if (!isSending && (inboundMeta || inboundHelloItemId != null)) {
-    const cancelItemId = inboundMeta?.itemId ?? inboundHelloItemId;
-    const cancelBytes = inboundMeta?.size ?? 0;
-    const cancellingReceiver = receiver;
-    const cancelled = await cancellingReceiver?.cancel();
-    if (receiver !== cancellingReceiver || cancelled?.itemId !== cancelItemId ||
-        cancellingReceiver.snapshot().generation !== cancelled.generation) return;
-    inboundTiming?.fail('cancelled-by-user');
-    inboundTiming = null;
-    receiver?.resetItem();
-    inboundMeta = null;
-    inboundHelloItemId = null;
-    inboundChunks = 0;
-    transferMeter = null;
-    setSending(false, null, 'cancelled');
-    addSystemMessage($('transcript'), 'Transfer cancelled by user');
-    log('Receiving transfer cancelled by user', 'warn');
-    recordCancel({ origin: 'user', endpoint: 'ble-chat', itemId: cancelItemId, transferBytes: cancelBytes, mock: mockMode, hardware: !mockMode }, { sink: publishEvidence });
-    if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled', 'cancelled');
-    pendingReceiveRow = null;
-    return;
-  }
-});
-$('textInput').addEventListener('input', updateControls);
-$('fileInput').addEventListener('change', updateControls);
-$('clearTranscriptBtn').addEventListener('click', () => {
-  outbound?.cancel();
-  receiver?.resetItem();
-  inboundMeta = null; inboundHelloItemId = null;
-  inboundTiming?.fail('transcript-cleared'); inboundTiming = null;
-  clearTranscript($('transcript'), 'Connect, then send a message or attachment.'); resetTransferPanel(); updateControls();
-});
-$('clearLogBtn').addEventListener('click', () => logger.clear());
-
-setConnectionStatus('disconnected');
-updateCryptoPanel();
-if (mockMode) log('Mock mode enabled via ?mock=1; Web Bluetooth permission prompt will be bypassed.', 'ok');
-window.addEventListener('pagehide', () => { receiver?.dispose(); outbound?.cancel(); discardTranscriptDownloads($('transcript')); });
 </script>
 </body>
 </html>

@@ -44,7 +44,10 @@ export function setTransferPhase(phase, progress = {}) {
     const fraction = total && BigInt(total) > 0n ? Number(bytes * 10000n / BigInt(total)) / 100 : 0;
     meter.dataset.progress = String(phase === 'Hashing' ? fraction / 2 : 50 + fraction / 2);
   } else if (phase === 'Ready') meter.dataset.progress = '100';
-  meter.textContent = `${bytes}${total ? `/${total}` : ''} payload bytes`;
+  if (phase === 'Ready') meter.textContent = '--';
+  else if (phase === 'Cancelled' || phase === 'Failed') meter.textContent = `${formatBytes(bytes)} bytes`;
+  else if (total && BigInt(total) > 0n) meter.textContent = `${formatBytes(bytes)}/${formatBytes(total)} · ${Number(bytes * 10000n / BigInt(total)) / 100}%`;
+  else meter.textContent = `${formatBytes(bytes)} bytes`;
   meter.setAttribute('role', 'progressbar');
   meter.setAttribute('aria-label', `${phase}: ${meter.textContent}`);
   if (total) {
@@ -83,33 +86,191 @@ export function escapeHtml(value) {
 // line clears it.
 export function createLogger(logEl, options = {}) {
   const placeholder = options.placeholder ?? 'Waiting…';
+  const earlierControl = options.earlierControl ?? logEl.parentElement?.querySelector('.log-earlier');
+  const isPinned = () => logEl.scrollHeight - logEl.clientHeight - logEl.scrollTop <= 2;
+
+  function hiddenEarlierRows() {
+    const viewportTop = logEl.getBoundingClientRect().top + logEl.clientTop;
+    return Array.from(logEl.children).filter(row => row.getBoundingClientRect().top < viewportTop);
+  }
+
+  function updateEarlierControl() {
+    if (!earlierControl) return;
+    const hiddenCount = hiddenEarlierRows().length;
+    earlierControl.hidden = hiddenCount === 0;
+    earlierControl.textContent = `↑ ${hiddenCount} earlier`;
+  }
+
+  function revealEarlier() {
+    const oldest = hiddenEarlierRows()[0];
+    if (!oldest) {
+      updateEarlierControl();
+      return;
+    }
+    const viewportTop = logEl.getBoundingClientRect().top + logEl.clientTop;
+    const rowTop = oldest.getBoundingClientRect().top;
+    logEl.scrollTop = Math.max(0, logEl.scrollTop + rowTop - viewportTop);
+    oldest.tabIndex = -1;
+    oldest.focus({ preventScroll: true });
+    updateEarlierControl();
+  }
 
   function log(message, className = '') {
+    const wasPinned = isPinned();
     if (logEl.textContent === placeholder) logEl.textContent = '';
     const line = document.createElement('div');
     line.className = className;
-    line.textContent = `[${timeLabel()}] ${message}`;
+    const renderedMessage = `[${timeLabel()}] ${message}`;
+    line.textContent = renderedMessage;
+    line.title = renderedMessage;
     logEl.appendChild(line);
-    logEl.scrollTop = logEl.scrollHeight;
+    if (wasPinned) logEl.scrollTop = logEl.scrollHeight;
+    updateEarlierControl();
     return line;
   }
 
   function clear() {
     logEl.textContent = '';
+    updateEarlierControl();
   }
 
+  logEl.addEventListener('scroll', updateEarlierControl, { passive: true });
+  logEl.addEventListener('click', event => {
+    const row = event.target;
+    if (row instanceof Element && row.parentElement === logEl) row.classList.toggle('expanded');
+  });
+  earlierControl?.addEventListener('click', revealEarlier);
+  updateEarlierControl();
   return { log, clear };
+}
+
+const transcriptControllers = new WeakMap();
+
+function createTranscriptController(transcriptEl, jumpEl, pageEvents = window) {
+  const existing = transcriptControllers.get(transcriptEl);
+  if (existing && !existing.disposed) return existing;
+
+  let pinned = true;
+  let unread = 0;
+  let disposed = false;
+  let resizePoll;
+  let observedWidth = transcriptEl.clientWidth;
+  let observedHeight = transcriptEl.clientHeight;
+  const isPinned = () => transcriptEl.scrollHeight - transcriptEl.clientHeight - transcriptEl.scrollTop <= 2;
+
+  function renderJump() {
+    if (!jumpEl) return;
+    jumpEl.hidden = unread === 0;
+    jumpEl.textContent = `↓ ${unread} new`;
+  }
+
+  function resetUnread() {
+    unread = 0;
+    renderJump();
+  }
+
+  function pinToBottom() {
+    if (disposed) return;
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    observedWidth = transcriptEl.clientWidth;
+    observedHeight = transcriptEl.clientHeight;
+    pinned = true;
+    resetUnread();
+  }
+
+  function onScroll() {
+    if (disposed) return;
+    if (pinned && (transcriptEl.clientWidth !== observedWidth || transcriptEl.clientHeight !== observedHeight)) return;
+    pinned = isPinned();
+    if (pinned) resetUnread();
+  }
+
+  function onViewportResize() {
+    if (disposed) return;
+    if (!pinned) {
+      observedWidth = transcriptEl.clientWidth;
+      observedHeight = transcriptEl.clientHeight;
+      return;
+    }
+    observedWidth = transcriptEl.clientWidth;
+    observedHeight = transcriptEl.clientHeight;
+    pinToBottom();
+  }
+
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    clearInterval(resizePoll);
+    observer?.disconnect();
+    transcriptEl.removeEventListener('scroll', onScroll);
+    jumpEl?.removeEventListener('click', pinToBottom);
+    pageEvents?.removeEventListener('resize', onViewportResize);
+    pageEvents?.removeEventListener('pagehide', dispose);
+    transcriptControllers.delete(transcriptEl);
+  }
+
+  const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => {
+    if (!transcriptEl.isConnected) { dispose(); return; }
+    if (pinned) pinToBottom();
+    observedWidth = transcriptEl.clientWidth;
+    observedHeight = transcriptEl.clientHeight;
+  }) : null;
+  resizePoll = setInterval(() => {
+    if (disposed) return;
+    if (!transcriptEl.isConnected) { dispose(); return; }
+    if (transcriptEl.clientWidth !== observedWidth || transcriptEl.clientHeight !== observedHeight) onViewportResize();
+  }, 250);
+  observer?.observe(transcriptEl);
+  transcriptEl.addEventListener('scroll', onScroll, { passive: true });
+  jumpEl?.addEventListener('click', pinToBottom);
+  pageEvents?.addEventListener('resize', onViewportResize);
+  pageEvents?.addEventListener('pagehide', dispose);
+  pinned = isPinned();
+  renderJump();
+
+  const controller = {
+    get disposed() { return disposed; },
+    capturePinned() { return disposed ? false : isPinned(); },
+    messageAppended(wasPinned) {
+      if (disposed) return;
+      if (!transcriptEl.isConnected) { dispose(); return; }
+      pinned = wasPinned;
+      if (pinned) pinToBottom();
+      else { unread += 1; renderJump(); }
+    },
+    cleared() {
+      resetUnread();
+      if (!transcriptEl.isConnected) { dispose(); return; }
+      pinToBottom();
+    },
+    dispose,
+  };
+  transcriptControllers.set(transcriptEl, controller);
+  return controller;
 }
 
 // Removes all transcript rows and restores the empty-state placeholder.
 export function clearTranscript(transcriptEl, emptyText = 'Connect, then send a message or attachment.') {
   for (const card of transcriptEl.querySelectorAll('.attachment-card')) removeAttachmentCard(card);
   transcriptEl.textContent = '';
-  if (!emptyText) return;
-  const empty = document.createElement('div');
-  empty.className = 'empty';
-  empty.textContent = emptyText;
-  transcriptEl.appendChild(empty);
+  if (emptyText) {
+    const empty = document.createElement('article');
+    empty.className = 'message system empty';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    const metaLine = document.createElement('div');
+    metaLine.className = 'meta-line';
+    const sender = document.createElement('span');
+    sender.className = 'sender';
+    sender.textContent = 'system>';
+    const body = document.createElement('div');
+    body.textContent = emptyText;
+    metaLine.appendChild(sender);
+    bubble.append(metaLine, body);
+    empty.appendChild(bubble);
+    transcriptEl.appendChild(empty);
+  }
+  transcriptControllers.get(transcriptEl)?.cleared();
 }
 
 function clearTranscriptEmptyState(transcriptEl) {
@@ -119,6 +280,8 @@ function clearTranscriptEmptyState(transcriptEl) {
 
 // Transcript row: .message.you|peer|system > .bubble > .meta-line + body/card.
 export function addMessage(transcriptEl, { side, kind, text, meta, data, hash, pending = false, progress, verified, lifecycle }) {
+  const controller = transcriptControllers.get(transcriptEl);
+  const wasPinned = controller?.capturePinned();
   clearTranscriptEmptyState(transcriptEl);
   const row = document.createElement('article');
   row.className = `message ${side}`;
@@ -137,7 +300,7 @@ export function addMessage(transcriptEl, { side, kind, text, meta, data, hash, p
     senderLabel.textContent = side === 'you' ? 'You' : side === 'peer' ? 'Peer' : 'System';
   }
   const time = document.createElement('span');
-  time.textContent = timeLabel();
+  time.textContent = timeLabel().slice(0, 5);
   metaLine.append(senderLabel, time);
   bubble.appendChild(metaLine);
 
@@ -153,9 +316,12 @@ export function addMessage(transcriptEl, { side, kind, text, meta, data, hash, p
 
   row.appendChild(bubble);
   transcriptEl.appendChild(row);
-  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  if (controller) controller.messageAppended(wasPinned);
+  else transcriptEl.scrollTop = transcriptEl.scrollHeight;
   return row;
 }
+
+addMessage.createTranscriptController = createTranscriptController;
 
 export function addSystemMessage(transcriptEl, text) {
   return addMessage(transcriptEl, { side: 'system', kind: 'text', text });
@@ -170,19 +336,33 @@ export function renderAttachmentCard(meta, data, hash, pending, progress, lifecy
   card.dataset.verification = pending ? 'pending' : 'verified';
   card.dataset.phase = pending ? 'Hashing' : 'Ready';
   card.dataset.size = String(meta.size ?? data?.size ?? data?.length ?? 0);
-  if (!pending) card.dataset.sha256 = hash || meta.hash || '';
+  const fullHash = hash || meta.hash || '';
+  if (!pending) card.dataset.sha256 = fullHash;
   const name = document.createElement('div');
   name.className = 'attachment-name';
   name.textContent = attachmentDisplayName(meta.name || meta.filename);
   const size = document.createElement('div');
+  size.className = 'attachment-meta';
   size.textContent = `${formatBytes(meta.size ?? data?.length ?? 0)} · ${meta.mimeType || 'application/octet-stream'}`;
   const hashLine = document.createElement('div');
   hashLine.dataset.attachmentHash = '';
   hashLine.className = pending ? 'warn' : 'hash-ok';
   hashLine.textContent = pending
-    ? `SHA-256 pending: ${shortHash(meta.hash)}`
-    : `SHA-256 verified: ${hash || meta.hash || 'unknown'}`;
+    ? `sha256:${shortHash(fullHash)} pending`
+    : `sha256:${shortHash(fullHash)} ✓ verified`;
   card.append(name, size, hashLine);
+
+  if (!pending && fullHash) {
+    const details = document.createElement('details');
+    details.className = 'attachment-hash-details';
+    const summary = document.createElement('summary');
+    summary.textContent = 'full hash';
+    const full = document.createElement('div');
+    full.className = 'attachment-hash-full';
+    full.textContent = `sha256:${fullHash}`;
+    details.append(summary, full);
+    card.appendChild(details);
+  }
 
   if (progress != null) {
     const container = document.createElement('div');

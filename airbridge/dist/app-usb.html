@@ -42,7 +42,7 @@ body {
   min-block-size: 100dvh;
   max-inline-size: var(--ab-content-max);
   margin: 0 auto;
-  padding: var(--ab-space-4);
+  padding: 0;
   color: var(--ab-ink);
   background-color: var(--ab-canvas);
   background-image: none;
@@ -56,30 +56,123 @@ button, input { font: inherit; }
 button, input, .card, .status-pill, .mock-banner { border-radius: 0; }
 
 h1, h2, p { margin: 0; }
-h1 { font-size: var(--ab-type-display); line-height: 1.1; letter-spacing: normal; }
-h2 { color: var(--ab-ink); font-size: var(--ab-type-heading); letter-spacing: 0.06em; text-transform: uppercase; }
-h2::before { color: var(--ab-signal); content: "$ "; }
+h2 {
+  color: var(--ab-ink-muted);
+  font-size: var(--ab-type-heading);
+  line-height: 1.25;
+  letter-spacing: 0.06em;
+}
 p { color: var(--ab-ink-muted); }
 
-.console-header {
-  display: grid;
+.visually-hidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.console-chrome {
+  position: relative;
+  min-inline-size: 0;
+  border-inline: 1px solid var(--ab-rule);
+  background: var(--ab-canvas);
+}
+
+.tabline,
+.statusline {
+  min-inline-size: 0;
+  block-size: var(--ab-space-6);
+  padding-inline: var(--ab-space-2);
+  font-size: var(--ab-type-meta);
+  line-height: var(--ab-space-6);
+  white-space: nowrap;
+}
+
+.tabline {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
   gap: var(--ab-space-2);
-  padding: var(--ab-space-4);
-  border: 1px solid var(--ab-rule);
+  border-block: 1px solid var(--ab-rule);
   background: var(--ab-surface);
 }
 
-.console-kicker, .panel-kicker, .meta-line, .hint, #deviceName, .throughput, #log {
+.tabline-product {
+  color: var(--ab-ink);
+  font-weight: 700;
+}
+
+.tabline-endpoint { color: var(--ab-ink-muted); }
+
+.statusline {
+  display: flex;
+  align-items: center;
+  gap: var(--ab-space-2);
+  overflow: hidden;
+  border-block-end: 1px solid var(--ab-rule);
+  color: var(--ab-ink-muted);
+  background: var(--ab-surface-inset);
+}
+
+.statusline > * { min-inline-size: 0; }
+
+.statusline .status-pill {
+  min-block-size: 0;
+  gap: var(--ab-space-1);
+  padding: 0;
+  border: 0;
+  line-height: inherit;
+}
+
+.statusline .crypto-lock {
+  padding-inline-end: 0;
+  border-inline-end: 0;
+}
+
+.statusline #deviceName {
+  flex: 1 1 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+}
+
+.status-state {
+  flex: 0 0 auto;
+  color: var(--ab-ink-muted);
+  font-size: var(--ab-type-meta);
+  font-weight: 600;
+}
+
+.status-state:is([data-state="ready"], [data-state="hashing"], [data-state="sending"], [data-state="receiving"], [data-state="verifying"]) {
+  color: var(--ab-signal);
+}
+.status-state[data-state="locked"] { color: var(--ab-pending); }
+.status-state:is([data-state="cancelled"], [data-state="failed"]) { color: var(--ab-failure); }
+
+.sas-verified {
+  color: var(--ab-signal);
+  font-weight: 700;
+}
+.sas-verified[hidden] { display: none; }
+
+.panel-kicker, .meta-line, .hint, #deviceName, .throughput, #log {
   color: var(--ab-ink-muted);
   font-size: var(--ab-type-meta);
 }
 
-.console-kicker::before, .panel-kicker::before { color: var(--ab-signal); content: "> "; }
-.page-intro { max-inline-size: 72ch; text-wrap: pretty; }
+.panel-kicker::before { color: var(--ab-ink-muted); content: "> "; }
 .mono { font-family: inherit; }
 
 .shell-stack { display: grid; gap: var(--ab-space-3); }
-main.shell-stack, .composer.shell-stack { margin-block-start: var(--ab-space-3); }
+main.shell-stack { margin-block-start: 0; }
+.composer.shell-stack { margin-block-start: var(--ab-space-3); }
 
 .card {
   min-inline-size: 0;
@@ -88,9 +181,49 @@ main.shell-stack, .composer.shell-stack { margin-block-start: var(--ab-space-3);
   background: var(--ab-surface);
 }
 
-.card > h2, .panel-heading { margin-block-end: var(--ab-space-3); }
+.card > h2, .panel-heading { margin-block-end: var(--ab-space-2); }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--ab-space-2); }
 .panel-heading h2 { margin: 0; }
+
+.connection-rail {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--ab-space-2);
+  padding: var(--ab-space-2);
+}
+
+.connection-rail > h2 {
+  align-self: start;
+  margin: 0;
+  line-height: 2.5rem;
+}
+
+.command-row {
+  display: flex;
+  align-items: start;
+  flex-wrap: wrap;
+  min-inline-size: 0;
+  gap: var(--ab-space-1);
+}
+
+.command-row button {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding-inline: var(--ab-space-1);
+  font-size: var(--ab-type-meta);
+}
+
+.endpoint-helper-slot {
+  flex: 1 1 100%;
+  min-inline-size: 0;
+  min-block-size: var(--ab-space-5);
+}
+
+.endpoint-helper-slot .endpoint-helper {
+  display: block;
+  margin-block-start: 0;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
 
 .connection-row, .composer, .attachment-row, .transfer-actions {
   display: flex;
@@ -111,7 +244,17 @@ main.shell-stack, .composer.shell-stack { margin-block-start: var(--ab-space-3);
   gap: var(--ab-space-3);
 }
 .chat-workspace { min-inline-size: 0; }
-.connection-rail, .diagnostic-rail { align-self: stretch; align-content: start; }
+.connection-rail { align-self: start; align-content: start; }
+.diagnostic-rail {
+  position: relative;
+  display: flex;
+  align-self: stretch;
+  flex-direction: column;
+  min-block-size: 0;
+  gap: var(--ab-space-3);
+}
+.diagnostic-rail > h2, .diagnostic-rail > .panel-heading { margin-block-end: 0; }
+.diagnostic-rail .transfer-actions:has(> button[hidden]) { display: none; }
 
 .status-pill {
   display: inline-flex;
@@ -152,13 +295,40 @@ main.shell-stack, .composer.shell-stack { margin-block-start: var(--ab-space-3);
 
 .mock-banner {
   display: none;
-  padding: var(--ab-space-2);
-  border: 1px solid var(--ab-pending);
-  color: var(--ab-pending);
-  background: var(--ab-surface);
+  margin-inline-start: auto;
+  color: var(--ab-ink-muted);
   font-size: var(--ab-type-meta);
 }
-body.mock .mock-banner { display: block; }
+body.mock .mock-banner { display: inline-flex; }
+.mock-banner summary {
+  min-block-size: var(--ab-space-5);
+  padding-inline: var(--ab-space-1);
+  color: var(--ab-ink-muted);
+  line-height: var(--ab-space-5);
+  list-style: none;
+  cursor: pointer;
+}
+.mock-banner summary::-webkit-details-marker { display: none; }
+.mock-banner summary:focus-visible {
+  outline: 2px solid var(--ab-signal-active);
+  outline-offset: 2px;
+}
+.mock-banner[open] summary {
+  color: var(--ab-ink);
+  background: var(--ab-surface-raised);
+}
+.mock-help {
+  position: absolute;
+  inset-block-start: calc(100% + var(--ab-space-6));
+  inset-inline-end: 0;
+  inline-size: min(32rem, calc(100vw - var(--ab-space-4)));
+  padding: var(--ab-space-2);
+  border: 1px solid var(--ab-rule);
+  color: var(--ab-ink-muted);
+  background: var(--ab-surface-inset);
+  line-height: 1.5;
+  white-space: normal;
+}
 
 #transcript, #log {
   overflow-y: auto;
@@ -166,11 +336,24 @@ body.mock .mock-banner { display: block; }
   border: 1px solid var(--ab-rule);
   background: var(--ab-surface-inset);
 }
-#transcript { display: flex; flex-direction: column; block-size: min(55dvh, 34rem); padding: var(--ab-space-2); }
-#log { block-size: 10rem; margin: 0; padding: var(--ab-space-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+#transcript { display: flex; flex-direction: column; block-size: min(55dvh, 34rem); padding: var(--ab-space-2); overflow-anchor: none; }
+#log {
+  flex: 1 1 10rem;
+  min-block-size: 10rem;
+  block-size: auto;
+  margin: 0;
+  padding: var(--ab-space-2);
+  overflow-anchor: none;
+}
+#log > div {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-.empty { margin: auto; color: var(--ab-ink-muted); text-align: center; }
 .message { display: block; margin-block: var(--ab-space-2); }
+.message.empty { margin-block-start: 0; }
 
 .bubble {
   display: block;
@@ -190,14 +373,48 @@ body.mock .mock-banner { display: block; }
 .sender { color: var(--ab-ink); font-weight: 700; font-size: var(--ab-type-meta); }
 .message.you .sender { color: var(--ab-signal); }
 
+.transcript-jump {
+  display: block;
+  min-block-size: 2rem;
+  margin-block-start: var(--ab-space-1);
+  margin-inline-start: auto;
+  padding-inline: var(--ab-space-2);
+  color: var(--ab-ink-muted);
+  font-size: var(--ab-type-meta);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.transcript-jump[hidden] { display: none; }
+
+.log-earlier {
+  position: absolute;
+  z-index: 1;
+  inset-block-end: var(--ab-space-2);
+  align-self: flex-end;
+  min-block-size: 2rem;
+  margin-block-start: calc(-2rem - var(--ab-space-3));
+  margin-inline-end: var(--ab-space-2);
+  padding-inline: var(--ab-space-2);
+  color: var(--ab-ink-muted);
+  background: var(--ab-surface-inset);
+  font-size: var(--ab-type-meta);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.log-earlier[hidden] { display: none; }
+
 .attachment-card { display: grid; min-inline-size: 0; max-inline-size: 42rem; gap: var(--ab-space-1); overflow-wrap: anywhere; }
 .attachment-name { color: var(--ab-ink); font-weight: 700; overflow-wrap: anywhere; }
-.hash-ok { color: var(--ab-signal); }
+.attachment-meta, .attachment-hash-details, .attachment-hash-full { color: var(--ab-ink-muted); font-size: var(--ab-type-meta); }
+.attachment-hash-details summary { inline-size: max-content; cursor: pointer; }
+.attachment-hash-details summary:focus-visible { outline: 2px solid var(--ab-signal-active); outline-offset: 2px; }
+.attachment-hash-full { margin-block-start: var(--ab-space-1); overflow-wrap: anywhere; }
+.hash-ok { color: var(--ab-ink-muted); }
 .hash-error, .error { color: var(--ab-failure); }
 .warn { color: var(--ab-pending); }
-.ok { color: var(--ab-signal); }
-.download-link { color: var(--ab-signal); text-decoration: underline; text-underline-offset: 0.18em; }
-.download-link:hover { color: var(--ab-signal-active); }
+.ok { color: inherit; }
+.download-link { color: var(--ab-ink-muted); text-decoration: underline; text-underline-offset: 0.18em; }
+.download-link:hover { color: var(--ab-ink); }
 
 .progress-container { display: grid; gap: var(--ab-space-1); margin-block-start: var(--ab-space-1); }
 .progress-bar-track { block-size: 7px; overflow: hidden; background: var(--ab-canvas); border: 1px solid var(--ab-rule-strong); }
@@ -207,7 +424,7 @@ body.mock .mock-banner { display: block; }
 .progress-label { color: var(--ab-ink-muted); font-size: var(--ab-type-meta); }
 
 .panel-state { color: var(--ab-ink); font-size: var(--ab-type-heading); font-weight: 700; }
-.panel-state::before { color: var(--ab-signal); content: "state="; font-size: var(--ab-type-meta); font-weight: 600; }
+.panel-state::before { color: var(--ab-ink-muted); content: "phase="; font-size: var(--ab-type-meta); font-weight: 600; }
 .throughput { margin-block-start: var(--ab-space-1); overflow-wrap: anywhere; }
 .hint { margin-block-start: var(--ab-space-2); overflow-wrap: anywhere; }
 
@@ -248,8 +465,9 @@ input[type="text"], input[type="file"] {
   background: var(--ab-surface-inset);
 }
 input[type="text"]::placeholder { color: var(--ab-ink-muted); opacity: 1; }
-input[type="file"] { padding: var(--ab-space-1) var(--ab-space-2); color: var(--ab-ink-muted); border-style: dashed; }
+input[type="file"] { padding: var(--ab-space-1) var(--ab-space-2); border-color: var(--ab-rule); border-style: solid; color: var(--ab-ink-muted); }
 input[type="file"]::file-selector-button {
+  block-size: 2rem;
   font: inherit;
   font-size: var(--ab-type-meta);
   line-height: 1.5;
@@ -257,7 +475,7 @@ input[type="file"]::file-selector-button {
   letter-spacing: 0.06em;
   color: var(--ab-ink);
   background: var(--ab-surface);
-  border: 1px solid var(--ab-rule-strong);
+  border: 1px solid var(--ab-rule);
   border-radius: 0;
   padding-block: var(--ab-space-1);
   padding-inline: var(--ab-space-2);
@@ -276,10 +494,46 @@ input[type="file"]:disabled::file-selector-button { cursor: not-allowed; }
 
 @media (max-width: 44rem) {
   body { padding: var(--ab-space-2); }
-  .console-header, .card { padding: var(--ab-space-2); }
+  .card { padding: var(--ab-space-2); }
+  .statusline {
+    grid-template-areas:
+      "connection crypto sas"
+      "state device device";
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: repeat(2, var(--ab-space-6));
+    display: grid;
+    block-size: calc(var(--ab-space-6) * 2);
+    column-gap: var(--ab-space-2);
+    row-gap: 0;
+    overflow: hidden;
+  }
+  .statusline #statusPill { grid-area: connection; }
+  .statusline #deviceName { grid-area: device; }
+  .statusline #cryptoPill { grid-area: crypto; }
+  .statusline > .status-pill:not(#statusPill):not(#cryptoPill) { grid-area: sas; }
+  .statusline .status-state { grid-area: state; }
+  .mock-help { inset-block-start: calc(100% + (var(--ab-space-6) * 2)); }
+  .connection-rail {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--ab-space-1);
+  }
+  .connection-rail > h2 { line-height: 1.25; }
+  .command-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+  }
+  .command-row button {
+    inline-size: 100%;
+  }
+  .command-row .endpoint-helper-slot { grid-column: 1 / -1; }
   .connection-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
   .connection-row > .status-pill, .connection-row > span { grid-column: 1 / -1; }
-  .composer, .attachment-row { align-items: stretch; flex-direction: column; }
+  .composer, .attachment-row { align-items: stretch; flex-direction: row; block-size: 2.5rem; }
+  .composer > input, .attachment-row > input { flex: 1 1 0; min-inline-size: 0; inline-size: auto; }
+  .composer > button, .attachment-row > button { block-size: 2.5rem; }
+  .attachment-row input[type="file"] { padding: var(--ab-space-1); font-size: 0; }
+  .attachment-row input[type="file"]::file-selector-button { inline-size: 100%; margin-inline-end: 0; }
   .clear-btn { min-block-size: 2.5rem; }
 }
 
@@ -292,36 +546,44 @@ input[type="file"]:disabled::file-selector-button { cursor: not-allowed; }
 <title>Pocket AirBridge — USB Chat</title>
 </head>
 <body data-endpoint="usb">
-<header class="console-header">
-  <div class="console-kicker">AIRBRIDGE / PC-A / WEBHID</div>
-  <h1>Pocket AirBridge — USB Chat</h1>
-  <p class="page-intro">PC-A chat endpoint over WebHID. Send text or attachments through the AirBridge.</p>
+<header class="console-chrome">
+  <nav class="tabline" aria-label="AirBridge endpoint">
+    <h1 class="visually-hidden">Pocket AirBridge — USB Chat</h1>
+    <span class="tabline-product">[airbridge]</span>
+    <span class="tabline-endpoint">usb/webhid</span>
+    <details class="mock-banner">
+      <summary>MODE=mock</summary>
+      <span class="mock-help">Mock mode bypasses WebHID. Use <span class="mono">?mock=1&amp;mockPeer=demo</span> on both pages for paired chat, or <span class="mono">?mock=1</span> alone for the in-page sender verifier.</span>
+    </details>
+  </nav>
+  <div class="statusline" aria-label="Connection and encryption status">
+    <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span class="status-field"><span aria-hidden="true">USB=</span><span id="connectionStatus">disconnected</span></span></span>
+    <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span class="status-field"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">SEC</span><span aria-hidden="true">=</span><span id="cryptoState" class="mono">locked</span></span></span>
+    <span class="status-pill"><span class="status-field">SAS=<strong id="sasCode">------</strong></span><span class="sas-verified" aria-label="verified" hidden>✓</span></span>
+    <span id="displayState" class="status-state">state=idle</span>
+    <span id="deviceName" class="mono">No device</span>
+  </div>
 </header>
-<div class="mock-banner">Mock mode bypasses WebHID. Use <span class="mono">?mock=1&amp;mockPeer=demo</span> on both pages for paired chat, or <span class="mono">?mock=1</span> alone for the in-page sender verifier.</div>
 
 <main class="grid shell-stack">
 <section class="card shell-stack connection-rail" aria-labelledby="connectionTitle">
-  <h2 id="connectionTitle">Connection</h2>
-  <div class="connection-row">
-    <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span id="connectionStatus">Disconnected</span></span>
-      <button id="connectBtn" type="button" class="btn-primary">Connect USB</button>
+  <h2 id="connectionTitle">[connection]</h2>
+  <div class="command-row">
+    <button id="connectBtn" type="button" class="btn-primary">Connect USB</button>
     <button id="disconnectBtn" type="button" disabled>Disconnect</button>
-    <span id="deviceName" class="mono">No device</span>
-  </div>
-  <div class="connection-row">
-    <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">SEC</span><span id="cryptoState" class="mono">E2E locked</span></span>
-    <span class="status-pill">SAS <strong id="sasCode">------</strong></span>
     <button id="acceptSasBtn" type="button" class="btn-primary" disabled>Accept SAS</button>
     <button id="abortCryptoBtn" type="button" class="btn-danger" disabled>Abort Crypto</button>
+    <span class="endpoint-helper-slot"><span class="hint endpoint-helper">Select Pocket AirBridge when prompted.</span></span>
   </div>
 </section>
 
   <section class="card chat-workspace" aria-labelledby="chatTitle">
     <div class="panel-heading">
-      <h2 id="chatTitle">Chat Transcript</h2>
+      <h2 id="chatTitle">[transcript]</h2>
       <button id="clearTranscriptBtn" type="button" class="clear-btn">Clear</button>
     </div>
-    <div id="transcript" aria-live="polite"><div class="empty">Connect, then send a message or attachment.</div></div>
+    <div id="transcript" aria-live="polite"><article class="message system empty"><div class="bubble"><div class="meta-line"><span class="sender">system&gt;</span></div><div>Connect, then send a message or attachment.</div></div></article></div>
+    <button type="button" class="transcript-jump" hidden>↓ 0 new</button>
     <form id="textForm" class="composer shell-stack">
       <input id="textInput" type="text" aria-label="Message" placeholder="Type a message…" autocomplete="off" disabled>
       <button id="sendTextBtn" type="submit" class="btn-primary" disabled>Send</button>
@@ -330,11 +592,11 @@ input[type="file"]:disabled::file-selector-button { cursor: not-allowed; }
       <input id="fileInput" type="file" aria-label="Attachment" aria-describedby="attachmentLimits" disabled>
       <button id="sendFileBtn" type="button" class="btn-primary" disabled>Send Attachment</button>
     </div>
-    <p class="hint" id="attachmentLimits">Encrypted attachments are held in browser memory until verified, then offered as Blob downloads. Available memory, storage and transfer time limit practical file size; this is not disk streaming.</p>
+    <p class="hint" id="attachmentLimits">Files stay in memory until verified.</p>
   </section>
 
   <aside class="card shell-stack diagnostic-rail" aria-labelledby="transferTitle">
-    <h2 id="transferTitle">Transfer State</h2>
+    <h2 id="transferTitle">[transfer]</h2>
     <div id="panelState" class="panel-state" data-phase="Ready" role="status">Ready</div>
     <div id="throughput" class="throughput">--</div>
     <p id="transferFailure" class="hint error" role="alert" hidden></p>
@@ -342,10 +604,11 @@ input[type="file"]:disabled::file-selector-button { cursor: not-allowed; }
       <button id="cancelBtn" type="button" class="btn-danger" hidden>Cancel Transfer</button>
     </div>
     <div class="panel-heading">
-      <h2>Status Log</h2>
+      <h2>[log]</h2>
       <button id="clearLogBtn" type="button" class="clear-btn">Clear</button>
     </div>
     <pre id="log">Waiting…</pre>
+    <button type="button" class="log-earlier" hidden>↑ 0 earlier</button>
   </aside>
 </main>
 
@@ -3115,33 +3378,187 @@ function escapeHtml(value) {
 // line clears it.
 function createLogger(logEl, options = {}) {
   const placeholder = options.placeholder ?? 'Waiting…';
+  const earlierControl = options.earlierControl ?? logEl.parentElement?.querySelector('.log-earlier');
+  const isPinned = () => logEl.scrollHeight - logEl.clientHeight - logEl.scrollTop <= 2;
+
+  function hiddenEarlierRows() {
+    const viewportTop = logEl.getBoundingClientRect().top + logEl.clientTop;
+    return Array.from(logEl.children).filter(row => row.getBoundingClientRect().top < viewportTop);
+  }
+
+  function updateEarlierControl() {
+    if (!earlierControl) return;
+    const hiddenCount = hiddenEarlierRows().length;
+    earlierControl.hidden = hiddenCount === 0;
+    earlierControl.textContent = `↑ ${hiddenCount} earlier`;
+  }
+
+  function revealEarlier() {
+    const oldest = hiddenEarlierRows()[0];
+    if (!oldest) {
+      updateEarlierControl();
+      return;
+    }
+    const viewportTop = logEl.getBoundingClientRect().top + logEl.clientTop;
+    const rowTop = oldest.getBoundingClientRect().top;
+    logEl.scrollTop = Math.max(0, logEl.scrollTop + rowTop - viewportTop);
+    oldest.tabIndex = -1;
+    oldest.focus({ preventScroll: true });
+    updateEarlierControl();
+  }
 
   function log(message, className = '') {
+    const wasPinned = isPinned();
     if (logEl.textContent === placeholder) logEl.textContent = '';
     const line = document.createElement('div');
     line.className = className;
-    line.textContent = `[${timeLabel()}] ${message}`;
+    const renderedMessage = `[${timeLabel()}] ${message}`;
+    line.textContent = renderedMessage;
+    line.title = renderedMessage;
     logEl.appendChild(line);
-    logEl.scrollTop = logEl.scrollHeight;
+    if (wasPinned) logEl.scrollTop = logEl.scrollHeight;
+    updateEarlierControl();
     return line;
   }
 
   function clear() {
     logEl.textContent = '';
+    updateEarlierControl();
   }
 
+  logEl.addEventListener('scroll', updateEarlierControl, { passive: true });
+  earlierControl?.addEventListener('click', revealEarlier);
+  updateEarlierControl();
   return { log, clear };
+}
+
+const transcriptControllers = new WeakMap();
+
+function createTranscriptController(transcriptEl, jumpEl, pageEvents = window) {
+  const existing = transcriptControllers.get(transcriptEl);
+  if (existing && !existing.disposed) return existing;
+
+  let pinned = true;
+  let unread = 0;
+  let disposed = false;
+  let resizePoll;
+  let observedWidth = transcriptEl.clientWidth;
+  let observedHeight = transcriptEl.clientHeight;
+  const isPinned = () => transcriptEl.scrollHeight - transcriptEl.clientHeight - transcriptEl.scrollTop <= 2;
+
+  function renderJump() {
+    if (!jumpEl) return;
+    jumpEl.hidden = unread === 0;
+    jumpEl.textContent = `↓ ${unread} new`;
+  }
+
+  function resetUnread() {
+    unread = 0;
+    renderJump();
+  }
+
+  function pinToBottom() {
+    if (disposed) return;
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    observedWidth = transcriptEl.clientWidth;
+    observedHeight = transcriptEl.clientHeight;
+    pinned = true;
+    resetUnread();
+  }
+
+  function onScroll() {
+    if (disposed) return;
+    if (pinned && (transcriptEl.clientWidth !== observedWidth || transcriptEl.clientHeight !== observedHeight)) return;
+    pinned = isPinned();
+    if (pinned) resetUnread();
+  }
+
+  function onViewportResize() {
+    if (disposed) return;
+    if (!pinned) {
+      observedWidth = transcriptEl.clientWidth;
+      observedHeight = transcriptEl.clientHeight;
+      return;
+    }
+    observedWidth = transcriptEl.clientWidth;
+    observedHeight = transcriptEl.clientHeight;
+    pinToBottom();
+  }
+
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    clearInterval(resizePoll);
+    observer?.disconnect();
+    transcriptEl.removeEventListener('scroll', onScroll);
+    jumpEl?.removeEventListener('click', pinToBottom);
+    pageEvents?.removeEventListener('resize', onViewportResize);
+    pageEvents?.removeEventListener('pagehide', dispose);
+    transcriptControllers.delete(transcriptEl);
+  }
+
+  const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => {
+    if (!transcriptEl.isConnected) { dispose(); return; }
+    if (pinned) pinToBottom();
+    observedWidth = transcriptEl.clientWidth;
+    observedHeight = transcriptEl.clientHeight;
+  }) : null;
+  resizePoll = setInterval(() => {
+    if (disposed) return;
+    if (!transcriptEl.isConnected) { dispose(); return; }
+    if (transcriptEl.clientWidth !== observedWidth || transcriptEl.clientHeight !== observedHeight) onViewportResize();
+  }, 250);
+  observer?.observe(transcriptEl);
+  transcriptEl.addEventListener('scroll', onScroll, { passive: true });
+  jumpEl?.addEventListener('click', pinToBottom);
+  pageEvents?.addEventListener('resize', onViewportResize);
+  pageEvents?.addEventListener('pagehide', dispose);
+  pinned = isPinned();
+  renderJump();
+
+  const controller = {
+    get disposed() { return disposed; },
+    capturePinned() { return disposed ? false : isPinned(); },
+    messageAppended(wasPinned) {
+      if (disposed) return;
+      if (!transcriptEl.isConnected) { dispose(); return; }
+      pinned = wasPinned;
+      if (pinned) pinToBottom();
+      else { unread += 1; renderJump(); }
+    },
+    cleared() {
+      resetUnread();
+      if (!transcriptEl.isConnected) { dispose(); return; }
+      pinToBottom();
+    },
+    dispose,
+  };
+  transcriptControllers.set(transcriptEl, controller);
+  return controller;
 }
 
 // Removes all transcript rows and restores the empty-state placeholder.
 function clearTranscript(transcriptEl, emptyText = 'Connect, then send a message or attachment.') {
   for (const card of transcriptEl.querySelectorAll('.attachment-card')) removeAttachmentCard(card);
   transcriptEl.textContent = '';
-  if (!emptyText) return;
-  const empty = document.createElement('div');
-  empty.className = 'empty';
-  empty.textContent = emptyText;
-  transcriptEl.appendChild(empty);
+  if (emptyText) {
+    const empty = document.createElement('article');
+    empty.className = 'message system empty';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    const metaLine = document.createElement('div');
+    metaLine.className = 'meta-line';
+    const sender = document.createElement('span');
+    sender.className = 'sender';
+    sender.textContent = 'system>';
+    const body = document.createElement('div');
+    body.textContent = emptyText;
+    metaLine.appendChild(sender);
+    bubble.append(metaLine, body);
+    empty.appendChild(bubble);
+    transcriptEl.appendChild(empty);
+  }
+  transcriptControllers.get(transcriptEl)?.cleared();
 }
 
 function clearTranscriptEmptyState(transcriptEl) {
@@ -3151,6 +3568,8 @@ function clearTranscriptEmptyState(transcriptEl) {
 
 // Transcript row: .message.you|peer|system > .bubble > .meta-line + body/card.
 function addMessage(transcriptEl, { side, kind, text, meta, data, hash, pending = false, progress, verified, lifecycle }) {
+  const controller = transcriptControllers.get(transcriptEl);
+  const wasPinned = controller?.capturePinned();
   clearTranscriptEmptyState(transcriptEl);
   const row = document.createElement('article');
   row.className = `message ${side}`;
@@ -3185,9 +3604,12 @@ function addMessage(transcriptEl, { side, kind, text, meta, data, hash, pending 
 
   row.appendChild(bubble);
   transcriptEl.appendChild(row);
-  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  if (controller) controller.messageAppended(wasPinned);
+  else transcriptEl.scrollTop = transcriptEl.scrollHeight;
   return row;
 }
+
+addMessage.createTranscriptController = createTranscriptController;
 
 function addSystemMessage(transcriptEl, text) {
   return addMessage(transcriptEl, { side: 'system', kind: 'text', text });
@@ -3202,19 +3624,33 @@ function renderAttachmentCard(meta, data, hash, pending, progress, lifecycle) {
   card.dataset.verification = pending ? 'pending' : 'verified';
   card.dataset.phase = pending ? 'Hashing' : 'Ready';
   card.dataset.size = String(meta.size ?? data?.size ?? data?.length ?? 0);
-  if (!pending) card.dataset.sha256 = hash || meta.hash || '';
+  const fullHash = hash || meta.hash || '';
+  if (!pending) card.dataset.sha256 = fullHash;
   const name = document.createElement('div');
   name.className = 'attachment-name';
   name.textContent = attachmentDisplayName(meta.name || meta.filename);
   const size = document.createElement('div');
+  size.className = 'attachment-meta';
   size.textContent = `${formatBytes(meta.size ?? data?.length ?? 0)} · ${meta.mimeType || 'application/octet-stream'}`;
   const hashLine = document.createElement('div');
   hashLine.dataset.attachmentHash = '';
   hashLine.className = pending ? 'warn' : 'hash-ok';
   hashLine.textContent = pending
-    ? `SHA-256 pending: ${shortHash(meta.hash)}`
-    : `SHA-256 verified: ${hash || meta.hash || 'unknown'}`;
+    ? `sha256:${shortHash(fullHash)} pending`
+    : `sha256:${shortHash(fullHash)} ✓ verified`;
   card.append(name, size, hashLine);
+
+  if (!pending && fullHash) {
+    const details = document.createElement('details');
+    details.className = 'attachment-hash-details';
+    const summary = document.createElement('summary');
+    summary.textContent = 'full hash';
+    const full = document.createElement('div');
+    full.className = 'attachment-hash-full';
+    full.textContent = `sha256:${fullHash}`;
+    details.append(summary, full);
+    card.appendChild(details);
+  }
 
   if (progress != null) {
     const container = document.createElement('div');
@@ -4780,6 +5216,7 @@ const $ = id => document.getElementById(id);
 if (isMockMode) document.body.classList.add('mock');
 
 const logger = createLogger($('log'));
+const transcriptController = addMessage.createTranscriptController($('transcript'), document.querySelector('.transcript-jump'));
 const evidenceRecords = [];
 
 function publishEvidence(record) {
@@ -4824,13 +5261,31 @@ function setThroughputText(text) {
 }
 
 function resetTransferPanel() {
-  setTransferPhase('Ready', {bytes:0n,total:null,reset:true});
+  setPageTransferPhase('Ready', {bytes:0n,total:null,reset:true});
 }
 
 function setConnectionStatus(status, className = '') {
-  $('connectionStatus').textContent = status;
+  $('connectionStatus').textContent = status === 'Connecting' ? status : status.toLowerCase();
   $('statusPill').className = `status-pill ${className}`.trim();
+  renderDisplayState();
 }
+
+function renderDisplayState() {
+  const connected = Boolean(transport?.isConnected());
+  const unlocked = isCryptoUnlocked();
+  const phase = $('panelState').dataset.phase || 'Ready';
+  const state = !connected ? 'idle' : !unlocked ? 'locked' : phase === 'Ready' ? 'ready' : phase.toLowerCase();
+  $('displayState').dataset.state = state;
+  $('displayState').textContent = `state=${state}`;
+}
+
+function setPageTransferPhase(phase, progress = {}) {
+  setTransferPhase(phase, progress);
+  renderDisplayState();
+}
+
+const displayStateObserver = new MutationObserver(renderDisplayState);
+displayStateObserver.observe($('panelState'), {attributes:true, attributeFilter:['data-phase']});
 
 function updateCryptoPanel(status = cryptoSession?.getStatus()) {
   const state = status?.state ?? CRYPTO_STATE.REQUIRED;
@@ -4838,12 +5293,14 @@ function updateCryptoPanel(status = cryptoSession?.getStatus()) {
   if (!unlocked) outbound?.cancel();
   const pending = state === CRYPTO_STATE.SAS_PENDING;
   const aborted = state === CRYPTO_STATE.ABORTED;
-  $('cryptoState').textContent = `E2E ${unlocked ? 'unlocked' : pending ? (status.localAccepted ? 'waiting peer' : 'verify SAS') : aborted ? 'aborted' : 'locked'}`;
+  $('cryptoState').textContent = unlocked ? 'verified' : pending ? 'pending' : aborted ? 'aborted' : 'locked';
   $('cryptoPill').className = `status-pill crypto-pill ${unlocked ? 'crypto-unlocked' : pending ? 'crypto-pending' : aborted ? 'crypto-aborted' : 'crypto-locked'}`;
   $('cryptoLock').textContent = 'SEC';
   $('sasCode').textContent = status?.sas ?? '------';
+  document.querySelector('.sas-verified').hidden = !unlocked;
   $('acceptSasBtn').disabled = !pending || status.localAccepted;
   $('abortCryptoBtn').disabled = !cryptoSession || state === CRYPTO_STATE.REQUIRED;
+  renderDisplayState();
   updateControls();
 }
 
@@ -4891,7 +5348,7 @@ function setupProtocol() {
   receiver = new ItemReceiver({ session:cryptoSession, sendFn: frame => transport.send(frame) });
   receiver.on('hello', detail => {
     inboundHelloItemId = detail.itemId;
-    setTransferPhase('Receiving', {bytes:0n,total:null,reset:true});
+    setPageTransferPhase('Receiving', {bytes:0n,total:null,reset:true});
     inboundTiming = createTimingRecorder({ operation: 'chat-receive', direction: 'inbound', mock: isMockMode, hardware: !isMockMode, sink: publishEvidence });
     inboundTiming.markFirstReport();
     updateControls();
@@ -4913,7 +5370,7 @@ function setupProtocol() {
       inboundTiming.record.metadata = inboundTiming.record.details;
     }
     updateControls();
-    setTransferPhase('Receiving', {bytes:0n,total:null});
+    setPageTransferPhase('Receiving', {bytes:0n,total:null});
     const totalChunks = metaChunkCount(meta);
     inboundTiming?.setBytes(metaTransferSize(meta));
     inboundMeter = createThroughputMeter();
@@ -4924,12 +5381,12 @@ function setupProtocol() {
     }
   });
   receiver.on('data', ({ plaintextBytes }) => {
-    setTransferPhase('Receiving', {bytes:plaintextBytes,total:null});
+    setPageTransferPhase('Receiving', {bytes:plaintextBytes,total:null});
     inboundTiming?.tickTransferBytes(Number(plaintextBytes));
   });
   receiver.on('item', handleReceivedItem);
   receiver.on('cancel', () => {
-    setTransferPhase('Cancelled');
+    setPageTransferPhase('Cancelled');
     inboundTiming?.fail('cancelled-by-peer');
     inboundTiming = null;
     inboundMeta = null;
@@ -4938,7 +5395,7 @@ function setupProtocol() {
   });
   receiver.on('rejected', () => logger.log('Rejected peer HELLO while USB chat is busy.', 'warn'));
   receiver.on('error', error => {
-    setTransferPhase('Failed');
+    setPageTransferPhase('Failed');
     inboundTiming?.fail(error.message || error);
     inboundTiming = null;
     inboundMeta = null;
@@ -4985,12 +5442,12 @@ async function handleInboundFrame(frame) {
   if ((msg.type === MSG.HELLO || msg.type === MSG.ITEM_META || msg.type === MSG.ITEM_DATA || msg.type === MSG.ITEM_DONE) && !isCryptoUnlocked()) {
     await sendProtocolError('Unsupported protocol version');
     cryptoSession?.clearKeys(CRYPTO_STATE.ABORTED);
-    setTransferPhase('Failed');
+    setPageTransferPhase('Failed');
     logger.log('Unsupported protocol version', 'error');
     return;
   }
 
-  if (msg.type === MSG.ITEM_DONE && frame.byteLength >= 9 && receiver?.snapshot().itemId === new DataView(frame.buffer, frame.byteOffset).getUint32(5)) setTransferPhase('Verifying');
+  if (msg.type === MSG.ITEM_DONE && frame.byteLength >= 9 && receiver?.snapshot().itemId === new DataView(frame.buffer, frame.byteOffset).getUint32(5)) setPageTransferPhase('Verifying');
   return receiver?.onMessage(frame);
 }
 
@@ -5003,7 +5460,7 @@ async function handleReceivedItem(item) {
   inboundMeta = null;
   updateControls();
   logger.log(`Received ${item.kind} ${item.name}; hash ${shortHash(item.hash)} verified.`, 'ok');
-  setTransferPhase('Ready', {bytes:item.size,total:item.size});
+  setPageTransferPhase('Ready', {bytes:item.size,total:item.size});
 }
 
 async function connect() {
@@ -5066,7 +5523,7 @@ function handleDisconnected() {
   updateCryptoPanel();
   setConnectionStatus('Disconnected', 'status-disconnected');
   $('deviceName').textContent = 'No device';
-  if (wasActive) setTransferPhase('Cancelled');
+  if (wasActive) setPageTransferPhase('Cancelled');
   else resetTransferPanel();
   logger.log('Disconnected.', 'warn');
   updateControls();
@@ -5114,7 +5571,7 @@ async function cancelActiveTransfer(origin) {
     if (pendingReceiveRow) updateCardProgress(pendingReceiveRow, 0, 'Cancelled by peer', 'cancelled');
   }
   setSending(false);
-  setTransferPhase('Cancelled');
+  setPageTransferPhase('Cancelled');
 }
 
 function sleep(ms) {
@@ -5178,7 +5635,7 @@ $('clearLogBtn').addEventListener('click', () => logger.clear());
 updateControls();
 updateCryptoPanel();
 logger.log(isMockMode ? 'Mock mode ready. Click Connect to start linked USB/BLE transports.' : 'WebHID mode ready. Use Chrome/Edge on localhost or HTTPS.');
-window.addEventListener('pagehide', () => { receiver?.dispose(); outbound?.cancel(); discardTranscriptDownloads($('transcript')); });
+window.addEventListener('pagehide', () => { transcriptController.dispose(); displayStateObserver.disconnect(); receiver?.dispose(); outbound?.cancel(); discardTranscriptDownloads($('transcript')); });
 </script>
 </body>
 </html>

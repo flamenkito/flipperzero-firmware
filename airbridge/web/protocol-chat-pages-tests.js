@@ -9,6 +9,7 @@ export async function loadChatTestPage(endpoint, room) {
       connect, disconnect,
       ready:()=>cryptoSession?.getStatus(),
       receiver:()=>receiver, outbound:()=>outbound,
+      transcriptController:()=>transcriptController,
       send:()=>sendSelectedFile(), text:()=>sendText(),
       transport:()=>transport,
       session:()=>cryptoSession,
