@@ -5,6 +5,7 @@
 
 #include "airbridge_relay.h"
 #include "airbridge_types.h"
+#include "airbridge_identity_params.h"
 #include "airbridge_operation.h"
 
 typedef struct AirbridgeUi AirbridgeUi;
@@ -24,10 +25,12 @@ typedef bool (*AirbridgeUiIntentCallback)(void* context, AirbridgeUiIntent inten
 
 typedef struct {
     AirbridgeScreen screen;
+    AirbridgeTypingTransport deploy_transport;
     AirbridgeRelayMetrics metrics;
     bool ble_connected;
     bool identity_warning;
     uint8_t usb_profile_index;
+    char ble_name[AIRBRIDGE_BLE_DEVICE_NAME_MAX_LEN + 1U];
     uint64_t typing_position;
     uint64_t typing_total;
     uint64_t stream_sent;

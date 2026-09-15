@@ -2,6 +2,7 @@
 #include "ble_event_thread.h"
 #include <core/check.h>
 #include <gap.h>
+#include <gap_int.h>
 #include <furi_hal_bt.h>
 #include <furi_ble/profile_interface.h>
 
@@ -276,6 +277,10 @@ void furi_hal_bt_stop_advertising(void) {
 
 void furi_hal_bt_update_battery_level(uint8_t battery_level) {
     ble_svc_battery_state_update(&battery_level, NULL);
+}
+
+void furi_hal_bt_set_adv_hids(bool enable) {
+    gap_set_adv_hids(enable);
 }
 
 void furi_hal_bt_update_power_state(bool charging) {

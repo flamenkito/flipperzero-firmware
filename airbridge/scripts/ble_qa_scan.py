@@ -6,7 +6,7 @@
 # ─── How to run ───
 # Install the sole third-party dependency: pip3 install bleak
 # Run the zero-hardware unit tests: python3 airbridge/scripts/ble_qa_scan.py --selftest
-# Scan active AirBridge serial-only advertising:
+# Scan active AirBridge serial+HIDS advertising:
 #   python3 airbridge/scripts/ble_qa_scan.py scan --timeout 8
 # Enumerate GATT (accept the OS numeric-comparison pairing prompt):
 #   python3 airbridge/scripts/ble_qa_scan.py gatt --timeout 12
@@ -15,8 +15,9 @@
 """Assert the BLE identity contract while Pocket AirBridge is active.
 
 The scanner validates the steady-state active AirBridge advertisement: the
-AirBridge serial service is present and HIDS `0x1812` is absent. USB keyboard
-reports remain restricted to the explicit menu-gated USB Deploy typing flow.
+AirBridge serial service and HIDS `0x1812` are both present. Keyboard reports
+remain restricted to the explicit menu-gated Deploy typing prompts (USB Deploy
+over USB HID, BLE Deploy over BLE HIDS).
 """
 
 from __future__ import annotations
@@ -218,7 +219,7 @@ def candidate_checks(advertisement: Advertisement, config: IdentityConfig, seria
                       Evidence("{" + ", ".join(sorted(HP_OUIS)) + "}", oui_actual)) if mac_visible else Check(
         "WARN", "MAC OUI is in the HP allowlist", Evidence("mandatory on Linux/Windows",
         "skipped on Darwin: CoreBluetooth does not expose the on-air MAC"))
-    expected_services = frozenset({serial.service})
+    expected_services = frozenset({serial.service, normalize_uuid("1812")})
     return (
         check("advertised local name is exact or scan-response-verified prefix", exact_name or truncated_name,
               Evidence(config.name, name_actual)),
@@ -228,8 +229,8 @@ def candidate_checks(advertisement: Advertisement, config: IdentityConfig, seria
         oui_check,
         check("AirBridge serial service UUID is always advertised", serial.service in actual_services,
               Evidence(display_uuids((serial.service,)), display_uuids(actual_services))),
-        check("advertised service UUIDs are exactly AirBridge serial", actual_services == expected_services,
-              Evidence("AirBridge serial only", display_uuids(actual_services))),
+        check("advertised service UUIDs are exactly AirBridge serial + HIDS", actual_services == expected_services,
+              Evidence("AirBridge serial + HIDS", display_uuids(actual_services))),
         check("HP manufacturer data is present", config.company_id in company_ids,
               Evidence(f"0x{config.company_id:04X}", ", ".join(f"0x{id_:04X}" for id_ in sorted(company_ids)) or "none")),
     )
@@ -351,11 +352,12 @@ def gatt_checks(snapshot: GattSnapshot, config: IdentityConfig, serial: SerialId
     pairing_actual = "connected; pairing requested" if snapshot.connected and system != "Darwin" else (
         "connected; CoreBluetooth pairs on authenticated access" if snapshot.connected else "not connected")
     if system == "Darwin":
-        expected_services = {"0000180a" + BASE_UUID, "0000180f" + BASE_UUID, serial.service}
+        expected_services = {"0000180a" + BASE_UUID, "0000180f" + BASE_UUID, "00001812" + BASE_UUID,
+                             serial.service}
         system_claimed = {"00001800" + BASE_UUID, "00001801" + BASE_UUID}
         visible_ok = frozenset(services) == expected_services
         claimed_present = frozenset(services) & system_claimed
-        service_assertion = check("GATT visible services are DIS, Battery, and AirBridge serial on Darwin",
+        service_assertion = check("GATT visible services are DIS, Battery, HIDS, and AirBridge serial on Darwin",
                                   visible_ok, Evidence(display_uuids(expected_services), display_uuids(services)))
         claimed_assertion = check("system-claimed services (GAP/GATT) are absent on Darwin",
                                   not claimed_present, Evidence("none present", display_uuids(claimed_present) or "none")) if claimed_present else Check(
@@ -366,9 +368,9 @@ def gatt_checks(snapshot: GattSnapshot, config: IdentityConfig, serial: SerialId
         gap_appearance_assertion = Check("WARN", "GAP appearance characteristic equals config",
                                          Evidence(f"0x{config.appearance:04X}", "<GAP service hidden by CoreBluetooth>"))
     else:
-        expected_services = STANDARD_SERVICES | {serial.service}
+        expected_services = STANDARD_SERVICES | {serial.service, "00001812" + BASE_UUID}
         visible_ok = frozenset(services) == expected_services
-        service_assertion = check("GATT services are exactly GAP, GATT, DIS, Battery, and AirBridge serial",
+        service_assertion = check("GATT services are exactly GAP, GATT, DIS, Battery, HIDS, and AirBridge serial",
                                   visible_ok, Evidence(display_uuids(expected_services), display_uuids(services)))
         claimed_assertion = check("system-claimed services check", True, Evidence("N/A on Linux/Windows", "N/A"))
         gap_name_assertion = check("GAP device-name characteristic equals config", text("00002a00" + BASE_UUID) == config.name,
@@ -430,15 +432,16 @@ def selftest() -> int:
     config_text = CONFIG_PATH.read_text(encoding="utf-8")
     profile_line = next(line for line in config_text.splitlines() if line.strip().startswith("profile="))
     bare_profile = parse_config_text(config_text.replace(profile_line, profile_line.partition("=")[2].strip()), "synthetic-bare-profile")
-    airbridge_active = Advertisement(config.mac, config.name, config.name, (serial.service,),
-                                      ((config.company_id, b"HP"),), "active AirBridge advertisement: serial only")
+    airbridge_active = Advertisement(config.mac, config.name, config.name,
+                                       (serial.service, "00001812" + BASE_UUID),
+                                       ((config.company_id, b"HP"),), "active AirBridge advertisement: serial + HIDS")
     good_target, good_checks = scan_checks((airbridge_active,), config, serial, "Linux")
-    airbridge_with_hids = Advertisement(config.mac, config.name, config.name,
-                                        (serial.service, "00001812" + BASE_UUID),
-                                        ((config.company_id, b"HP"),), "invalid advertisement with retired HIDS")
-    _, hids_checks = scan_checks((airbridge_with_hids,), config, serial, "Linux")
-    truncated = Advertisement(config.mac, config.name, config.name[:16], (serial.service,),
-                              ((config.company_id, b"HP"),), "truncated advertisement name (active AirBridge)")
+    airbridge_serial_only = Advertisement(config.mac, config.name, config.name, (serial.service,),
+                                          ((config.company_id, b"HP"),), "stale USB-only advertisement without HIDS")
+    _, serial_only_checks = scan_checks((airbridge_serial_only,), config, serial, "Linux")
+    truncated = Advertisement(config.mac, config.name, config.name[:16],
+                                (serial.service, "00001812" + BASE_UUID),
+                                ((config.company_id, b"HP"),), "truncated advertisement name (active AirBridge)")
     truncated_target, truncated_checks = scan_checks((truncated,), config, serial, "Linux")
     longer = Advertisement(config.mac, config.name, config.name + "X", (serial.service,),
                            ((config.company_id, b"HP"),), "name longer than expected (active AirBridge)")
@@ -451,10 +454,11 @@ def selftest() -> int:
     name_uuid, appearance_uuid = "00002a00" + BASE_UUID, "00002a01" + BASE_UUID
     mfr_uuid, model_uuid, serial_uuid, pnp_uuid = ("00002a29" + BASE_UUID, "00002a24" + BASE_UUID,
                                                      "00002a25" + BASE_UUID, "00002a50" + BASE_UUID)
+    hids_uuid = "00001812" + BASE_UUID
     gatt_services = tuple(GattService(uuid, (name_uuid, appearance_uuid), (name_uuid, appearance_uuid)) if uuid == gap_uuid else
                           GattService(uuid, tuple(DIS_CHARS), tuple(DIS_CHARS)) if uuid == dis_uuid else
                           GattService(uuid, tuple(serial.characteristics), tuple(serial.characteristics)) if uuid == serial.service else
-                          GattService(uuid, (), ()) for uuid in STANDARD_SERVICES | {serial.service})
+                          GattService(uuid, (), ()) for uuid in STANDARD_SERVICES | {serial.service, hids_uuid})
     gatt_values = ((name_uuid, config.name.encode()), (appearance_uuid, config.appearance.to_bytes(2, "little")),
                    (mfr_uuid, config.dis_mfr.encode()), (model_uuid, config.dis_model.encode()),
                    (serial_uuid, config.dis_serial.encode()), (pnp_uuid, b"\x01\xf0\x03\x41\x53\x26\x01"),
@@ -462,20 +466,21 @@ def selftest() -> int:
     gatt_good = gatt_checks(GattSnapshot(True, gatt_services, gatt_values, ()), config, serial, "Linux")
     darwin_gatt_services = tuple(GattService(uuid, tuple(DIS_CHARS), tuple(DIS_CHARS)) if uuid == dis_uuid else
                                  GattService(uuid, tuple(serial.characteristics), tuple(serial.characteristics)) if uuid == serial.service else
-                                 GattService(uuid, (), ()) for uuid in {"0000180a" + BASE_UUID, "0000180f" + BASE_UUID, serial.service})
+                                 GattService(uuid, (), ()) for uuid in {"0000180a" + BASE_UUID, "0000180f" + BASE_UUID,
+                                                                        "00001812" + BASE_UUID, serial.service})
     darwin_gatt_values = ((mfr_uuid, config.dis_mfr.encode()), (model_uuid, config.dis_model.encode()),
                           (serial_uuid, config.dis_serial.encode()), (pnp_uuid, b"\x01\xf0\x03\x41\x53\x26\x01"),
                           *((uuid, b"ok") for uuid in serial.characteristics))
     gatt_darwin = gatt_checks(GattSnapshot(True, darwin_gatt_services, darwin_gatt_values, ()), config, serial, "Darwin")
     parsing = check("config (including bare profile) and browser UUID module parse", bare_profile == config and good_target is not None and len(serial.characteristics) == 4,
-                    Evidence("config identity + serial-only contract", f"{serial.service}; {len(serial.characteristics)} characteristics"))
+                    Evidence("config identity + serial + HIDS contract", f"{serial.service}; {len(serial.characteristics)} characteristics"))
     truncation = check("truncated ADV name (prefix shorter than expected) is accepted", truncated_target is not None and all(item.passed for item in truncated_checks),
                        Evidence("stack-truncated prefix accepted", "accepted" if truncated_target is not None and all(item.passed for item in truncated_checks) else "rejected"))
     longer_rejected = check("name longer than expected is rejected", not longer_name.passed,
                             Evidence("FAIL for longer name", longer_name.status))
-    hids_rejected = check("retired HIDS advertisement is rejected",
-                          not all(item.passed for item in hids_checks),
-                          Evidence("at least one FAIL", "all pass" if all(item.passed for item in hids_checks) else "rejected as expected"))
+    serial_only_rejected = check("HIDS-free serial-only advertisement is rejected",
+                          not all(item.passed for item in serial_only_checks),
+                          Evidence("at least one FAIL", "all pass" if all(item.passed for item in serial_only_checks) else "rejected as expected"))
     darwin_mac = candidate_checks(airbridge_active, config, serial, "Darwin")[2:4]
     darwin_skip = check("Darwin MAC and OUI checks warn-and-skip", all(item.status == "WARN" for item in darwin_mac),
                         Evidence("WARN, WARN", ", ".join(item.status for item in darwin_mac)))
@@ -484,12 +489,12 @@ def selftest() -> int:
                            Evidence("all Darwin GATT assertions pass", "all pass" if all(item.passed for item in gatt_darwin) else "some fail"))
     rejected = check("bad synthetic advertisement is rejected", not all(item.passed for item in bad_checks),
                      Evidence("one or more identity assertions fail", "failure detected" if not all(item.passed for item in bad_checks) else "unexpectedly accepted"))
-    passed = print_checks("SELF-TEST: ACTIVE AIRBRIDGE ADVERTISEMENT (serial only)", good_checks)
+    passed = print_checks("SELF-TEST: ACTIVE AIRBRIDGE ADVERTISEMENT (serial + HIDS)", good_checks)
     passed = print_checks("SELF-TEST: TRUNCATED-NAME ACTIVE AIRBRIDGE ADVERTISEMENT", truncated_checks) and passed
     passed = print_checks("SELF-TEST: GOOD SYNTHETIC GATT (Linux)", gatt_good) and passed
     passed = print_checks("SELF-TEST: GOOD SYNTHETIC GATT (Darwin)", gatt_darwin) and passed
     _ = print_checks("SELF-TEST: BAD SYNTHETIC ADVERTISEMENT (EXPECTED FAILURES)", bad_checks)
-    passed = print_checks("SELF-TEST: PARSER AND REJECTION ORACLES", (parsing, truncation, longer_rejected, hids_rejected, darwin_skip, darwin_gatt_ok, rejected)) and passed
+    passed = print_checks("SELF-TEST: PARSER AND REJECTION ORACLES", (parsing, truncation, longer_rejected, serial_only_rejected, darwin_skip, darwin_gatt_ok, rejected)) and passed
     return 0 if passed else 1
 
 

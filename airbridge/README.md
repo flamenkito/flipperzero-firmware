@@ -19,12 +19,71 @@ There is no separate product repository, patch bundle, or patch-application step
    ```
 3. **Connect Flipper Zero to PC-A** via USB.
 4. **Pair Flipper Zero to PC-B** via Bluetooth (confirm the PIN shown on the Flipper screen).
-5. **Open `http://127.0.0.1:8081/chat-usb.html`** on PC-A (Chrome/Edge), click **Connect USB**, and pick the Pocket AirBridge device in the browser prompt.
-6. **Open `http://127.0.0.1:8081/chat-ble.html`** on PC-B (Chrome/Edge), click **Connect BLE**, and pick the Flipper Zero in the browser prompt.
-7. Compare the six-digit SAS on both browsers, click **Accept SAS** on both sides, then type a message or select a file and hit **Send**.
+5. **Open `http://127.0.0.1:8081/chat-usb.html`** on PC-A (Chrome/Edge), type `:c` then Enter, and select the device running Pocket AirBridge in the browser prompt.
+6. **Open `http://127.0.0.1:8081/chat-ble.html`** on PC-B (Chrome/Edge), type `:c` then Enter, and select the active Bluetooth impersonation profile.
+7. Compare the six-digit code printed as `verify peer: NNNNNN` on both pages (also shown as SAS in the statusline). Run `:a` on each side only if the codes match. Press `i` to write a message and Enter to send it. Use `:f` to choose a file and `:s` to send it.
 
 For a browser-only protocol check, open the canonical harness URL:
 `http://127.0.0.1:8081/protocol-harness.html`.
+
+## Terminal controls
+
+The interface follows a Vim/Neovim terminal layout: a numbered text buffer,
+end-of-buffer `~` markers, a block cursor in NORMAL, a reverse-video statusline,
+and an Ex command line on the last screen row. Messages and attachments are
+plain text records. Help and logs open as horizontal text splits.
+
+Both pages start in **NORMAL** mode. Press `i` (or click the mode label) to enter
+**INSERT**, where Enter sends text literally, including leading `/` and `:`.
+Esc returns to NORMAL and keeps the message draft and selection. From NORMAL,
+`:` opens a separate **COMMAND** input. Enter runs a command; Esc discards that
+command and returns to NORMAL. Backspace on an empty command also returns to
+NORMAL. Click the mode label to start writing, or the buffer name to open commands.
+
+In NORMAL, `j`/`k` move between transcript records, `gg` selects the first,
+`G` selects the last, and Ctrl-d/Ctrl-u scroll half a screen. In help and logs,
+these keys scroll the focused split. Keyboard shortcuts apply only within the
+focused terminal. The statusline shows the selected record and scroll position.
+This is a chat interface; Vim text operators and file editing are not implemented.
+
+| Short command | Full command | Action |
+|---|---|---|
+| `:c` | `:connect` | Connect the current endpoint |
+| `:d` | `:disconnect` | Disconnect; received downloads expire |
+| `:f` | `:file` | Choose an attachment without sending it |
+| `:s` | `:sendfile` | Send the selected attachment |
+| `:uf` | `:unfile` | Remove the selected attachment |
+| `:x` | `:cancel` | Cancel an active transfer |
+| `:a` | `:accept` | Confirm the matching six-digit code |
+| `:ab` | `:abort` | End code verification |
+| `:l` | `:logs` | Toggle diagnostics |
+| `:cl` | `:clear` | Clear transcript and its downloads |
+| `:cll` | `:clearlog` | Clear diagnostics |
+| `:h` | `:help` | Show commands and keyboard help |
+| `:q` | `:quit` | Close help/log splits and keep the connection |
+
+Tab completes the highlighted command; arrows select suggestions or recall
+command history when suggestions are closed. Commands require exact names or
+the listed aliases. Feedback and failures appear on the bottom command line.
+Switching modes does not change the connection or cancel a transfer.
+
+Selecting a file preserves the message draft. Enter in INSERT sends only text;
+`:s` sends the attachment. Save received downloads before disconnecting or
+clearing the transcript: they exist only in this page's memory.
+
+Each page has one shared ASCII progress bar for sending or receiving; attachment
+records show only their transfer state. Incoming transfers also show `RX 0–100%`
+in the statusline, with byte totals and rate in the transfer display. Progress counts unique received
+encrypted DATA bytes across all segments; retransmissions do not increase it.
+`RX verify` indicates final validation. The download appears after verification,
+with the exact file size.
+
+For browser regression QA, start the canonical server and the persistent Chrome
+instance described in `AGENTS.md`, then run `node airbridge/tools/qa_terminal.cjs`
+with Playwright available to Node (install it in your tooling environment or set
+`NODE_PATH` to its existing `node_modules`). The runner attaches over CDP, checks
+both endpoints and the protocol harness, and writes screenshots/results under
+`/private/tmp/airbridge-vim-qa-*`. It leaves the browser tabs open for inspection.
 
 ## Architecture
 
@@ -63,16 +122,16 @@ handshake remains `cryptoVersion:1`. See root
 
 ## Locked-down PC bootstrap (Deploy app)
 
-Some corporate PCs are locked down by device-control policy: no mass storage, no network transfer, no local files. HID is the only USB class that survives. The Deploy flow turns that policy to our advantage. The Flipper impersonates an HP "Wireless Keyboard and Mouse" dongle (VID `0x03F0`, PID `0x5341`), a composite device with a real keyboard collection and a vendor-defined collection on usage page `0xFF00`. It types a small bootstrap into the browser as if it were a keyboard, the bootstrap opens WebHID on the vendor collection, and the Flipper streams the complete chat app to the PC over the existing vendor HID channel. PC-B (the BLE side) is unchanged.
+Some corporate PCs are locked down by device-control policy: no mass storage, no network transfer, no local files. HID is the only USB class that survives. The Deploy flow turns that policy to our advantage. For a locked-down USB host, the Flipper impersonates an HP "Wireless Keyboard and Mouse" dongle (VID `0x03F0`, PID `0x5341`), a composite device with a real keyboard collection and a vendor-defined collection on usage page `0xFF00`. It types a small bootstrap into the browser as if it were a keyboard, the bootstrap opens WebHID on the vendor collection, and the Flipper streams the complete chat app to the PC over the existing vendor HID channel. For a Bluetooth-paired target, the BLE Deploy prompt instead types [`bootstrap-ble.js`](web/bootstrap-ble.js) over BLE HIDS keyboard reports, and the Flipper streams the matching chat app over the AirBridge BLE serial notify characteristic. The two prompts share identical guardrails; only the transport and asset pair differ.
 
 ### Honest framing
 
-This is BadUSB-shaped by design. Keyboard emulation is the whole point: it is the only delivery channel a HID-only policy cannot block. The guardrails are deliberate:
+This is BadUSB-shaped by design. Keyboard emulation is the whole point: it is the only delivery channel a HID-only policy cannot block. BLE typing is equally explicit: physical possession of the Flipper plus on-device OK plus a paired target. The guardrails are deliberate, and identical for both Deploy paths:
 
-- Keystrokes are emitted only from an explicit deploy prompt on the Flipper (reached with LEFT/RIGHT from the Bridge screen), and only after you place the cursor and press OK to confirm.
+- Keystrokes are emitted only from an explicit deploy prompt on the Flipper (LEFT/RIGHT cycle Bridge → USB Deploy → BLE Deploy → Bridge from the Bridge screen), and only after you place the cursor and press OK to confirm.
 - The Flipper screen shows `TYPING…` for the entire emission; pressing BACK aborts instantly.
-- No keyboard report is ever sent in Bridge mode or on any data path. Typing exists only inside the Deploy flow.
-- The typed payload is a fixed, reviewable, ASCII-only artifact: [`bootstrap.js`](web/bootstrap.js). The FAP verifies its build-time-pinned SHA-256 before typing. It fetches a gzip-compressed app bundle whose versioned SD container is also SHA-256 pinned; unsupported browsers show `Transfer unsupported - retry` before WebHID selection.
+- No keyboard report is ever sent in Bridge mode or on any data path. Typing exists only inside the Deploy prompts.
+- The typed payloads are fixed, reviewable, ASCII-only artifacts: [`bootstrap.js`](web/bootstrap.js) for USB Deploy, [`bootstrap-ble.js`](web/bootstrap-ble.js) for BLE Deploy. The FAP verifies each build-time-pinned SHA-256 before typing. Each fetches a gzip-compressed app bundle whose versioned SD container is also SHA-256 pinned (`app-usb.html.gz` for USB, `app-ble.html.gz` for BLE); unsupported browsers show `Transfer unsupported - retry` before transport selection.
 - The whole thing requires physical possession of the Flipper plus explicit on-device actions. Task 8 adds small bounded typing jitter, but typing still exists only inside the explicit Deploy flow.
 
 ### Steps
@@ -84,12 +143,12 @@ Run these commands from the monorepo root,
    ```bash
    python3 airbridge/tools/build_bundle.py
    ```
-    This inlines the shared JS modules into the self-contained USB deploy page, writes the authenticated `airbridge/dist/app-usb.html.gz` container, and regenerates `applications_user/pocket_airbridge/airbridge_assets_digest.h`. USB is the only generated deploy output; v2 source verification does not prove generated bundle freshness. The no-limit-transfer Todo 9 integration gate owns the rebuild after runtime changes.
-2. **Deploy the bootstrap and the bundle to the Flipper SD card** (exact commands in [docs/firmware-guide.md](docs/firmware-guide.md)).
-3. **Launch Pocket AirBridge** on the Flipper. The app opens on the Bridge relay screen; press **RIGHT** or **LEFT** to reach the USB Deploy prompt. (LEFT/RIGHT toggle Bridge ↔ USB Deploy; a short BACK returns to Bridge, a long BACK exits the app. The relay keeps running in the background on every screen.) The prompt asks you to place the cursor, then press OK.
-4. **On the target PC**, open a browser tab at `https://blank.org`, open DevTools (F12), and click into the console. Any `https://` page works; `about:blank` is possible but verify first — on some Chrome builds `window.isSecureContext === false` there, which blocks WebHID. Run `console.log(window.isSecureContext)` to confirm before proceeding.
-5. **Press OK on the Flipper.** The bootstrap types itself into the console while the screen shows `TYPING…` (BACK aborts). Once executed, it paints a minimal landing page with a Connect button.
-6. **Click Connect.** Your real click supplies the user activation WebHID needs; pick the device in the browser prompt. The Flipper streams the compressed app from its SD card, the bootstrap inflates it with `DecompressionStream("gzip")`, and the page replaces itself with the full app. Unsupported browsers show `Transfer unsupported - retry` before a picker opens.
+    This inlines the shared JS modules into the self-contained USB and BLE deploy pages, writes the authenticated `airbridge/dist/app-usb.html.gz` and `airbridge/dist/app-ble.html.gz` containers, and regenerates `applications_user/pocket_airbridge/airbridge_assets_digest.h`. Both bundles are generated deploy outputs; v2 source verification does not prove generated bundle freshness. The no-limit-transfer Todo 9 integration gate owns the rebuild after runtime changes.
+2. **Deploy the bootstraps and the bundles to the Flipper SD card** (exact commands in [docs/firmware-guide.md](docs/firmware-guide.md)).
+3. **Launch Pocket AirBridge** on the Flipper. The app opens on the Bridge relay screen; press **RIGHT** to reach the USB Deploy prompt, **RIGHT** again for the BLE Deploy prompt. (LEFT/RIGHT cycle Bridge → USB Deploy → BLE Deploy → Bridge; a short BACK returns to Bridge, a long BACK exits the app. The relay keeps running in the background on every screen.) Each prompt asks you to place the cursor, then press OK.
+4. **On the target PC**, open a browser tab at `https://blank.org`, open DevTools (F12), and click into the console. Any `https://` page works; `about:blank` is possible but verify first — on some Chrome builds `window.isSecureContext === false` there, which blocks WebHID. Run `console.log(window.isSecureContext)` to confirm before proceeding. (For BLE Deploy, pair the target to the Flipper BLE identity first, then place the cursor in the console of the paired machine.)
+5. **Press OK on the Flipper.** The matching bootstrap types itself into the console while the screen shows `TYPING…` (BACK aborts). Once executed, it paints a minimal landing page with a Connect button.
+6. **Click Connect.** Your real click supplies the user activation the browser needs; pick the device in the browser prompt (WebHID for USB Deploy, Web Bluetooth for BLE Deploy). The Flipper streams the compressed app from its SD card — over the vendor HID channel for USB, over the BLE serial notify characteristic for BLE — the bootstrap inflates it with `DecompressionStream("gzip")`, and the page replaces itself with the full app. Unsupported browsers show `Transfer unsupported - retry` before a picker opens.
 
 `data:` URLs are dead for this purpose (`window.isSecureContext === false`, so WebHID is unavailable there). `about:blank` is NOT reliably a secure context — on some Chrome builds `window.isSecureContext === false` and `navigator.hid` is undefined, while the same Chrome build passes on `https://blank.org`. The robust validated channel is ANY `https://` page plus the DevTools console. Both facts were confirmed on real Chrome on 2026-07-20 (about:blank insecure on the user's build; https://blank.org worked end-to-end on hardware).
 
@@ -99,7 +158,7 @@ The bootstrap is unaffected by the firmware USB identity setting. It uses the FA
 
 ### Keyboard layout requirement
 
-The typed payload is ASCII-only but includes symbols like `{}[]();:=>"'`. The Flipper types it using US keyboard scancodes, so **the target PC must use a US keyboard layout**. On any other layout the symbols mistype.
+The typed payloads are ASCII-only but include symbols like `{}[]();:=>"'`. The Flipper types them using US keyboard scancodes (USB HID for USB Deploy, BLE HIDS for BLE Deploy), so **the target PC must use a US keyboard layout**. On any other layout the symbols mistype.
 
 ### Verified on hardware
 
@@ -177,7 +236,7 @@ use `chat-usb.html` and `chat-ble.html` instead.
 
 | Gap | Mitigation for Demo |
 |-----|---------------------|
-| Custom BLE profile built | AirBridge profile with Battery, DIS, and the custom serial UUID family (`7b871228-baf0-c5b4-5f46-9c2613d627a3` / TX `87825ec0-7398-8cb7-3242-b083eaa34f27` / RX `152f7eeb-e3b7-5898-ba41-7ff66121c98d`); TX uses NOTIFY (not INDICATE). Static firmware config supports a local ATT MTU maximum of 414, enables DLE, prefers 2M PHY, and requests a 7.5 to 45 ms interval; negotiated runtime values remain peer-driven and need hardware evidence. |
+| Custom BLE profile built | AirBridge composite profile with Battery, DIS, HIDS, and the custom serial UUID family (`7b871228-baf0-c5b4-5f46-9c2613d627a3` / TX `87825ec0-7398-8cb7-3242-b083eaa34f27` / RX `152f7eeb-e3b7-5898-ba41-7ff66121c98d`); TX uses NOTIFY (not INDICATE). Static firmware config supports a local ATT MTU maximum of 414, enables DLE, prefers 2M PHY, and requests a 7.5 to 45 ms interval; negotiated runtime values remain peer-driven and need hardware evidence. |
 | Custom HID descriptor registration | May need to patch `furi_hal_usb_hid` or use a community plugin template |
 | BLE service UUID hiding | Deferred. The serial UUID is still advertised and the browser still uses the service-filtered picker until `acceptAllDevices:true` with `optionalServices` is proven on hardware. |
 | 51-byte encrypted DATA slices | Small reports limit throughput; practical transfer time grows with file size. |
@@ -204,7 +263,7 @@ for this feature remain pending hardware verification.
 The FAP owns both custom profiles in `applications_user/pocket_airbridge/`:
 
 - **USB HID**: `usb_airbridge` — a vendor-defined HID profile using usage page `0xFF00` for bidirectional 64-byte reports. USB identity is selected at app start from `/ext/apps_data/pocket_airbridge/config` (default `hp_kbd_vendor`, HP VID `0x03F0` PID `0x5341`) and held for the session lifetime. Composite-to-composite reconfiguration is not attempted.
-- **BLE GATT**: `airbridge_profile.c` advertises the AirBridge serial UUID family: service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27` (NOTIFY, not INDICATE), and RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery and DIS are also included; the profile has no HIDS service.
+- **BLE GATT**: `airbridge_profile.c` advertises the AirBridge serial UUID family: service `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify `87825ec0-7398-8cb7-3242-b083eaa34f27` (NOTIFY, not INDICATE), and RX write `152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery, DIS, and HIDS are also included in the composite; HIDS exists for explicit BLE Deploy typing and carries no Bridge-mode keyboard traffic.
 
 Static BLE tuning evidence records configured ATT MTU 414, DLE enabled, 2M PHY preference, requested 7.5 to 45 ms connection interval, and 244-byte serial value capacity. Runtime negotiated MTU/PHY/DLE/interval and throughput remain unclaimed unless a hardware evidence run records them.
 

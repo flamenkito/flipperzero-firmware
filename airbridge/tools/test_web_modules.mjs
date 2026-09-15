@@ -8,7 +8,7 @@ import { arbitrationCases, runArbitration } from '../web/protocol-arbitration-te
 
 const vendor = createRequire(import.meta.url)('../web/vendor/js-sha256-0.11.1.js');
 function node() {
-  return {dataset:{}, setAttribute(){}, removeAttribute(){}, append(){}, appendChild(){}, querySelector(){return null;}};
+  return {dataset:{}, setAttribute(){}, removeAttribute(){}, append(){}, appendChild(){}, querySelector(){return null;}, querySelectorAll(){return [];}};
 }
 function endpoint() {
   let outbound, receiver, count = 0;
@@ -36,8 +36,15 @@ function endpoint() {
 for (const mode of arbitrationCases) test(`Arbitration ${mode}`, async () => {
   const originalDocument = globalThis.document, originalHash = globalThis.sha256;
   const nodes = new Map();
+  // Arbitration exercises the real sender but does not measure browser layout.
+  // Supply the progress caption/value hosts used by the shared UI renderer.
+  const progress = {querySelector:node};
   globalThis.document = {createElement:node, getElementById(id) {
-    if (!nodes.has(id)) nodes.set(id, node());
+    if (!nodes.has(id)) {
+      const element = node();
+      element.parentElement = {querySelector:() => progress};
+      nodes.set(id, element);
+    }
     return nodes.get(id);
   }};
   globalThis.sha256 = vendor.sha256;

@@ -21,6 +21,9 @@
 #define BLE_SVC_HID_REPORT_COUNT                                        \
     (BLE_SVC_HID_INPUT_REPORT_COUNT + BLE_SVC_HID_OUTPUT_REPORT_COUNT + \
      BLE_SVC_HID_FEATURE_REPORT_COUNT)
+#define BLE_SVC_HID_ATTRIBUTE_COUNT                                                         \
+    (1 + 2 + (4 * BLE_SVC_HID_INPUT_REPORT_COUNT) + (3 * BLE_SVC_HID_OUTPUT_REPORT_COUNT) + \
+     (3 * BLE_SVC_HID_FEATURE_REPORT_COUNT) + 2 + 2 + 2)
 
 typedef enum {
     HidSvcGattCharacteristicProtocolMode = 0,
@@ -151,22 +154,25 @@ struct BleServiceHid {
 };
 
 static BleEventAckStatus ble_svc_hid_event_handler(void* event, void* context) {
-    UNUSED(context);
+    BleServiceHid* hid_svc = context;
 
     BleEventAckStatus ret = BleEventNotAck;
     hci_event_pckt* event_pckt = (hci_event_pckt*)(((hci_uart_pckt*)event)->data);
     evt_blecore_aci* blecore_evt = (evt_blecore_aci*)event_pckt->data;
-    // aci_gatt_attribute_modified_event_rp0* attribute_modified;
 
     if(event_pckt->evt == HCI_VENDOR_SPECIFIC_DEBUG_EVT_CODE) {
         if(blecore_evt->ecode == ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE) {
-            // Process modification events
-            ret = BleEventAckFlowEnable;
-        } else if(blecore_evt->ecode == ACI_GATT_SERVER_CONFIRMATION_VSEVT_CODE) {
-            // Process notification confirmation
-            ret = BleEventAckFlowEnable;
+            const aci_gatt_attribute_modified_event_rp0* attribute_modified =
+                (const aci_gatt_attribute_modified_event_rp0*)blecore_evt->data;
+            /* The dispatcher stops on ACK; leave other services' writes to their handlers. */
+            if(attribute_modified->Attr_Handle > hid_svc->svc_handle &&
+               attribute_modified->Attr_Handle <
+                   hid_svc->svc_handle + BLE_SVC_HID_ATTRIBUTE_COUNT) {
+                ret = BleEventAckFlowEnable;
+            }
         }
     }
+    /* HID uses notifications, so indication confirmations belong to other services. */
     return ret;
 }
 
@@ -201,10 +207,7 @@ BleServiceHid* ble_svc_hid_start(void) {
            UUID_TYPE_16,
            &ble_svc_hid_uuid,
            PRIMARY_SERVICE,
-           2 + /* protocol mode */
-               (4 * BLE_SVC_HID_INPUT_REPORT_COUNT) + (3 * BLE_SVC_HID_OUTPUT_REPORT_COUNT) +
-               (3 * BLE_SVC_HID_FEATURE_REPORT_COUNT) + 1 + 2 + 2 +
-               2, /* Service + Report Map + HID Information + HID Control Point */
+           BLE_SVC_HID_ATTRIBUTE_COUNT,
            &hid_svc->svc_handle)) {
         free(hid_svc);
         return NULL;

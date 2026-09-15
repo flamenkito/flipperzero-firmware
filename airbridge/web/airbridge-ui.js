@@ -58,7 +58,7 @@ export function fillAsciiProgress(container, fraction) {
   if (!charWidth) {
     const probe = doc.createElement('span');
     probe.className = 'ab-progress-fill';
-    probe.textContent = '█';
+    probe.textContent = '#';
     probe.style.cssText = 'position:absolute;visibility:hidden;display:inline-block;inline-size:auto;overflow:visible;';
     doc.body.appendChild(probe);
     charWidth = probe.getBoundingClientRect().width;
@@ -69,7 +69,7 @@ export function fillAsciiProgress(container, fraction) {
   container.dataset.progressFraction = String(safe);
   const style = view?.getComputedStyle(container);
   const contentWidth = container.clientWidth - (parseFloat(style?.paddingInlineStart || '0') + parseFloat(style?.paddingInlineEnd || '0'));
-  fill.textContent = charWidth > 0 ? '█'.repeat(Math.max(0, Math.floor(contentWidth / charWidth * safe))) : '';
+  fill.textContent = charWidth > 0 ? '#'.repeat(Math.max(0, Math.floor(contentWidth / charWidth * safe))) : '';
   return fill.textContent;
 }
 
@@ -117,9 +117,9 @@ export function setTransferPhase(phase, progress = {}) {
   if (phase === 'Receiving') meter.dataset.receivedBytes = String(bytes);
   if (Object.hasOwn(progress, 'total')) meter.dataset.total = progress.total == null ? '' : String(progress.total);
   const total = meter.dataset.total;
-  if (phase === 'Hashing' || phase === 'Sending') {
+  if (phase === 'Hashing' || phase === 'Sending' || phase === 'Receiving') {
     const fraction = total && BigInt(total) > 0n ? Number(bytes * 10000n / BigInt(total)) / 100 : 0;
-    meter.dataset.progress = String(phase === 'Hashing' ? fraction / 2 : 50 + fraction / 2);
+    meter.dataset.progress = String(phase === 'Hashing' ? fraction / 2 : phase === 'Sending' ? 50 + fraction / 2 : fraction);
   } else if (phase === 'Ready') meter.dataset.progress = '100';
   if (phase === 'Ready') meter.textContent = '--';
   else if (phase === 'Cancelled' || phase === 'Failed') meter.textContent = `${formatBytes(bytes)} bytes`;
@@ -184,7 +184,7 @@ export function createLogger(logEl, options = {}) {
     if (!earlierControl) return;
     const hiddenCount = hiddenEarlierRows().length;
     earlierControl.hidden = hiddenCount === 0;
-    earlierControl.textContent = `↑ ${hiddenCount} earlier`;
+    earlierControl.textContent = `[${hiddenCount} earlier] gg`;
   }
 
   function revealEarlier() {
@@ -247,7 +247,7 @@ function createTranscriptController(transcriptEl, jumpEl, pageEvents = window) {
   function renderJump() {
     if (!jumpEl) return;
     jumpEl.hidden = unread === 0;
-    jumpEl.textContent = `↓ ${unread} new`;
+    jumpEl.textContent = `[${unread} new] G`;
   }
 
   function resetUnread() {
@@ -381,13 +381,13 @@ export function addMessage(transcriptEl, { side, kind, text, meta, data, hash, p
   const endpoint = document.body?.dataset.endpoint;
   if (endpoint) {
     const peerEndpoint = endpoint === 'usb' ? 'ble' : 'usb';
-    senderLabel.textContent = side === 'you' ? `you@${endpoint}>` : side === 'peer' ? `peer@${peerEndpoint}>` : 'system>';
+    senderLabel.textContent = side === 'you' ? `you/${endpoint}` : side === 'peer' ? `peer/${peerEndpoint}` : 'system';
   } else {
     senderLabel.textContent = side === 'you' ? 'You' : side === 'peer' ? 'Peer' : 'System';
   }
   const time = document.createElement('span');
   time.textContent = timeLabel().slice(0, 5);
-  metaLine.append(senderLabel, time);
+  metaLine.append(time, senderLabel);
   bubble.appendChild(metaLine);
 
   if (kind === 'text') {
@@ -436,14 +436,16 @@ export function renderAttachmentCard(meta, data, hash, pending, progress, lifecy
   hashLine.className = pending ? 'warn' : 'hash-ok';
   hashLine.textContent = pending
     ? `sha256:${shortHash(fullHash)} pending`
-    : `sha256:${shortHash(fullHash)} ✓ verified`;
+    : `sha256:${shortHash(fullHash)} verified`;
+  hashLine.hidden = pending && !fullHash;
   card.append(name, size, hashLine);
 
   if (!pending && fullHash) {
     const details = document.createElement('details');
     details.className = 'attachment-hash-details';
     const summary = document.createElement('summary');
-    summary.textContent = 'full hash';
+    summary.textContent = '[sha256]';
+    summary.setAttribute('aria-label', 'Show full SHA-256 hash');
     const full = document.createElement('div');
     full.className = 'attachment-hash-full';
     full.textContent = `sha256:${fullHash}`;
@@ -452,24 +454,10 @@ export function renderAttachmentCard(meta, data, hash, pending, progress, lifecy
   }
 
   if (progress != null) {
-    const container = document.createElement('div');
-    container.className = 'progress-container';
-    const ascii = createAsciiProgress(document);
-    const track = ascii.querySelector('.ab-progress');
-    track.classList.add('progress-bar-track');
-    track.removeAttribute('aria-hidden');
-    track.setAttribute('role', 'progressbar');
-    track.setAttribute('aria-valuenow', Math.round(progress.percent));
-    track.setAttribute('aria-valuemin', '0');
-    track.setAttribute('aria-valuemax', '100');
-    const fill = track.querySelector('.ab-progress-fill');
-    fill.className = `ab-progress-fill progress-bar-fill${progress.complete ? ' complete' : ''}${progress.cancelled ? ' cancelled' : ''}`;
     const label = document.createElement('div');
     label.className = 'progress-label';
-    label.textContent = progress.label;
-    container.append(label, ascii);
-    card.appendChild(container);
-    updateAsciiProgress(ascii, progress.label.split(':')[0], progress.percent);
+    label.textContent = progress.label.split(':')[0];
+    card.appendChild(label);
   }
 
   if (data) {
@@ -478,13 +466,15 @@ export function renderAttachmentCard(meta, data, hash, pending, progress, lifecy
     link.className = 'download-link';
     link.download = attachmentDownloadName(meta.name || meta.filename);
     link.dataset.downloadAttachment = '';
-    link.textContent = 'Download attachment';
+    link.textContent = '[download]';
+    link.setAttribute('aria-label', `Download ${attachmentDisplayName(meta.name || meta.filename)}`);
     card.appendChild(link);
     (lifecycle ?? defaultAttachmentLifecycle()).own(card, blob, link);
     const remove = document.createElement('button');
     remove.type = 'button'; remove.className = 'clear-btn';
     remove.dataset.removeAttachment = '';
-    remove.textContent = 'Remove attachment';
+    remove.textContent = '[remove]';
+    remove.setAttribute('aria-label', `Remove ${attachmentDisplayName(meta.name || meta.filename)}`);
     remove.addEventListener('click', () => { const row = card.closest('.message'); removeAttachmentCard(card); row?.remove(); });
     card.append(remove);
   }
@@ -597,18 +587,11 @@ export function createAttachmentLifecycle(pageEvents = window) {
   };
 }
 
-export function updateCardProgress(messageRow, percent, label, state) {
+export function updateCardProgress(messageRow, _percent, label, state) {
   const card = messageRow.querySelector('.attachment-card');
   if (card) card.dataset.phase = state === 'cancelled' ? (label === 'Failed' ? 'Failed' : 'Cancelled') : label.split(':')[0];
-  const track = messageRow.querySelector('.progress-bar-track');
-  const fill = messageRow.querySelector('.progress-bar-fill');
   const labelEl = messageRow.querySelector('.progress-label');
-  if (!track || !fill || !labelEl) return;
-  const safe = Math.max(0, Math.min(100, percent));
-  track.setAttribute('aria-valuenow', Math.round(safe));
-  fill.className = `ab-progress-fill progress-bar-fill${state === 'complete' ? ' complete' : ''}${state === 'cancelled' ? ' cancelled' : ''}`;
-  labelEl.textContent = label;
-  updateAsciiProgress(track.closest('.ab-progress-ui'), label.split(':')[0], safe);
+  if (labelEl) labelEl.textContent = label.split(':')[0];
 }
 
 export function completeOutboundCard(row, receipt, file) {
@@ -636,6 +619,7 @@ export function completeOutboundCard(row, receipt, file) {
   const hash = row.querySelector('[data-attachment-hash]');
   hash.textContent = `SHA-256: ${receipt.payloadSha256}`;
   hash.className = 'hash-ok';
+  hash.hidden = false;
   updateCardProgress(row, 100, 'Sent', 'complete');
 }
 

@@ -27,6 +27,12 @@ export function createChatOutbound({session, transport, setBusy, log}) {
   }
   async function send(input, kind) {
     if (disposed || active || !session.isUnlocked() || !transport.isConnected()) return;
+    const inputElement = element(kind === 'text' ? 'textInput' : 'fileInput');
+    const originalValue = inputElement.value;
+    let draftChanged = false;
+    const markDraftChanged = () => { draftChanged = true; };
+    const inputEvent = kind === 'text' ? 'input' : 'change';
+    inputElement.addEventListener?.(inputEvent, markDraftChanged);
     const item = {owner:null, row:null, percent:0, generation:++generation,
       rejectedOfferId:null, collisionSeen:false, capabilityProven:false};
     active = item;
@@ -53,7 +59,12 @@ export function createChatOutbound({session, transport, setBusy, log}) {
       if (active !== item) return;
       if (item.row) completeOutboundCard(item.row, receipt, input);
       else addMessage(element('transcript'), {side:'you', kind:'text', text:input});
-      element(kind === 'text' ? 'textInput' : 'fileInput').value = '';
+      // A message or attachment prepared while this item was sending belongs
+      // to the next transfer. Completion must not erase that newer draft.
+      if (!draftChanged && inputElement.value === originalValue &&
+          (kind === 'text' || !inputElement.files || inputElement.files[0] === input)) {
+        inputElement.value = '';
+      }
       active = null;
       setTransferPhase('Ready', {bytes:receipt.payloadSize,total:receipt.payloadSize});
       notify(item, `Sent encrypted ${kind}; plaintext SHA-256 ${receipt.payloadSha256}.`, 'ok');
@@ -61,11 +72,12 @@ export function createChatOutbound({session, transport, setBusy, log}) {
       if (active !== item) return;
       active = null;
       if (item.row) updateCardProgress(item.row, item.percent, 'Failed', 'cancelled');
-      setTransferPhase('Failed');
+      setTransferPhase('Failed', { error: error.message });
       item.owner.cancel(error);
       notify(item, `Send failed: ${error.message}`, 'error');
       if (error.message === 'Unsupported protocol version') session.clearKeys(CRYPTO_STATE.ABORTED);
     } finally {
+      inputElement.removeEventListener?.(inputEvent, markDraftChanged);
       if (active === item) {
         active = null;
         setTransferPhase('Cancelled');

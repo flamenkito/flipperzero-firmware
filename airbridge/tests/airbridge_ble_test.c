@@ -4,6 +4,7 @@
 
 #include "../../applications_user/pocket_airbridge/airbridge_ble.h"
 #include "../../applications_user/pocket_airbridge/airbridge_operation.h"
+#include "../../applications_user/pocket_airbridge/airbridge_profile.h"
 #include <furi_hal_bt.h>
 
 struct Bt {
@@ -75,6 +76,10 @@ void furi_hal_bt_start_advertising(void) {
     pthread_mutex_unlock(&platform.mutex);
 }
 
+void furi_hal_bt_set_adv_hids(bool enable) {
+    assert(enable);
+}
+
 /* These paths are linked from the real module but must never run while merely
  * servicing advertising. In particular, a warning must not replace a profile. */
 const FuriHalBleProfileTemplate* const ble_profile_airbridge = NULL;
@@ -109,6 +114,11 @@ void bt_disconnect(Bt* instance) {
     abort();
 }
 
+bool bt_pairing_in_progress(Bt* instance) {
+    UNUSED(instance);
+    abort();
+}
+
 FuriHalBleProfileBase* bt_current_profile_acquire(Bt* instance) {
     UNUSED(instance);
     abort();
@@ -116,6 +126,13 @@ FuriHalBleProfileBase* bt_current_profile_acquire(Bt* instance) {
 
 void bt_current_profile_release(Bt* instance) {
     UNUSED(instance);
+    abort();
+}
+
+bool airbridge_profile_kb_report(FuriHalBleProfileBase* profile, uint8_t* data, uint16_t len) {
+    UNUSED(profile);
+    UNUSED(data);
+    UNUSED(len);
     abort();
 }
 

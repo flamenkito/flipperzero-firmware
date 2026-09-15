@@ -8,9 +8,9 @@
 <title>Pocket AirBridge — USB Chat</title>
 </head>
 <body data-endpoint="usb">
-<header class="console-chrome">
+<h1 class="visually-hidden">Pocket AirBridge — USB Chat</h1>
+<header class="console-chrome" aria-hidden="true">
   <nav class="tabline" aria-label="AirBridge endpoint">
-    <h1 class="visually-hidden">Pocket AirBridge — USB Chat</h1>
     <span class="tabline-product">airbridge</span>
     <span class="tabline-endpoint">usb/webhid</span>
     <span id="headerStatus" class="header-status" aria-label="Connection summary">No device · idle</span>
@@ -34,19 +34,9 @@
     <span id="displayState" class="status-state">state=idle</span>
     <span id="deviceName" class="mono">No device</span>
   </div>
+  <button id="acceptSasBtn" type="button" disabled>Accept matching code</button>
+  <button id="abortCryptoBtn" type="button" disabled>Abort verification</button>
 </header>
-
-  <div id="sasBanner" class="sas-banner" hidden>
-    <div class="sas-banner-main">
-      <span class="sas-banner-caption">compare this code with your peer</span>
-      <strong id="sasBannerCode" class="sas-banner-code">------</strong>
-    </div>
-    <span class="sas-banner-text">If the six digits match on both screens, accept on both sides to open the secure channel. If they differ, abort and reconnect.</span>
-    <div class="sas-banner-actions">
-      <button id="acceptSasBtn" type="button" class="btn-primary" disabled>Accept SAS</button>
-      <button id="abortCryptoBtn" type="button" class="btn-danger" disabled>Abort Crypto</button>
-    </div>
-  </div>
 
 <main id="app" class="grid shell-stack">
 
@@ -55,35 +45,34 @@
       <h2 id="chatTitle">transcript</h2>
       <button id="clearTranscriptBtn" type="button" class="clear-btn">Clear</button>
     </div>
-    <div id="transcript" aria-live="polite"><article class="message system empty"><div class="bubble"><div class="meta-line"><span class="sender">system&gt;</span></div><div>Connect, then send a message or attachment.</div></div></article></div>
-    <button type="button" class="transcript-jump" hidden>↓ 0 new</button>
+    <div id="transcript" aria-live="polite" aria-label="Messages" tabindex="0"><article class="message system empty"><div class="bubble"><div class="meta-line"><span class="sender">system&gt;</span></div><div> </div></div></article></div>
+    <button type="button" class="transcript-jump" hidden>[0 new] G</button>
+    <aside class="card shell-stack diagnostic-rail" aria-labelledby="transferTitle">
+      <div class="transfer-summary">
+      <div id="panelState" class="panel-state" data-phase="Ready" role="status">Ready</div>
+      <div id="transferDetail" class="transfer-detail" hidden></div>
+      <div id="throughput" class="throughput">--</div>
+      <p id="transferFailure" class="hint error" role="alert" hidden></p>
+      <div class="transfer-actions">
+        <button id="cancelBtn" type="button" class="btn-danger" hidden>Cancel Transfer</button>
+      </div>
+      </div>
+      <pre id="log" tabindex="0" aria-label="Diagnostic log">Waiting…</pre>
+      <button type="button" class="log-earlier" hidden>[0 earlier] gg</button>
+      <div class="split-statusline"><h2 id="transferTitle">airbridge-log [readonly]</h2><span>:l or :q to close</span></div>
+      <button id="clearLogBtn" type="button" hidden>Clear</button>
+    </aside>
     <form id="textForm" class="composer shell-stack">
       <button id="attachBtn" type="button" aria-label="Attach file">+</button>
-      <span id="fileChip" class="file-chip" hidden><span class="file-chip-text"></span><button id="fileChipClear" type="button" aria-label="Clear attachment">×</button></span>
-      <input id="fileInput" type="file" class="file-input-hidden" aria-label="Attachment" aria-describedby="attachmentLimits" disabled>
-      <input id="textInput" type="text" aria-label="Message" autocomplete="off" disabled>
+      <span id="fileChip" class="file-chip" hidden><span class="file-chip-text"></span><button id="fileChipClear" type="button" aria-label="Clear attachment">[remove]</button></span>
+      <input id="fileInput" type="file" class="file-input-hidden" tabindex="-1" aria-label="Attachment" aria-describedby="attachmentLimits" disabled>
+      <input id="textInput" type="text" aria-label="Message" autocomplete="off" autocapitalize="off" disabled>
       <button id="sendTextBtn" type="submit" class="btn-primary" disabled>Send</button>
       <button id="sendFileBtn" type="button" class="btn-primary send-file-hidden" disabled>Send Attachment</button>
     </form>
     <p class="hint composer-subtext" id="attachmentLimits" hidden></p>
   </section>
 
-  <aside class="card shell-stack diagnostic-rail" aria-labelledby="transferTitle">
-    <h2 id="transferTitle">transfer</h2>
-    <div id="panelState" class="panel-state" data-phase="Ready" role="status">Ready</div>
-    <div id="transferDetail" class="transfer-detail" hidden></div>
-    <div id="throughput" class="throughput">--</div>
-    <p id="transferFailure" class="hint error" role="alert" hidden></p>
-    <div class="transfer-actions">
-      <button id="cancelBtn" type="button" class="btn-danger" hidden>Cancel Transfer</button>
-    </div>
-    <div class="panel-heading">
-      <h2>log</h2>
-      <button id="clearLogBtn" type="button" class="clear-btn">Clear</button>
-    </div>
-    <pre id="log">Waiting…</pre>
-    <button type="button" class="log-earlier" hidden>↑ 0 earlier</button>
-  </aside>
 </main>
 
 <script src="./vendor/js-sha256-0.11.1.js"></script>

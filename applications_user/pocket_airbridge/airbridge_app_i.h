@@ -26,4 +26,8 @@ typedef struct AirbridgeApp {
     AirbridgeTyping typing;
     AirbridgeScreens* screens;
     AirbridgeUi* ui;
+    /* Last observed BLE link generation. A fresh generation means a new link:
+     * the deploy-accepted latch clears so a stale accept can never mask a
+     * Waiting zombie on the next connection. */
+    uint32_t ble_generation_seen;
 } AirbridgeApp;

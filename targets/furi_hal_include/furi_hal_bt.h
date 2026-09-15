@@ -137,6 +137,15 @@ void furi_hal_bt_start_advertising(void);
  */
 void furi_hal_bt_stop_advertising(void);
 
+/** Include the HIDS 0x1812 service UUID in the advertising packet
+ *
+ * Applies immediately via an advertising refresh when already advertising;
+ * idempotent (no-change calls early-out). Reset to false on profile init.
+ *
+ * @param[in]  enable  advertise HIDS when true, serial-only when false
+ */
+void furi_hal_bt_set_adv_hids(bool enable);
+
 /** Get BT/BLE system component state
  *
  * @param[in]  buffer  FuriString* buffer to write to

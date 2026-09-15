@@ -20,6 +20,18 @@
 #define CONFIG_MAX_SIZE    (4U * 1024U)
 #define BUNDLE_MAX_SIZE    (256U * 1024U)
 
+/* BLE Deploy link timing (restored from the pre-USB-only design). The 2500 ms
+ * settle covers the macOS HID-daemon CCCD beat: the first ~24 bootstrap chars
+ * are silently dropped without it. */
+#define BLE_TYPE_LINK_SETTLE_MS            2500
+#define BLE_TYPING_RETRY_MAX               5
+#define BLE_TYPING_RETRY_DELAY_MS          20
+#define BLE_TYPING_DISCONNECT_TIMEOUT_MS   15000U
+#define BLE_WAITING_PUMP_MS                2500
+#define BLE_WAITING_ZOMBIE_KICK_MS         90000
+#define BLE_DONE_ZOMBIE_GRACE_MS           4000
+#define BLE_STREAM_RETRY_MAX               20
+
 typedef enum {
     AirbridgeScreenBridge,
     AirbridgeScreenDeployPrompt,
@@ -30,6 +42,15 @@ typedef enum {
     AirbridgeScreenError,
     AirbridgeScreenFatal,
 } AirbridgeScreen;
+
+typedef enum {
+    AirbridgeTypingTransportUsb,
+    AirbridgeTypingTransportBle,
+} AirbridgeTypingTransport;
+
+/* The stream reuses the deploy selection domain: the prompt confirmed for
+ * typing arms the same transport for the subsequent Waiting/stream phase. */
+typedef AirbridgeTypingTransport AirbridgeStreamTransport;
 
 typedef struct {
     char title[24];

@@ -4,7 +4,12 @@
 
 void airbridge_ui_render_typing(Canvas* canvas, const AirbridgeUiSnapshot* snapshot) {
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 0, 10, "TYPING via USB");
+    canvas_draw_str(
+        canvas,
+        0,
+        10,
+        snapshot->deploy_transport == AirbridgeTypingTransportBle ? "TYPING via BLE" :
+                                                                    "TYPING via USB");
     canvas_set_font(canvas, FontSecondary);
     airbridge_ui_draw_identity(canvas, snapshot, 19);
     airbridge_ui_draw_progress(canvas, 28, snapshot->typing_position, snapshot->typing_total);
@@ -28,7 +33,12 @@ void airbridge_ui_render_typing(Canvas* canvas, const AirbridgeUiSnapshot* snaps
 
 void airbridge_ui_render_streaming(Canvas* canvas, const AirbridgeUiSnapshot* snapshot) {
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 0, 10, "Serving app via USB");
+    canvas_draw_str(
+        canvas,
+        0,
+        10,
+        snapshot->deploy_transport == AirbridgeTypingTransportBle ? "Serving app via BLE" :
+                                                                    "Serving app via USB");
     canvas_set_font(canvas, FontSecondary);
     airbridge_ui_draw_identity(canvas, snapshot, 19);
     airbridge_ui_draw_progress(canvas, 28, snapshot->stream_sent, snapshot->stream_total);

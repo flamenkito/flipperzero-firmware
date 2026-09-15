@@ -11,11 +11,22 @@
 #define TAG                             "AirBridge"
 #define AIRBRIDGE_BLE_DETACH_TIMEOUT_MS (250U)
 
+void airbridge_ble_set_hids_adv(AirbridgeBle* ble, bool enable) {
+    if(!ble->ble_profile_installed) return;
+    furi_hal_bt_set_adv_hids(enable);
+}
+
 bool airbridge_ble_ensure_serial_adv(AirbridgeBle* ble) {
     if(!ble->ble_profile_installed) return false;
-    /* Chat and attachment transport uses only the AirBridge serial service.
-     * Do not advertise HIDS: a bonded host HID daemon otherwise claims the
-     * single BLE link before Web Bluetooth can subscribe to serial TX. */
+    /* Owner-approved restored policy (2026-09-15, BLE Deploy restoration): HIDS
+     * stays in the advertising packet for the app's whole lifetime so a BLE
+     * deploy target discovers the keyboard in host BT settings without prompt
+     * navigation; it is dropped only at teardown. Re-arm every call:
+     * gap_set_adv_hids early-outs when unchanged, so this is free. A bonded
+     * host HID daemon may claim the single BLE link before Web Bluetooth
+     * subscribes to serial TX; the typing/stream layers (link-settle, pairing
+     * hold, squatter kick) own that window. */
+    furi_hal_bt_set_adv_hids(true);
     if(gap_get_state() == GapStateIdle) {
         furi_hal_bt_start_advertising();
     }
@@ -151,10 +162,19 @@ void airbridge_ble_squatter_watchdog(AirbridgeBle* ble) {
     /* A 4 s fast kick for bonded squatters (round 6, keyed on
      * bt_pairing_in_progress) was tried and REJECTED on hardware: it evicted
      * clients mid-discovery before they could subscribe (two connect attempts
-     * died at ~4 s). 15 s is the proven window, pairing ceremonies included;
-     * the bt_pairing_in_progress machinery stays in firmware for future use
-     * but is deliberately not consulted here. */
+     * died at ~4 s). 15 s is the proven window for bond-free connect+subscribe;
+     * live pairing ceremonies are exempted below via the window restart —
+     * human code confirmation on two devices does not fit any fixed budget. */
     if(ble->ble_connected) {
+        if(ble->bt != NULL && bt_pairing_in_progress(ble->bt)) {
+            /* Human-confirmed numeric-comparison ceremonies (code shown on BOTH
+             * devices) can exceed the kick window. Never evict mid-ceremony;
+             * restart the window so discovery+subscribe gets a full budget
+             * after it completes. Bonded HID-daemon squatters never pair, so
+             * they keep the 15 s budget. */
+            ble->ble_connected_since = now;
+            return;
+        }
         if(now - ble->ble_connected_since < BLE_SQUATTER_KICK_MS) return;
         FuriHalBleProfileBase* profile = bt_current_profile_acquire(ble->bt);
         const bool subscribed = airbridge_profile_subscribed(profile);
@@ -220,6 +240,20 @@ bool airbridge_ble_send(AirbridgeBle* ble, uint8_t* data, uint16_t len) {
     const bool sent = airbridge_profile_send(profile, data, len);
     if(profile) bt_current_profile_release(ble->bt);
     return sent;
+}
+
+bool airbridge_ble_kb_report(AirbridgeBle* ble, uint16_t key) {
+    if(!ble->bt || !ble->ble_profile_installed) return false;
+    uint8_t report[8] =
+        {(uint8_t)(key >> 8), 0, (uint8_t)(key & 0xFF), 0, 0, 0, 0, 0};
+    FuriHalBleProfileBase* profile = bt_current_profile_acquire(ble->bt);
+    const bool sent = airbridge_profile_kb_report(profile, report, sizeof(report));
+    if(profile) bt_current_profile_release(ble->bt);
+    return sent;
+}
+
+bool airbridge_ble_kb_release(AirbridgeBle* ble) {
+    return airbridge_ble_kb_report(ble, 0);
 }
 
 bool airbridge_ble_restore(AirbridgeBle* ble) {

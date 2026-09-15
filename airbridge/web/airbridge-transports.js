@@ -25,6 +25,7 @@ const SERIAL_UUIDS = [
 
 const BLE_RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
 const BLE_CONNECT_TIMEOUT_MS = 25000;
+const BLE_SETUP_RETRY_DELAYS_MS = [500, 1000];
 
 function normalizeFrame(frame) {
   if (frame instanceof Uint8Array) return frame;
@@ -199,6 +200,8 @@ export class WebBluetoothAdapter {
     this.activeAttemptId = -1;
     this.pendingCleanup = null;
     this.connectTimeoutMs = options.connectTimeoutMs ?? BLE_CONNECT_TIMEOUT_MS;
+    this.setupRetryDelaysMs = options.setupRetryDelaysMs ?? BLE_SETUP_RETRY_DELAYS_MS;
+    this.statusCallback = options.onStatus ?? null;
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
     window.addEventListener('beforeunload', this.handleBeforeUnload);
   }
@@ -244,13 +247,49 @@ export class WebBluetoothAdapter {
     this.cancelReconnect();
     this.autoReconnect = true;
 
-    if (await this.tryGrantedReconnect()) return;
+    const epoch = this.reconnectEpoch;
+    const assertCurrent = () => {
+      if (epoch !== this.reconnectEpoch || !this.autoReconnect) throw new Error('GATT session cancelled');
+    };
+    try {
+      const reconnected = await this.tryGrantedReconnect();
+      assertCurrent();
+      if (reconnected) return;
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [identity.SERIAL_SERVICE_UUID] }],
+        optionalServices: [identity.SERIAL_SERVICE_UUID],
+      });
+      assertCurrent();
+      this.device = device;
+      await this.openGattSessionWithRetry();
+    } catch (error) {
+      // Failed initial setup must not leave a background reconnect alive after
+      // the page releases this adapter. Preserve any newer connect() owner.
+      if (epoch === this.reconnectEpoch) await this.disconnect();
+      throw error;
+    }
+  }
 
-    this.device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [identity.SERIAL_SERVICE_UUID] }],
-      optionalServices: [identity.SERIAL_SERVICE_UUID],
-    });
-    await this.openGattSessionSerialized();
+  async openGattSessionWithRetry() {
+    const device = this.device, epoch = this.reconnectEpoch;
+    const assertCurrent = () => {
+      if (!this.autoReconnect || epoch !== this.reconnectEpoch || this.device !== device) throw new Error('GATT session cancelled');
+    };
+    for (let retry = 0; ; retry++) {
+      assertCurrent();
+      try {
+        await this.openGattSessionSerialized();
+        assertCurrent();
+        return;
+      } catch (error) {
+        assertCurrent();
+        // Retry link failures on the selected device. Permission, missing
+        // service, timeout, and cancellation errors are not transient drops.
+        if (error.name !== 'NetworkError' || retry >= this.setupRetryDelaysMs.length) throw error;
+        this.statusCallback?.(`BLE reconnecting (${retry + 2}/${this.setupRetryDelaysMs.length + 1})`);
+        await new Promise(resolve => setTimeout(resolve, this.setupRetryDelaysMs[retry]));
+      }
+    }
   }
 
   /**
@@ -264,6 +303,7 @@ export class WebBluetoothAdapter {
     // getDevices is flag-gated (#enable-experimental-web-platform-features);
     // when the flags are off it is undefined — skip straight to the picker.
     if (!navigator.bluetooth.getDevices) return false;
+    const epoch = this.reconnectEpoch;
     const granted = await navigator.bluetooth.getDevices();
     const device = granted.find(candidate => candidate.name === identity.BLE_NAME);
     if (!device) return false;
@@ -273,6 +313,7 @@ export class WebBluetoothAdapter {
     // 6 attempts at 750 ms (~4.5 s total) absorb the transient without falling
     // back to the user-visible picker.
     for (let attempt = 1; attempt <= 6; attempt++) {
+      if (!this.autoReconnect || epoch !== this.reconnectEpoch) throw new Error('GATT session cancelled');
       try {
         this.device = device;
         await this.openGattSessionSerialized();
@@ -282,8 +323,11 @@ export class WebBluetoothAdapter {
         this.clearGattState();
         // disconnect() raced the bring-up: abort the retry loop, or the next
         // attempt would resurrect the session the user just killed.
-        if (!this.autoReconnect) throw error;
-        if (attempt < 6) await new Promise(resolve => setTimeout(resolve, 750));
+        if (!this.autoReconnect || epoch !== this.reconnectEpoch) throw error;
+        if (attempt < 6) {
+          this.statusCallback?.(`BLE reconnecting (${attempt + 1}/6)`);
+          await new Promise(resolve => setTimeout(resolve, 750));
+        }
       }
     }
     device.removeEventListener('gattserverdisconnected', this.handleDisconnected);
@@ -292,12 +336,10 @@ export class WebBluetoothAdapter {
 
   /**
    * Connect GATT on this.device and bring up the AirBridge serial characteristics.
-   * A disconnect() racing this bring-up bumps reconnectEpoch and disarms
-   * autoReconnect; the staleness check after each awaited GATT step then tears
-   * down the partially opened session and throws instead of letting a stale
-   * session come alive. (connect() bumps the epoch too, so staleness also
-   * requires autoReconnect to be disarmed — only disconnect() does both, and a
-   * fresh connect() can still share this in-flight bring-up.)
+   * A disconnect() or timeout invalidates the attempt ID. Each awaited GATT
+   * step checks that ID and the physical link before proceeding. Keep handles
+   * local until notification setup succeeds so a drop cannot publish a
+   * partially connected session or replace a newer attempt's handles.
    * @returns {Promise<void>}
    */
   async openGattSession() {
@@ -309,37 +351,44 @@ export class WebBluetoothAdapter {
     const staleSession = () => attempt.id !== this.connectAttemptId;
     const throwIfStale = () => {
       if (staleSession()) throw new Error('GATT session cancelled');
+      if (!attempt.device.gatt?.connected) throw new DOMException('BLE disconnected during setup', 'NetworkError');
     };
     const device = attempt.device;
     device.addEventListener('gattserverdisconnected', this.handleDisconnected);
     try {
       await this.withConnectTimeout(attempt, async () => {
-        this.server = await device.gatt.connect();
+        const server = await device.gatt.connect();
         throwIfStale();
+        this.server = server;
 
-        const discoveredServices = await this.server.getPrimaryServices();
+        const discoveredServices = await server.getPrimaryServices();
         throwIfStale();
 
         let service;
         let uuids;
         try {
-          ({ service, uuids } = await this.findSerialService());
+          ({ service, uuids } = await this.findSerialService(server));
         } catch (error) {
+          if (error.name === 'NetworkError') throw error;
           const discoveredUuids = discoveredServices.map(discovered => discovered.uuid).join(', ') || '(none)';
           console.debug('Web Bluetooth discovered services:', discoveredUuids);
           throw new Error(`${error.message}. Discovered services: ${discoveredUuids}`);
         }
         throwIfStale();
 
-        this.matchedUuids = uuids;
-        this.txChar = await service.getCharacteristic(uuids.tx);
-        this.rxChar = await service.getCharacteristic(uuids.rx);
+        const txChar = await service.getCharacteristic(uuids.tx);
+        throwIfStale();
+        const rxChar = await service.getCharacteristic(uuids.rx);
         throwIfStale();
 
-        await this.txChar.startNotifications();
+        await txChar.startNotifications();
         throwIfStale();
+        this.matchedUuids = uuids;
+        this.txChar = txChar;
+        this.rxChar = rxChar;
         this.txChar.addEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
       });
+      throwIfStale();
     } catch (error) {
       /* Every bring-up failure — timeout, stale attempt, discovery error,
        * startNotifications error, generic exception — must tear the OS link
@@ -522,12 +571,13 @@ export class WebBluetoothAdapter {
     return this.device?.name || 'Web Bluetooth';
   }
 
-  async findSerialService() {
+  async findSerialService(server = this.server) {
     for (const uuids of SERIAL_UUIDS) {
       try {
-        const service = await this.server.getPrimaryService(uuids.service);
+        const service = await server.getPrimaryService(uuids.service);
         return { service, uuids };
-      } catch (_) {
+      } catch (error) {
+        if (error.name !== 'NotFoundError') throw error;
         // A miss is expected while probing each supported serial-service UUID.
       }
     }
@@ -540,8 +590,13 @@ export class WebBluetoothAdapter {
     this.receiveCallback(new Uint8Array(value.buffer, value.byteOffset ?? 0, value.byteLength));
   }
 
-  handleDisconnected() {
+  handleDisconnected(event) {
+    if (event?.target && event.target !== this.device) return;
+    const settingUp = Boolean(this.gattSessionPromise) || !this.txChar || !this.rxChar;
     this.clearGattState();
+    // The active setup/reconnect attempt owns its failure and retry. Starting
+    // another timer here races that attempt and can orphan a live GATT link.
+    if (settingUp) return;
     if (!this.autoReconnect) {
       if (this.disconnectCallback) this.disconnectCallback();
       return;

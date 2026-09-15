@@ -20,7 +20,8 @@ typedef struct {
 
 typedef enum {
     AirbridgeRelayHandled,
-    AirbridgeRelayDeployRequested,
+    AirbridgeRelayDeployRequestedUsb,
+    AirbridgeRelayDeployRequestedBle,
     AirbridgeRelayDeployNotArmed,
 } AirbridgeRelayResult;
 
@@ -55,4 +56,5 @@ AirbridgeRelayResult airbridge_relay_handle(
     AirbridgeRelay* relay,
     AirbridgeBle* ble,
     BridgeEvent* event,
-    AirbridgeScreen screen);
+    AirbridgeScreen screen,
+    AirbridgeTypingTransport armed_transport);

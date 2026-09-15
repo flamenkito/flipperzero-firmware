@@ -68,6 +68,19 @@ bool airbridge_usb_kb_release_all(void) {
     return true;
 }
 
+/* Linked from the real typing module but unreachable on the USB transport
+ * exercised here: the BLE retry helper and pairing hold must never run. */
+bool airbridge_ble_kb_report(AirbridgeBle* ble, uint16_t key) {
+    UNUSED(ble);
+    UNUSED(key);
+    abort();
+}
+
+bool bt_pairing_in_progress(Bt* bt) {
+    UNUSED(bt);
+    abort();
+}
+
 /* These tests enter at typing_step with an already-loaded payload. Keep the
  * real loader and digest code linked, but reject unexpected storage access. */
 File* storage_file_alloc(Storage* storage) {
@@ -125,6 +138,7 @@ static AirbridgeTyping typing_init(const char* payload) {
         .bootstrap = bootstrap,
         .bootstrap_len = strlen(payload),
         .show_error = show_error,
+        .transport = AirbridgeTypingTransportUsb,
         .next_tick = platform.tick,
         .jitter_state = 1,
     };
@@ -175,7 +189,8 @@ typedef struct {
     unsigned aborts;
 } ScreenFixture;
 
-static bool screen_typing_start(void* context) {
+static bool screen_typing_start(void* context, AirbridgeTypingTransport transport) {
+    UNUSED(transport);
     ScreenFixture* fixture = context;
     assert(!fixture->typing.key_down);
     /* Payload loading is outside the screen-policy test boundary. */
@@ -188,8 +203,9 @@ static bool screen_typing_abort(void* context) {
     return airbridge_typing_abort(&fixture->typing);
 }
 
-static bool screen_deploy_supported(void* context) {
+static bool screen_deploy_supported(void* context, AirbridgeTypingTransport transport) {
     UNUSED(context);
+    UNUSED(transport);
     return true;
 }
 

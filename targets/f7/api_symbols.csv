@@ -774,11 +774,11 @@ Function,+,ble_svc_battery_update_level,_Bool,"BleServiceBattery*, uint8_t"
 Function,+,ble_svc_battery_update_power_state,_Bool,"BleServiceBattery*, _Bool"
 Function,+,ble_svc_dev_info_start,BleServiceDevInfo*,
 Function,+,ble_svc_dev_info_stop,void,BleServiceDevInfo*
-Function,-,ble_svc_hid_start,BleServiceHid*,
-Function,-,ble_svc_hid_stop,void,BleServiceHid*
-Function,-,ble_svc_hid_update_info,_Bool,"BleServiceHid*, uint8_t*"
-Function,-,ble_svc_hid_update_input_report,_Bool,"BleServiceHid*, uint8_t, uint8_t*, uint16_t"
-Function,-,ble_svc_hid_update_report_map,_Bool,"BleServiceHid*, const uint8_t*, uint16_t"
+Function,+,ble_svc_hid_start,BleServiceHid*,
+Function,+,ble_svc_hid_stop,void,BleServiceHid*
+Function,+,ble_svc_hid_update_info,_Bool,"BleServiceHid*, uint8_t*"
+Function,+,ble_svc_hid_update_input_report,_Bool,"BleServiceHid*, uint8_t, uint8_t*, uint16_t"
+Function,+,ble_svc_hid_update_report_map,_Bool,"BleServiceHid*, const uint8_t*, uint16_t"
 Function,+,ble_svc_serial_notify_buffer_is_empty,void,BleServiceSerial*
 Function,+,ble_svc_serial_set_callbacks,void,"BleServiceSerial*, uint16_t, SerialServiceEventCallback, void*"
 Function,+,ble_svc_serial_set_rpc_active,void,"BleServiceSerial*, _Bool"
@@ -1339,6 +1339,7 @@ Function,+,furi_hal_bt_nvm_sram_sem_release,void,
 Function,+,furi_hal_bt_reinit,void,
 Function,+,furi_hal_bt_set_key_storage_change_callback,void,"BleGlueKeyStorageChangedCallback, void*"
 Function,+,furi_hal_bt_start_advertising,void,
+Function,+,furi_hal_bt_set_adv_hids,void,_Bool
 Function,+,furi_hal_bt_start_app,FuriHalBleProfileBase*,"const FuriHalBleProfileTemplate*, FuriHalBleProfileParams, const GapRootSecurityKeys*, GapEventCallback, void*"
 Function,+,furi_hal_bt_start_packet_rx,void,"uint8_t, uint8_t"
 Function,+,furi_hal_bt_start_packet_tx,void,"uint8_t, uint8_t, uint8_t"

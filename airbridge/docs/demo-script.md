@@ -53,19 +53,19 @@ Write logs and screenshots under:
 ## Connect and unlock
 
 1. Launch Pocket AirBridge.
-2. PC-A opens `http://127.0.0.1:8081/chat-usb.html`, clicks **Connect USB**, and selects the active impersonation profile in the WebHID picker.
-3. PC-B opens `http://127.0.0.1:8081/chat-ble.html`, clicks **Connect BLE**, selects the Flipper, and confirms the BLE numeric comparison code when first pairing.
+2. PC-A opens `http://127.0.0.1:8081/chat-usb.html`, runs `:c` (Enter to execute), and selects the active impersonation profile in the WebHID picker.
+3. PC-B opens `http://127.0.0.1:8081/chat-ble.html`, runs `:c`, selects the Flipper, and confirms the BLE numeric comparison code when first pairing.
 4. Both browser pages display a six-digit SAS after the crypto handshake.
-5. Compare the SAS out loud. Click **Accept SAS** on both pages only if they match.
+5. Compare the SAS out loud. Run `:a` on both pages only if they match.
 6. Before SAS acceptance, send controls must stay locked and plaintext item frames must fail closed.
 
 ## Chat and file demo
 
-1. Send `Hello from USB` from PC-A to PC-B.
-2. Send `Hello from BLE` from PC-B to PC-A.
-3. Send a small attachment from PC-A. Confirm the receiver offers a download and reports SHA-256 success after decrypt.
+1. Press `i`, type `Hello from USB`, and press Enter on PC-A.
+2. Press `i`, type `Hello from BLE`, and press Enter on PC-B.
+3. Press Esc, run `:f` to choose a small attachment, then `:s` to send it from PC-A. Confirm the receiver offers a download and reports SHA-256 success after decrypt.
 4. Send an attachment in the other direction if time allows.
-5. Start a larger transfer, click **Cancel**, and confirm both sides return to idle.
+5. Start a larger transfer, press Esc and run `:x`, and confirm both sides return to idle.
 6. Watch the Flipper screen during healthy traffic. `U->B` and `B->U` should increment. `DROP` and `TXERR` should stay `0` for a healthy run.
 
 ## Compressed Deploy demo

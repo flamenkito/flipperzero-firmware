@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-/** App-owned serial-only BLE profile. */
+/** App-owned serial + HIDS keyboard BLE profile. */
 extern const FuriHalBleProfileTemplate* const ble_profile_airbridge;
 
 typedef struct {
@@ -20,6 +20,8 @@ typedef struct {
 
 bool airbridge_profile_send(FuriHalBleProfileBase* profile, uint8_t* data, uint16_t len);
 bool airbridge_profile_subscribed(FuriHalBleProfileBase* profile);
+bool airbridge_profile_kb_report(FuriHalBleProfileBase* profile, uint8_t* data, uint16_t len);
+bool airbridge_profile_kb_release(FuriHalBleProfileBase* profile);
 
 #ifdef __cplusplus
 }

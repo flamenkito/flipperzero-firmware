@@ -7,7 +7,7 @@
 #include <furi_hal_version.h>
 
 #define BLE_DEFAULT_NAME        "HP 725 K+M"
-#define BLE_DEFAULT_APPEARANCE  0x0000
+#define BLE_DEFAULT_APPEARANCE  0x0000 /* GAP_APPEARANCE_UNKNOWN: serial-only on air */
 #define BLE_DEFAULT_MFG_COMPANY 0x0065
 #define BLE_DEFAULT_DIS_MFR     "HP"
 #define BLE_DEFAULT_DIS_MODEL   "HP 725 K+M"

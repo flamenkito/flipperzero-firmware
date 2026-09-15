@@ -30,16 +30,34 @@ class T12StaticInvariantTest(unittest.TestCase):
 
         self.assertNotIn("#define CFG_BLE_MBLOCK_COUNT 96", source)
 
-    def test_deploy_is_usb_only(self) -> None:
+    def test_ble_deploy_restoration_is_present(self) -> None:
         sources = "\n".join(
             path.read_text(encoding="utf-8") for path in AIRBRIDGE_C_SOURCES
         )
+        types = (FAP_SOURCE_DIR / "airbridge_types.h").read_text(encoding="utf-8")
+        profile = (FAP_SOURCE_DIR / "airbridge_profile.c").read_text(encoding="utf-8")
 
-        self.assertNotIn("AirbridgeTypingTransportBle", sources)
-        self.assertNotIn("bootstrap-ble.js", sources)
-        self.assertNotIn("app-ble.html.gz", sources)
-        self.assertNotIn("bt_airbridge_kb_report", sources)
-        self.assertNotIn("airbridge_stream_step_ble", sources)
+        self.assertIn("AirbridgeTypingTransport", types)
+        self.assertIn("AirbridgeTypingTransportBle", sources)
+        self.assertIn("bootstrap-ble.js", sources)
+        self.assertIn("app-ble.html.gz", sources)
+        self.assertIn("airbridge_stream_step_ble", sources)
+        self.assertIn("ble_svc_hid_start", profile)
+        self.assertIn("airbridge_profile_kb_report", profile)
+
+    def test_dual_deploy_digest_pins_are_present(self) -> None:
+        header = (FAP_SOURCE_DIR / "airbridge_assets_digest.h").read_text(
+            encoding="utf-8"
+        )
+
+        for pin in (
+            "AIRBRIDGE_BOOTSTRAP_SHA256",
+            "AIRBRIDGE_BOOTSTRAP_BLE_SHA256",
+            "AIRBRIDGE_APP_USB_BUNDLE_SHA256",
+            "AIRBRIDGE_APP_BLE_BUNDLE_SHA256",
+        ):
+            self.assertIn(pin, header)
+        self.assertTrue((ROOT / "airbridge/web/bootstrap-ble.js").is_file())
 
     def test_ui_owns_no_domain_module_pointer(self) -> None:
         ui_state = AIRBRIDGE_UI_INTERNAL.read_text(encoding="utf-8")

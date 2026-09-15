@@ -75,5 +75,31 @@ export function outboundUiTests() {
       const delivered = [...host.querySelectorAll('#transcript .message.you')].some(row => row.textContent.includes('after failure'));
       if (!delivered) throw new Error('recovery send did not render to transcript');
     } finally { controller.cancel(); host.remove(); }
+  }], ['Outbound UI completion preserves a newer message draft, even with identical text', async () => {
+    const [session] = await pair();
+    const host = document.createElement('div');
+    for (const id of ['panelState','throughput','transcript','textInput','fileInput']) {
+      const node = document.createElement(id.endsWith('Input') ? 'input' : 'div');
+      node.id = id; host.append(node);
+    }
+    document.body.append(host);
+    let controller;
+    const input = host.querySelector('#textInput');
+    const transport = {isConnected:() => true, send:async frame => {
+      const msg = p.parseV2Frame(frame, new DataView(frame.buffer, frame.byteOffset).getUint32(5));
+      if (msg.type !== p.MSG.CANCEL) controller.receive(p.buildMessage(p.MSG.ACK,0,p.makeV2AckPayload({...msg,itemId:session.streamOutboundId})));
+    }};
+    controller = createChatOutbound({session,transport,log:()=>{},setBusy:value => {
+      if (value) {
+        input.value = 'same message';
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+      }
+    }});
+    try {
+      input.value = 'same message';
+      await controller.sendText('same message');
+      if (input.value !== 'same message') throw new Error('completion erased newer draft with identical contents');
+      if (!host.querySelector('#transcript').textContent.includes('same message')) throw new Error('sent message was not published');
+    } finally { controller.dispose(); host.remove(); }
   }]]);
 }

@@ -301,7 +301,69 @@ static void test_flag_off_cdc_paths(void) {
 }
 #endif
 
+static void test_deploy_classification_is_direction_aware(void) {
+    AirbridgeRelay relay;
+    fixture_init(&relay);
+    BridgeEvent event;
+    memset(&event, 0, sizeof(event));
+    event.len = 1;
+    event.data[0] = 0x42;
+
+    /* USB-origin 0x42 while Waiting armed USB → USB deploy. */
+    event.to_ble = true;
+    assert(
+        airbridge_relay_handle(
+            &relay, NULL, &event, AirbridgeScreenWaiting, AirbridgeTypingTransportUsb) ==
+        AirbridgeRelayDeployRequestedUsb);
+
+    /* BLE-origin 0x42 while Waiting armed BLE → BLE deploy. */
+    event.to_ble = false;
+    assert(
+        airbridge_relay_handle(
+            &relay, NULL, &event, AirbridgeScreenWaiting, AirbridgeTypingTransportBle) ==
+        AirbridgeRelayDeployRequestedBle);
+
+    /* Cross-direction 0x42 is bridge data, not a deploy: relayed normally. */
+    event.to_ble = true;
+    assert(
+        airbridge_relay_handle(
+            &relay, NULL, &event, AirbridgeScreenWaiting, AirbridgeTypingTransportBle) ==
+        AirbridgeRelayHandled);
+    event.to_ble = false;
+    assert(
+        airbridge_relay_handle(
+            &relay, NULL, &event, AirbridgeScreenWaiting, AirbridgeTypingTransportUsb) ==
+        AirbridgeRelayHandled);
+
+    /* 0x42 outside Waiting on a non-Bridge screen → not-armed path. */
+    event.to_ble = true;
+    assert(
+        airbridge_relay_handle(
+            &relay, NULL, &event, AirbridgeScreenStreaming, AirbridgeTypingTransportUsb) ==
+        AirbridgeRelayDeployNotArmed);
+    event.to_ble = false;
+    assert(
+        airbridge_relay_handle(
+            &relay, NULL, &event, AirbridgeScreenTyping, AirbridgeTypingTransportBle) ==
+        AirbridgeRelayDeployNotArmed);
+
+    /* 0x42 on the Bridge screen and non-0x42 in Waiting relay normally. */
+    event.to_ble = true;
+    assert(
+        airbridge_relay_handle(
+            &relay, NULL, &event, AirbridgeScreenBridge, AirbridgeTypingTransportUsb) ==
+        AirbridgeRelayHandled);
+    event.data[0] = 0x01;
+    assert(
+        airbridge_relay_handle(
+            &relay, NULL, &event, AirbridgeScreenWaiting, AirbridgeTypingTransportUsb) ==
+        AirbridgeRelayHandled);
+
+    airbridge_relay_deinit(&relay);
+}
+
 int main(void) {
+    test_deploy_classification_is_direction_aware();
 #if AIRBRIDGE_SAFE_TEARDOWN_ENABLED
     test_teardown_success_and_takeover_order();
     test_entry_install_failure_rolls_back();

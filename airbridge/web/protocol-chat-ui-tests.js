@@ -1,5 +1,5 @@
 import * as ui from './airbridge-ui.js';
-import { loadChatTestPage, waitChat } from './protocol-chat-pages-tests.js';
+import { chatCommand, loadChatTestPage, waitChat } from './protocol-chat-pages-tests.js';
 
 function check(value, message) { if (!value) throw new Error(message); }
 
@@ -18,10 +18,10 @@ function waitFor(predicate, message, timeout = 2000) {
 export function chatUiTests() {
   return [
     ...[
-      ['USB', 'usb', [['you', 'you@usb>'], ['peer', 'peer@ble>']]],
-      ['BLE', 'ble', [['you', 'you@ble>'], ['peer', 'peer@usb>']]],
-      ['system on USB', 'usb', [['system', 'system>']]],
-      ['system on BLE', 'ble', [['system', 'system>']]],
+      ['USB', 'usb', [['you', 'you/usb'], ['peer', 'peer/ble']]],
+      ['BLE', 'ble', [['you', 'you/ble'], ['peer', 'peer/usb']]],
+      ['system on USB', 'usb', [['system', 'system']]],
+      ['system on BLE', 'ble', [['system', 'system']]],
       ['endpoint absent', undefined, [['you', 'You'], ['peer', 'Peer'], ['system', 'System']]],
     ].map(([name, endpoint, labels]) => [`Chat prompt labels: ${name}`, () => {
       const originalEndpoint = document.body.dataset.endpoint;
@@ -38,7 +38,7 @@ export function chatUiTests() {
           check(sender?.textContent === expected, `${side}: expected ${expected}, got ${sender?.textContent}`);
           check(sender.childNodes.length === 1 && sender.firstChild.nodeType === Node.TEXT_NODE, 'prompt is not real text');
           check(row.className === `message ${side}`, 'row class hooks changed');
-          check(sender.nextElementSibling?.textContent, 'timestamp missing');
+          check(sender.previousElementSibling?.textContent, 'timestamp missing');
           check(row.querySelector('.bubble').lastElementChild.textContent === text && !row.querySelector('img'), 'message became markup');
         }
         check(transcript.getAttribute('aria-live') === 'polite', 'transcript live semantics changed');
@@ -72,8 +72,8 @@ export function chatUiTests() {
         const full = card.querySelector('.attachment-hash-full');
         check(card.querySelector('.attachment-name')?.textContent === name, 'attachment name is not verbatim text');
         check(card.querySelector('.attachment-meta')?.textContent === '1.2 KB · text/plain', 'compact size/MIME summary changed');
-        check(card.querySelector('[data-attachment-hash]')?.textContent === `sha256:${ui.shortHash(hash)} ✓ verified`, 'compact hash summary changed');
-        check(details && !details.open && details.querySelector('summary')?.textContent === 'full hash', 'full hash disclosure is not closed by default');
+        check(card.querySelector('[data-attachment-hash]')?.textContent === `sha256:${ui.shortHash(hash)} verified`, 'compact hash summary changed');
+        check(details && !details.open && details.querySelector('summary')?.textContent === '[sha256]', 'full hash disclosure is not closed by default');
         check(full?.textContent === `sha256:${hash}` && card.textContent.includes(hash), 'full hash is absent from card text');
         check(card.dataset.verification === 'verified' && card.dataset.phase === 'Ready', 'attachment verification datasets changed');
         check(card.dataset.size === '1234' && card.dataset.sha256 === hash, 'attachment receipt datasets changed');
@@ -99,13 +99,13 @@ export function chatUiTests() {
         transcript.scrollTop = 0; transcript.dispatchEvent(new Event('scroll'));
         ui.addMessage(transcript, {side:'peer',kind:'text',text:'unread one'});
         ui.addMessage(transcript, {side:'peer',kind:'text',text:'unread two'});
-        check(scrollTop === 0 && !jump.hidden && jump.textContent === '↓ 2 new', 'unpinned append moved or unread count differs');
+        check(scrollTop === 0 && !jump.hidden && jump.textContent === '[2 new] G', 'unpinned append moved or unread count differs');
         jump.click();
         check(transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop === 0 && jump.hidden, 'jump did not pin and reset unread count');
         transcript.scrollTop = 0; transcript.dispatchEvent(new Event('scroll'));
         ui.addMessage(transcript, {side:'system',kind:'text',text:'before clear'});
         ui.clearTranscript(transcript, 'Reset row');
-        check(jump.hidden && jump.textContent === '↓ 0 new', 'clear did not reset unread count');
+        check(jump.hidden && jump.textContent === '[0 new] G', 'clear did not reset unread count');
         check(transcript.querySelector(':scope > .message.system.empty'), 'clear did not restore structured empty row');
         controller.dispose(); controller.dispose();
         transcript.append(document.createElement('div')); transcript.scrollTop = 0; jump.click();
@@ -170,7 +170,7 @@ export function chatUiTests() {
         [...log.children].forEach((row, index) => { row.getBoundingClientRect = () => ({top:100 + index * 20 - scrollTop}); });
         check([...log.children].every(row => row.title === row.textContent && /^\[\d{2}:\d{2}:\d{2}\]/.test(row.textContent)), 'log title or timestamp contract changed');
         scrollTop = 40; log.dispatchEvent(new Event('scroll'));
-        check(!earlier.hidden && earlier.textContent === '↑ 2 earlier', 'hidden-row count is not exact');
+        check(!earlier.hidden && earlier.textContent === '[2 earlier] gg', 'hidden-row count is not exact');
         check(earlier instanceof HTMLButtonElement && earlier.tabIndex === 0, 'earlier control lost keyboard semantics');
         earlier.focus(); earlier.click();
         check(scrollTop === 0 && earlier.hidden && document.activeElement === log.firstElementChild, 'activation did not reveal and focus oldest hidden row');
@@ -185,6 +185,7 @@ export function chatUiTests() {
         for (const {iframe,win} of pages) {
           iframe.hidden = false; iframe.style.cssText = 'width:375px;height:900px;border:0';
           const doc = win.document, log = doc.getElementById('log'), earlier = doc.querySelector('.log-earlier');
+          chatCommand(win, 'l');
           log.textContent = '';
           for (let index = 0; index < 30; index++) { const row=doc.createElement('div'); row.textContent=`record ${index}`; log.append(row); }
           log.scrollTop = 80; log.dispatchEvent(new win.Event('scroll')); win.scrollTo(0, 0);
@@ -211,15 +212,16 @@ export function chatUiTests() {
           check(display.textContent === 'state=idle' && display.dataset.state === 'idle', 'disconnected display is not exactly idle');
           const phaseLabel = win.getComputedStyle(panel, '::before').content.replace(/^(["'])(.*)\1$/, '$2');
           check(phaseLabel !== 'state=', 'transfer pane renders a second display-state label');
-          check(phaseLabel === 'phase=', `transfer pane label is not phase= (got ${phaseLabel})`);
+          check(doc.querySelector('.prompt-context').textContent.includes('disconnected locked'), 'visible connection and encryption status missing');
           check(panel.textContent === 'Ready' && panel.dataset.phase === 'Ready', 'authoritative Ready transfer phase changed');
           display.textContent = 'sentinel'; panel.dataset.phase = 'Sending';
           await waitChat(win, () => display.textContent === 'state=idle' && display.dataset.state === 'idle');
           panel.dataset.phase = 'Ready';
-          const details = doc.querySelector('details.mock-banner'), summary = details?.querySelector('summary'), help = details?.querySelector('.mock-help');
-          check(details && summary?.textContent === 'MODE=mock' && summary.tabIndex === 0, 'mock disclosure lost native keyboard/touch semantics');
-          check(help?.textContent.includes('?mock=1&mockPeer=demo'), 'mock disclosure lost paired usage help');
-          check(!details.open, 'mock disclosure is open by default'); summary.click(); check(details.open, 'mock disclosure click did not open'); summary.click();
+          const summary = doc.querySelector('.prompt-context');
+          check(summary.textContent.includes('[mock]') && summary.getAttribute('role') === 'status', 'mock transport is not identified in the statusline');
+          chatCommand(win, 'h');
+          check(doc.getElementById('terminalOutput').textContent.includes('?mock=1&mockPeer=demo'), 'help buffer lost paired mock usage help');
+          chatCommand(win, 'q');
         }
         for (const {win} of pages) win.document.getElementById('connectBtn').click();
         await Promise.all(pages.map(({win}) => waitChat(win, () => !win.document.getElementById('acceptSasBtn').disabled)));
@@ -315,6 +317,11 @@ export function chatUiTests() {
         // Then selectors expose the deterministic terminal and plaintext-byte receipt.
         check(host.querySelector('#panelState').dataset.phase === 'Cancelled', 'missing terminal phase');
         check(host.querySelector('#throughput').dataset.bytes === '5', 'payload progress regressed');
+        ui.setTransferPhase('Receiving', {bytes:0n,total:10n,reset:true});
+        ui.setTransferPhase('Receiving', {bytes:5n});
+        ui.setTransferPhase('Receiving', {bytes:3n});
+        check(host.querySelector('#throughput').dataset.progress === '50', 'receive progress is not cumulative');
+        check(host.querySelector('.ab-progress-value').textContent === '50%', 'receive ASCII progress disagrees with received bytes');
       } finally { host.remove(); }
     }],
     ['Chat verified download removal revokes once and removes its owner', () => {

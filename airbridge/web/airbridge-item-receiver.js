@@ -29,6 +29,7 @@ export class ItemReceiver {
     const segment = this.#active?.segment?.snapshot();
     return Object.freeze({state:this.state, itemId:this.#active?.id ?? null, generation:this.#generation,
       ciphertextBytes:segment?.ciphertextBytes ?? 0, retrySliceBytes:segment?.retrySliceBytes ?? 0,
+      receivedCiphertextBytes:this.#active?.receivedCiphertextBytes ?? 0n,
       plaintextBytes:this.#active?.accumulator?.snapshot().retainedBytes ?? 0n,
       authenticatedSegments:segment?.authenticatedSegments ?? 0});
   }
@@ -137,7 +138,7 @@ export class ItemReceiver {
     }
     owner.generation = ++this.#generation; owner.itemId = msg.itemId;
     this.#receipt = null; this.#highWater = msg.itemId;
-    this.#active = {id:msg.itemId, fragments:[], meta:null, segment:null, accumulator:null, pendingDone:null};
+    this.#active = {id:msg.itemId, fragments:[], meta:null, segment:null, accumulator:null, pendingDone:null, receivedCiphertextBytes:0n};
     this.state = 'hello'; this.#arm();
     const generation = this.#generation;
     await this.#emit('hello', {itemId:msg.itemId});
@@ -171,10 +172,14 @@ export class ItemReceiver {
     if (!active?.segment || this.state !== 'data') throw new Error('DATA before META or after DONE');
     active.fragments = [];
     const context = {type:msg.type, seq:msg.seq, itemId:msg.itemId, segment:msg.segment};
+    const sliceBytes = msg.body.length;
     const pending = active.segment.push({itemId:msg.itemId, segmentIndex:msg.segment, chunkInSegment:msg.seq}, msg.body);
     msg = null;
     const result = await pending;
     if (generation !== this.#generation) return;
+    // Count accepted stream bytes, independently of the bounded working buffer.
+    // Retransmitted DATA is acknowledged again but must not advance progress.
+    if (result.action !== 'duplicate') active.receivedCiphertextBytes += BigInt(sliceBytes);
     if (result.action === 'authenticated') active.accumulator.appendAuthenticated(result.payload);
     this.#arm();
     await this.#ack(context);

@@ -106,6 +106,87 @@ function installDomGlobals() {
   return listeners;
 }
 
+for (const stage of ['services', 'serial-service', 'notifications']) {
+  test(`initial GATT drop during ${stage} retries the selected device without a competing reconnect`, async () => {
+    const { device, gatt, server, txChar, listeners } = makeMockDevice();
+    installNavigatorBluetooth(device);
+    installDomGlobals();
+    let picks = 0, connects = 0, failures = 0, schedules = 0;
+    const statuses = [];
+    navigator.bluetooth.requestDevice = async () => { picks++; return device; };
+    const connect = gatt.connect;
+    gatt.connect = async () => { connects++; return connect(); };
+    const target = stage === 'notifications' ? txChar : server;
+    const method = stage === 'services' ? 'getPrimaryServices' : stage === 'serial-service' ? 'getPrimaryService' : 'startNotifications';
+    const original = target[method];
+    target[method] = async (...args) => {
+      if (failures++ === 0) {
+        gatt.connected = false;
+        listeners.gattserverdisconnected?.({target:device});
+        throw new DOMException('GATT Server is disconnected. Cannot retrieve services.', 'NetworkError');
+      }
+      return original(...args);
+    };
+    const adapter = new WebBluetoothAdapter({setupRetryDelaysMs:[0, 0], onStatus: message => statuses.push(message)});
+    adapter.scheduleReconnect = () => { schedules++; };
+    try {
+      await adapter.connect();
+      assert.equal(adapter.isConnected(), true);
+      assert.equal(connects, 2, 'setup did not reconnect GATT');
+      assert.equal(picks, 1, 'retry reopened the picker');
+      assert.equal(schedules, 0, 'drop spawned a competing background reconnect');
+      assert.deepEqual(statuses, ['BLE reconnecting (2/3)']);
+    } finally { adapter.dispose(); }
+  });
+}
+
+for (const name of ['NetworkError', 'SecurityError']) {
+  test(`initial ${name} has bounded retries and leaves no live connection`, async () => {
+    const { device, gatt, server, listeners } = makeMockDevice();
+    installNavigatorBluetooth(device);
+    installDomGlobals();
+    let connects = 0, schedules = 0;
+    const connect = gatt.connect;
+    gatt.connect = async () => { connects++; return connect(); };
+    const failure = new DOMException('discovery failed', name);
+    server.getPrimaryServices = async () => {
+      gatt.connected = false;
+      listeners.gattserverdisconnected?.({target:device});
+      throw failure;
+    };
+    const adapter = new WebBluetoothAdapter({setupRetryDelaysMs:[0, 0]});
+    adapter.scheduleReconnect = () => { schedules++; };
+    try {
+      await assert.rejects(adapter.connect(), error => error === failure);
+      assert.equal(connects, name === 'NetworkError' ? 3 : 1);
+      assert.equal(adapter.autoReconnect, false);
+      assert.equal(schedules, 0);
+      assert.equal(adapter.reconnectTimer, null);
+      assert.equal(gatt.connected, false);
+      assert.equal(adapter.server, null);
+      assert.equal(listeners.gattserverdisconnected, undefined);
+    } finally { adapter.dispose(); }
+  });
+}
+
+test('disconnect during setup retry delay cannot resurrect the connection', async () => {
+  const { device, gatt, server } = makeMockDevice();
+  installNavigatorBluetooth(device);
+  installDomGlobals();
+  let connects = 0;
+  const connect = gatt.connect;
+  gatt.connect = async () => { connects++; return connect(); };
+  server.getPrimaryServices = async () => { throw new DOMException('link dropped', 'NetworkError'); };
+  const adapter = new WebBluetoothAdapter({setupRetryDelaysMs:[0, 0], onStatus: () => adapter.disconnect()});
+  try {
+    await assert.rejects(adapter.connect(), /GATT session cancelled/);
+    assert.equal(connects, 1);
+    assert.equal(gatt.connected, false);
+    assert.equal(adapter.isConnected(), false);
+    assert.equal(adapter.reconnectTimer, null);
+  } finally { adapter.dispose(); }
+});
+
 test('real timeout wins, late settlement disconnects and clears state', async () => {
   let releaseConnect;
   const connectGate = new Promise(resolve => {
@@ -164,6 +245,8 @@ test('replacement with different device: stale cleanup disconnects old only', as
 
   assert.equal(deviceA.gatt.connected, false, 'old device A must be disconnected');
   assert.equal(deviceB.gatt.connected, true, 'replacement device B must stay connected');
+  adapter.handleDisconnected({target:deviceA});
+  assert.equal(adapter.isConnected(), true, 'stale device event cleared the replacement session');
   adapter.dispose();
 });
 

@@ -9,6 +9,7 @@
 // Only isConnecting/isCancelling (page-lifecycle flags no hook touches) and
 // DOM/evidence handles live in this module's closure.
 import { createChatOutbound } from './airbridge-chat-outbound.js';
+import { createTerminalConsole, TERMINAL_COMMANDS } from './airbridge-terminal.js';
 import { renderReceivedItem, routeReceiveControl } from './airbridge-chat-receive.js';
 import { installMockStreamPeer } from './airbridge-mock-stream-peer.js';
 import { createPairedChatMock } from './airbridge-chat-mock.js';
@@ -18,14 +19,12 @@ import {
   buildMessage,
   CRYPTO_STATE,
   ItemReceiver,
-  MAX_PAYLOAD,
   MSG,
   parseMessage,
 } from './airbridge-protocol.js';
 import {
   addMessage,
   clearTranscript,
-  createThroughputMeter,
   discardTranscriptDownloads,
   formatBytes,
   setTransferPhase,
@@ -34,19 +33,6 @@ import {
 } from './airbridge-ui.js';
 
 const textEncoder = new TextEncoder();
-const COMMANDS = Object.freeze([
-  Object.freeze({ name: 'connect', description: 'connect transport', aliases: [] }),
-  Object.freeze({ name: 'disconnect', description: 'disconnect transport', aliases: [] }),
-  Object.freeze({ name: 'clear', description: 'clear transcript', aliases: [] }),
-  Object.freeze({ name: 'clearlog', description: 'clear diagnostics', aliases: [] }),
-  Object.freeze({ name: 'cancel', description: 'cancel active transfer', aliases: [] }),
-  Object.freeze({ name: 'accept', description: 'accept matching SAS', aliases: [] }),
-  Object.freeze({ name: 'abort', description: 'abort SAS session', aliases: [] }),
-  Object.freeze({ name: 'file', description: 'pick now; send immediately when verified', aliases: ['attach'] }),
-  Object.freeze({ name: 'logs', description: 'toggle diagnostics', aliases: [] }),
-  Object.freeze({ name: 'help', description: 'list commands', aliases: [] }),
-]);
-const COMMAND_BY_TOKEN = new Map(COMMANDS.flatMap(command => [command.name, ...command.aliases].map(token => [token, command])));
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -87,26 +73,19 @@ export function createChatPage(ctx, config) {
   let unsubscribeReceive = null;
   let unsubscribeDisconnect = null;
   let pendingReceiveRow = null;
-  let inboundMeter = null;
   let inboundTiming = null;
   let displayStateObserver = null;
   let promptContext = null;
-  let termPrompt = null;
-  let termMirror = null;
-  let termMirrorTrack = null;
-  let termMirrorValue = null;
-  let termGhost = null;
-  let termCursor = null;
-  let termSuggestions = null;
-  let termCursorFrame = 0;
-  let termCursorResizeObserver = null;
-  let completionMatches = [];
-  let completionIndex = 0;
-  let completionDismissedValue = null;
+  let receiveProgress = null;
+  let terminal = null;
   let pendingFileSend = null;
   const evidenceRecords = [];
 
-  const log = (message, level) => ctx.log(message, level);
+  const log = (message, level) => {
+    ctx.log(message, level);
+    if (level === 'error' || level === 'warn') terminal?.writeOutput(message, level);
+  };
+  const feedback = (message, level = '') => terminal?.writeOutput(message, level);
 
   function publishEvidence(record) {
     if (!ctx.evidenceMode) return record;
@@ -129,7 +108,7 @@ export function createChatPage(ctx, config) {
     if (!detail) return;
     const phase = ctx.$('panelState').dataset.phase || 'Ready';
     const active = phase === 'Hashing' || phase === 'Sending' || phase === 'Receiving' || phase === 'Verifying';
-    document.querySelector('.diagnostic-rail')?.classList.toggle('transfer-active', active);
+    document.querySelector('.diagnostic-rail')?.classList.toggle('transfer-active', active || phase === 'Failed' || phase === 'Cancelled');
     if (!active) {
       detail.hidden = true;
       detail.textContent = '';
@@ -203,7 +182,6 @@ export function createChatPage(ctx, config) {
     }
     value.textContent = state;
     updateHeaderStatus(state);
-    updateStateSurfaces(connected, unlocked);
     renderPromptContext();
   }
 
@@ -216,190 +194,28 @@ export function createChatPage(ctx, config) {
 
   function renderPromptContext() {
     if (!promptContext) return;
-    const endpoint = document.querySelector('.tabline-endpoint')?.textContent.trim() || config.endpoint;
     const connection = ctx.$('connectionStatus').textContent;
     const crypto = ctx.$('cryptoState').textContent;
     const sas = ctx.$('sasCode').textContent;
-    const mode = ctx.isMockMode ? ' (mock)' : '';
-    let tone = 'idle';
-    let parts;
-
-    if (ctx.$('statusPill').classList.contains('status-error')) {
-      tone = 'failure';
-      parts = [[endpoint, 'endpoint'], [' ● failure', 'failure'], [' — /connect to retry', 'hint']];
-    } else if (connection === 'disconnected') {
-      parts = [[endpoint, 'endpoint'], [' ○ disconnected', 'idle'], [' — /connect to begin', 'hint']];
-    } else if (connection === 'connecting') {
-      tone = 'pending';
-      parts = [[endpoint, 'endpoint'], [' ● connecting', 'pending'], mode && [mode, 'mode']];
-    } else if (crypto === 'verified') {
-      tone = 'live';
-      parts = [[endpoint, 'endpoint'], [' ● connected', 'live'], [' ✔ verified', 'live'], [` sas ${sas}`, 'sas'], mode && [mode, 'mode']];
-    } else if (crypto === 'aborted') {
-      tone = 'failure';
-      parts = [[endpoint, 'endpoint'], [' ● connected', 'live'], [' ✖ aborted', 'failure'], [` sas ${sas}`, 'sas'], mode && [mode, 'mode']];
-    } else {
-      tone = 'pending';
-      parts = [[endpoint, 'endpoint'], [' ● connected', 'live'], [` • ${crypto}`, 'pending'], [` sas ${sas}`, 'sas'], mode && [mode, 'mode']];
-    }
-
-    promptContext.replaceChildren(...parts.filter(Boolean).map(([text, role]) => {
-      const span = document.createElement('span');
-      span.className = `prompt-context-${role}`;
-      span.textContent = text;
-      return span;
-    }));
-    promptContext.dataset.tone = tone;
-    promptContext.title = promptContext.textContent;
-  }
-
-  function renderInputMirror() {
-    if (!termMirrorValue) return;
-    const value = ctx.$('textInput').value;
-    const plain = document.createElement('span');
-    plain.className = 'term-token term-token-plain';
-    if (!value.startsWith('/') || value.startsWith('//')) {
-      plain.textContent = value;
-      termMirrorValue.replaceChildren(plain);
-      return;
-    }
-
-    const commandToken = value.match(/^\/\S*/)?.[0] ?? value;
-    const commandName = commandToken.slice(1).toLowerCase();
-    const exact = COMMAND_BY_TOKEN.has(commandName);
-    const prefix = !exact && COMMANDS.some(command => command.name.startsWith(commandName));
-    const command = document.createElement('span');
-    command.className = `term-token term-token-${exact ? 'valid' : prefix ? 'prefix' : 'invalid'}`;
-    command.textContent = commandToken;
-    plain.textContent = value.slice(commandToken.length);
-    termMirrorValue.replaceChildren(command, plain);
-  }
-
-  function dismissAutocomplete(remember = false) {
-    completionMatches = [];
-    completionIndex = 0;
-    completionDismissedValue = remember ? ctx.$('textInput').value : null;
-    if (termSuggestions) {
-      termSuggestions.hidden = true;
-      termSuggestions.replaceChildren();
-    }
-    if (termGhost) termGhost.textContent = '';
-    ctx.$('textInput').setAttribute('aria-expanded', 'false');
-    ctx.$('textInput').removeAttribute('aria-activedescendant');
-  }
-
-  function renderAutocomplete() {
-    if (!termSuggestions || completionMatches.length === 0) return;
-    const prefix = ctx.$('textInput').value.slice(1);
-    completionIndex = Math.min(completionIndex, completionMatches.length - 1);
-    const rows = completionMatches.map((command, index) => {
-      const row = document.createElement('div');
-      row.className = 'term-suggestion';
-      row.id = `term-suggestion-${index}`;
-      row.setAttribute('role', 'option');
-      row.setAttribute('aria-selected', String(index === completionIndex));
-      const name = document.createElement('span');
-      name.className = 'term-suggestion-name';
-      name.textContent = `/${command.name}`;
-      const description = document.createElement('span');
-      description.className = 'term-suggestion-description';
-      description.textContent = ` — ${command.description}`;
-      const marker = document.createElement('span');
-      marker.className = 'term-suggestion-marker';
-      marker.textContent = index === completionIndex ? '◄' : '';
-      row.append(name, description, marker);
-      return row;
-    });
-    termSuggestions.replaceChildren(...rows);
-    termSuggestions.hidden = false;
-    const selected = completionMatches[completionIndex];
-    termGhost.textContent = selected.name.slice(prefix.length);
-    const input = ctx.$('textInput');
-    input.setAttribute('aria-expanded', 'true');
-    input.setAttribute('aria-activedescendant', `term-suggestion-${completionIndex}`);
-  }
-
-  function refreshAutocomplete() {
-    const value = ctx.$('textInput').value;
-    if (completionDismissedValue !== null && completionDismissedValue !== value) completionDismissedValue = null;
-    if (!/^\/[a-z]*$/i.test(value) || value.startsWith('//') || completionDismissedValue === value) {
-      dismissAutocomplete(completionDismissedValue === value);
-      return;
-    }
-    const prefix = value.slice(1).toLowerCase();
-    completionMatches = COMMANDS.filter(command => command.name.startsWith(prefix));
-    if (completionMatches.length === 0) {
-      dismissAutocomplete();
-      return;
-    }
-    completionIndex = 0;
-    renderAutocomplete();
-  }
-
-  function acceptAutocomplete() {
-    if (completionMatches.length === 0) return;
-    const names = completionMatches.map(command => command.name);
-    let completion = names[0];
-    for (let index = 1; index < names.length; index++) {
-      let length = 0;
-      while (length < completion.length && length < names[index].length && completion[length] === names[index][length]) length++;
-      completion = completion.slice(0, length);
-    }
-    const input = ctx.$('textInput');
-    input.value = `/${completion}`;
-    input.setSelectionRange(input.value.length, input.value.length);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-
-  function updateTerminalCursor() {
-    cancelAnimationFrame(termCursorFrame);
-    termCursorFrame = requestAnimationFrame(() => {
-      if (!termPrompt || !termMirror || !termMirrorValue || !termCursor) return;
-      const form = ctx.$('textForm');
-      const input = ctx.$('textInput');
-      renderInputMirror();
-      const inputStyle = getComputedStyle(input);
-      const font = inputStyle.font;
-      const letterSpacing = inputStyle.letterSpacing;
-      termPrompt.style.font = font;
-      termPrompt.style.letterSpacing = letterSpacing;
-      termMirror.style.font = font;
-      termMirror.style.letterSpacing = letterSpacing;
-      termMirror.style.paddingInline = inputStyle.paddingInline;
-      termMirror.style.lineHeight = inputStyle.height;
-      termMirror.style.blockSize = inputStyle.height;
-      termCursor.style.font = font;
-      termCursor.style.letterSpacing = letterSpacing;
-      termCursor.style.lineHeight = inputStyle.height;
-
-      const formRect = form.getBoundingClientRect();
-      const inputRect = input.getBoundingClientRect();
-      const paddingStart = Number.parseFloat(inputStyle.paddingInlineStart) || 0;
-      const paddingEnd = Number.parseFloat(inputStyle.paddingInlineEnd) || 0;
-      const textStart = inputRect.left - formRect.left + paddingStart;
-      const textWidth = termMirrorValue.getBoundingClientRect().width;
-      const cursorWidth = termCursor.getBoundingClientRect().width;
-      const textEnd = inputRect.right - formRect.left - paddingEnd - cursorWidth;
-      const cursorX = Math.max(textStart, Math.min(textStart + textWidth - input.scrollLeft, textEnd));
-      form.style.setProperty('--term-input-x', `${inputRect.left - formRect.left}px`);
-      form.style.setProperty('--term-input-width', `${inputRect.width}px`);
-      form.style.setProperty('--term-input-scroll', `${-input.scrollLeft}px`);
-      form.style.setProperty('--term-cursor-x', `${cursorX}px`);
-      form.style.setProperty('--term-cursor-y', `${inputRect.top - formRect.top}px`);
-    });
-  }
-
-  function currentEmptyPlaceholder(connected = Boolean(ctx.transport?.isConnected()), unlocked = isCryptoUnlocked()) {
-    if (!connected) return 'Type /connect to open a secure channel.';
-    if (!unlocked) return 'Compare the SAS code, then type /accept or /abort.';
-    return 'Secure channel ready — type a message or /file.';
-  }
-
-  function updateStateSurfaces(connected, unlocked) {
-    const emptyBubble = ctx.$('transcript').querySelector('.message.system.empty .bubble');
-    if (emptyBubble) {
-      const body = emptyBubble.lastElementChild;
-      if (body?.previousElementSibling?.classList?.contains('meta-line')) body.textContent = currentEmptyPlaceholder(connected, unlocked);
+    const failed = ctx.$('statusPill').classList.contains('status-error');
+    const security = crypto === 'pending'
+      ? `SAS ${sas} ${ctx.$('acceptSasBtn').disabled ? 'waiting-peer' : 'pending'}`
+      : crypto === 'verified' ? `verified SAS ${sas}` : crypto;
+    const summary = `${failed ? 'error' : connection} ${security}${ctx.isMockMode ? ' [mock]' : ''}`;
+    if (promptContext.textContent !== summary) promptContext.textContent = summary;
+    promptContext.title = `${ctx.$('deviceName').textContent}: ${promptContext.textContent}`;
+    if (receiveProgress) {
+      const phase = ctx.$('panelState').dataset.phase;
+      const active = ctx.inboundHelloItemId != null && (phase === 'Receiving' || phase === 'Verifying');
+      receiveProgress.hidden = !active;
+      const total = BigInt(ctx.$('throughput').dataset.total || '0');
+      const bytes = BigInt(ctx.$('throughput').dataset.bytes || '0');
+      const percent = total > 0n ? Math.min(100, Number(bytes * 100n / total)) : null;
+      const label = phase === 'Verifying' ? 'RX verify' : percent == null ? 'RX ...' : `RX ${percent}%`;
+      if (receiveProgress.textContent !== label) receiveProgress.textContent = label;
+      receiveProgress.setAttribute('aria-valuetext', phase === 'Verifying' ? 'Verifying received item' : percent == null ? 'Waiting for metadata' : `${percent}% received`);
+      if (percent != null) receiveProgress.setAttribute('aria-valuenow', String(percent));
+      else receiveProgress.removeAttribute('aria-valuenow');
     }
   }
 
@@ -411,19 +227,21 @@ export function createChatPage(ctx, config) {
     if (!unlocked) ctx.outbound?.cancel();
     const pending = state === CRYPTO_STATE.SAS_PENDING;
     const aborted = state === CRYPTO_STATE.ABORTED;
-    ctx.$('cryptoState').textContent = unlocked ? 'verified' : pending ? 'pending' : aborted ? 'aborted' : 'locked';
+    const exchanging = state === CRYPTO_STATE.HANDSHAKING;
+    ctx.$('cryptoState').textContent = unlocked ? 'verified' : pending ? 'pending' : aborted ? 'aborted' : exchanging ? 'key-exchange' : 'locked';
     ctx.$('cryptoPill').className = `status-pill crypto-pill ${unlocked ? 'crypto-unlocked' : pending ? 'crypto-pending' : aborted ? 'crypto-aborted' : 'crypto-locked'}`;
     ctx.$('cryptoLock').textContent = 'SEC';
     ctx.$('sasCode').textContent = status?.sas ?? '------';
-    const bannerCode = ctx.$('sasBannerCode');
-    if (bannerCode) bannerCode.textContent = status?.sas ?? '------';
     document.querySelector('.sas-verified').hidden = !unlocked;
     ctx.$('acceptSasBtn').disabled = !pending || status.localAccepted;
     ctx.$('abortCryptoBtn').disabled = !ctx.cryptoSession || state === CRYPTO_STATE.REQUIRED;
-    const sasBanner = ctx.$('sasBanner');
-    if (sasBanner) sasBanner.hidden = !pending;
+    if (state !== prevCryptoState) {
+      if (exchanging) feedback(`Waiting for ${config.endpoint === 'usb' ? 'BLE' : 'USB'} peer key exchange.`);
+      else if (pending) feedback(`verify peer: ${status.sas}`, 'warn');
+    }
     if (unlocked && prevCryptoState != null && prevCryptoState !== CRYPTO_STATE.UNLOCKED) {
-    log('Secure channel established.', 'ok');
+      log('Secure channel established.', 'ok');
+      feedback('Secure channel established.', 'ok');
     }
     prevCryptoState = state;
     renderDisplayState();
@@ -463,14 +281,11 @@ export function createChatPage(ctx, config) {
     if (attachBtn) attachBtn.disabled = ctx.$('fileInput').disabled;
     ctx.$('cancelBtn').hidden = !canCancel;
     ctx.$('cancelBtn').disabled = !canCancel;
+    terminal?.refreshDraft();
   }
 
   function metaTransferSize(meta) {
-    return Number(meta?.totalCiphertextBytes ?? 0);
-  }
-
-  function metaChunkCount(meta) {
-    return meta?.chunks ?? Math.max(1, Math.ceil(metaTransferSize(meta) / MAX_PAYLOAD));
+    return BigInt(meta?.totalCiphertextBytes ?? 0);
   }
 
   function wireReceiverEvents() {
@@ -510,7 +325,7 @@ export function createChatPage(ctx, config) {
         return;
       }
       ctx.inboundMeta = meta;
-      transferLabel = meta.kind === 'text' ? 'text message' : String(meta.name || 'attachment');
+      transferLabel = meta.kind === 'text' ? 'text message' : meta.kind === 'encrypted-stream' ? 'incoming item' : String(meta.name || 'attachment');
       if (inboundTiming) {
         inboundTiming.record.operation = meta.kind === 'text' ? 'chat-text' : 'attachment';
         inboundTiming.record.itemId = meta.itemId ?? null;
@@ -518,25 +333,22 @@ export function createChatPage(ctx, config) {
         inboundTiming.record.metadata = inboundTiming.record.details;
       }
       updateControls();
-      setPageTransferPhase('Receiving', { bytes: 0n, total: BigInt(metaTransferSize(meta)) });
-      const totalChunks = metaChunkCount(meta);
-      inboundTiming?.setBytes(metaTransferSize(meta));
-      inboundMeter = createThroughputMeter();
-      inboundMeter.tick(0, totalChunks, 0);
+      setPageTransferPhase('Receiving', { bytes: 0n, total: metaTransferSize(meta) });
+      inboundTiming?.setBytes(Number(metaTransferSize(meta)));
       log(`Receiving ${meta.kind || 'item'} ${meta.name || ''} (${formatBytes(metaTransferSize(meta))}).`);
       if (meta.kind !== 'text' && meta.kind !== 'encrypted-stream') {
         pendingReceiveRow = addMessage(ctx.$('transcript'), { side: 'peer', kind: 'attachment', meta, data: null, hash: null, pending: true, progress: { percent: 0, label: 'Receiving…' } });
       }
     });
-    ctx.receiver.on('data', ({ ciphertextBytes, plaintextBytes }) => {
-      setPageTransferPhase('Receiving', { bytes: BigInt(ciphertextBytes) });
+    ctx.receiver.on('data', ({ receivedCiphertextBytes, plaintextBytes }) => {
+      setPageTransferPhase('Receiving', { bytes: receivedCiphertextBytes });
       inboundTiming?.tickTransferBytes(Number(plaintextBytes));
     });
     ctx.receiver.on('item', handleReceivedItem);
     ctx.receiver.on('cancel', () => cancelActiveTransfer('peer'));
     ctx.receiver.on('rejected', () => log('Rejected peer HELLO while this side is busy.', 'warn'));
     ctx.receiver.on('error', error => {
-      setPageTransferPhase('Failed');
+      setPageTransferPhase('Failed', { error: error.message || String(error) });
       inboundTiming?.fail(error.message || error);
       inboundTiming = null;
       ctx.inboundMeta = null;
@@ -618,20 +430,32 @@ export function createChatPage(ctx, config) {
     isConnecting = true;
     setConnectionStatus('connecting');
     updateControls();
+    let attemptedTransport = null;
     try {
       ctx.transport = ctx.isMockMode
         ? (ctx.mockPeerName ? createPairedChatMock(config.endpoint, ctx.mockPeerName) : createInPageMock())
-        : new config.TransportAdapter({ onDisconnect: handleDisconnected });
+        : new config.TransportAdapter({ onDisconnect: handleDisconnected, onStatus: message => feedback(message) });
+      attemptedTransport = ctx.transport;
       await ctx.transport.connect();
       unsubscribeReceive = ctx.transport.onReceive(handleInboundFrame);
       if (typeof ctx.transport.onDisconnect === 'function') unsubscribeDisconnect = ctx.transport.onDisconnect(handleDisconnected);
-      ctx.cryptoSession = new AirBridgeCryptoSession({ role: config.cryptoRole, sendFn: frame => ctx.transport.send(frame), onStateChange: updateCryptoPanel });
+      const session = new AirBridgeCryptoSession({ role: config.cryptoRole, sendFn: frame => attemptedTransport.send(frame), onStateChange: updateCryptoPanel });
+      ctx.cryptoSession = session;
       wireReceiverEvents();
       ctx.outbound = createChatOutbound({ session: ctx.cryptoSession, transport: ctx.transport, setBusy: setSending, log });
       setConnectionStatus('connected', ctx.transport.getName());
       log(`Connected to ${ctx.transport.getName()}.`, 'ok');
-      ctx.cryptoSession.start().catch(error => log(`Crypto handshake failed: ${error.message}`, 'error'));
+      session.start().catch(error => {
+        if (ctx.cryptoSession !== session) return;
+        log(`Key exchange failed: ${error.message}. Use :d then :c to reconnect.`, 'error');
+      });
     } catch (error) {
+      if (attemptedTransport) {
+        try {
+          if (typeof attemptedTransport.dispose === 'function') await attemptedTransport.dispose();
+          else await attemptedTransport.disconnect?.();
+        } catch (cleanupError) { log(`Connection cleanup failed: ${cleanupError.message}`, 'warn'); }
+      }
       setConnectionStatus('error');
       log(`Connection failed: ${error.message}`, 'error');
       ctx.transport = null;
@@ -663,7 +487,9 @@ export function createChatPage(ctx, config) {
 
   function handleDisconnected() {
     const wasActive = ctx.isSending || ctx.inboundHelloItemId != null;
+    const expired = ctx.$('transcript').querySelectorAll('.attachment-card:has(a[download])').length;
     discardTranscriptDownloads(ctx.$('transcript'));
+    if (expired) feedback(`${expired} attachment download(s) expired on disconnect. Ask your peer to resend any unsaved files.`, 'warn');
     ctx.receiver?.dispose();
     ctx.outbound?.dispose();
     ctx.outbound = null;
@@ -676,7 +502,6 @@ export function createChatPage(ctx, config) {
     ctx.inboundMeta = null;
     ctx.inboundHelloItemId = null;
     pendingReceiveRow = null;
-    inboundMeter = null;
     updateCryptoPanel();
     setSending(false);
     if (wasActive) setPageTransferPhase('Cancelled');
@@ -710,7 +535,6 @@ export function createChatPage(ctx, config) {
       .then(() => markOutboundDelivered())
       .finally(() => {
         if (pendingFileSend?.file === file) pendingFileSend = null;
-        if (stagedFile() === file) ctx.$('fileInput').value = '';
         refreshFileChip();
         updateControls();
       });
@@ -785,74 +609,101 @@ export function createChatPage(ctx, config) {
     ctx.inboundHelloItemId = null;
     inboundTiming?.fail('transcript-cleared');
     inboundTiming = null;
-    clearTranscript(ctx.$('transcript'), currentEmptyPlaceholder());
+    // Keep one empty buffer row for the NORMAL-mode cursor.
+    clearTranscript(ctx.$('transcript'), ' ');
     resetTransferPanel();
     updateControls();
   }
 
-  function finishCommand() {
-    const input = ctx.$('textInput');
-    input.value = '';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-
-  function runCommand(entered) {
-    const [token] = entered.toLowerCase().split(/\s+/);
-    const command = COMMAND_BY_TOKEN.get(token.slice(1));
-    if (!command) {
-      log(entered);
-      log(`Unknown command: ${token} — try /help`, 'warn');
-      finishCommand();
-      return;
-    }
-    if (command.name === 'clearlog') {
-      ctx.$('clearLogBtn').click();
-      log(entered);
-      finishCommand();
-      return;
-    }
-
-    log(entered);
-    switch (command.name) {
+  function runCommand(name) {
+    const unavailable = message => { feedback(message, 'warn'); return false; };
+    switch (name) {
       case 'connect':
-        if (isConnecting) log('Connection already in progress.', 'warn');
-        else if (ctx.transport?.isConnected()) log('Already connected.', 'warn');
-        else ctx.$('connectBtn').click();
+        if (isConnecting) return unavailable('Connection already in progress.');
+        if (ctx.transport?.isConnected()) return unavailable('Already connected. Use :d first to reconnect.');
+        feedback(`Connecting ${config.endpoint.toUpperCase()}… Select the device running Pocket AirBridge when prompted.`);
+        ctx.$('connectBtn').click();
         break;
       case 'disconnect':
-        if (isConnecting) log('Connection in progress.', 'warn');
-        else if (!ctx.transport?.isConnected()) log('Not connected.', 'warn');
-        else ctx.$('disconnectBtn').click();
+        if (isConnecting) return unavailable('Connection in progress. Finish or dismiss the device picker.');
+        if (!ctx.transport?.isConnected()) return unavailable('Already disconnected.');
+        ctx.$('disconnectBtn').click();
         break;
       case 'clear':
+        if (ctx.isSending || ctx.inboundHelloItemId != null) return unavailable('Transfer in progress. Use :x before clearing the transcript.');
         ctx.$('clearTranscriptBtn').click();
+        terminal.clearOutput();
+        feedback('Transcript and its downloads cleared.');
+        break;
+      case 'clearlog':
+        ctx.$('clearLogBtn').click();
+        feedback('Diagnostics cleared.');
         break;
       case 'cancel':
-        if (ctx.$('cancelBtn').disabled) log('No active transfer.', 'warn');
-        else ctx.$('cancelBtn').click();
+        if (ctx.$('cancelBtn').disabled) return unavailable('No active transfer. Use :uf to remove a selected file.');
+        ctx.$('cancelBtn').click();
         break;
       case 'accept':
-        if (ctx.$('acceptSasBtn').disabled) log('No SAS confirmation is pending.', 'warn');
-        else ctx.$('acceptSasBtn').click();
+        if (ctx.cryptoSession?.getStatus().state === CRYPTO_STATE.SAS_PENDING && ctx.cryptoSession.getStatus().localAccepted) return unavailable('Accepted here. Waiting for your peer to accept.');
+        if (ctx.$('acceptSasBtn').disabled) return unavailable('No code is ready to confirm. Connect both endpoints first.');
+        ctx.$('acceptSasBtn').click();
+        feedback('Code accepted here. Waiting for peer confirmation.');
         break;
       case 'abort':
-        if (ctx.$('abortCryptoBtn').disabled) log('No crypto session to abort.', 'warn');
-        else ctx.$('abortCryptoBtn').click();
+        if (ctx.$('abortCryptoBtn').disabled) return unavailable('No verification session to abort.');
+        ctx.$('abortCryptoBtn').click();
+        feedback('Ending verification. Use :d then :c to reconnect.');
         break;
       case 'file':
-        if (ctx.$('fileInput').disabled) log('Transfer in progress.', 'warn');
-        else openFilePicker();
+        if (ctx.$('fileInput').disabled) return unavailable('Transfer in progress. Use :x or wait.');
+        openFilePicker();
         break;
-      case 'logs':
-        document.querySelector('.diagnostic-rail')?.classList.toggle('logs-visible');
+      case 'sendfile':
+        if (!stagedFile()) return unavailable('No attachment selected. Use :f to choose one.');
+        if (!ctx.transport?.isConnected() || !isCryptoUnlocked()) return unavailable('Connect and confirm matching codes before sending. Your selected file is kept.');
+        if (ctx.$('sendFileBtn').disabled) return unavailable('Transfer in progress. Use :x or wait.');
+        feedback(`Sending ${stagedFile().name}…`);
+        sendSelectedFile();
+        break;
+      case 'unfile':
+        if (pendingFileSend) return unavailable('Attachment is sending. Use :x to cancel.');
+        ctx.$('fileChipClear').click();
+        feedback('Selected attachment removed.');
+        break;
+      case 'logs': {
+        const rail = document.querySelector('.diagnostic-rail');
+        const visible = rail.classList.toggle('logs-visible');
+        terminal.closeOutput(false);
+        feedback(visible ? 'airbridge-log [readonly]  j/k scroll  :q close' : 'Log split closed.');
+        break;
+      }
+      case 'quit':
+        terminal.closeOutput(false);
+        document.querySelector('.diagnostic-rail').classList.remove('logs-visible');
+        feedback('Split closed. Connection kept.');
         break;
       case 'help':
-        log('Commands:');
-        for (const availableCommand of COMMANDS) log(`/${availableCommand.name} — ${availableCommand.description}`);
-        log('//text — send literal /text');
+        document.querySelector('.diagnostic-rail').classList.remove('logs-visible');
+        terminal.showOutput([
+          '*airbridge-help*  Pocket AirBridge',
+          '',
+          'NORMAL  i insert   : command   j/k move   gg first   G last',
+          '        Ctrl-d / Ctrl-u scroll half a screen',
+          'INSERT  Enter sends literal text; Esc keeps your draft.',
+          'COMMAND Enter runs; Tab completes; arrows select / recall history.',
+          '        Esc or Backspace on an empty command returns to NORMAL.',
+          '',
+          ...TERMINAL_COMMANDS.map(command => `:${command.short.padEnd(3)} :${command.name.padEnd(11)} ${command.description}`),
+          '',
+          'Files: :f chooses; :s sends. Enter sends only your message.',
+          'Save downloads before :d or :cl; these discard received files.',
+          'This is a chat buffer. Vim text operators and file editing are unavailable.',
+          ...(ctx.isMockMode ? ['', 'MOCK: simulated transport; no physical device.', 'Use ?mock=1&mockPeer=demo on both pages for paired browser QA.'] : []),
+        ]);
+        feedback('airbridge-help [readonly]  j/k scroll  :q close');
         break;
     }
-    finishCommand();
+    return true;
   }
 
   globalThis.AirBridgeEvidence = Object.freeze({
@@ -870,65 +721,33 @@ export function createChatPage(ctx, config) {
   const textForm = ctx.$('textForm');
   const textInput = ctx.$('textInput');
   const fileInput = ctx.$('fileInput');
-  let filePickerOpen = false;
-  const pageHasOpenDialog = () => Boolean(document.querySelector('dialog[open], [role="dialog"]:not([hidden])'));
   const openFilePicker = () => {
-    filePickerOpen = true;
-    try {
-      fileInput.click();
-    } catch (error) {
-      filePickerOpen = false;
-      log(`File picker unavailable: ${error instanceof Error ? error.message : 'request blocked'}`, 'warn');
-    }
+    try { fileInput.click(); }
+    catch (error) { feedback(`File picker unavailable: ${error.message}`, 'error'); }
   };
+  const requestSendText = () => {
+    if (!textInput.value.trim()) return;
+    if (!ctx.transport?.isConnected()) { feedback('Disconnected. Press Esc, then :c to connect. Your draft is kept.', 'warn'); return; }
+    if (!isCryptoUnlocked()) { feedback('Compare both codes, then Esc :a to confirm. Your draft is kept.', 'warn'); return; }
+    if (ctx.isSending || ctx.inboundHelloItemId != null) { feedback('Transfer in progress. Your draft is kept; send it when the transfer finishes.', 'warn'); return; }
+    sendText();
+  };
+  terminal = createTerminalConsole({ form: textForm, input: textInput, executeCommand: runCommand, sendMessage: requestSendText });
   promptContext = document.createElement('div');
   promptContext.className = 'prompt-context';
-  promptContext.setAttribute('aria-hidden', 'true');
-  termPrompt = document.createElement('span');
-  termPrompt.className = 'term-prompt';
-  termPrompt.setAttribute('aria-hidden', 'true');
-  termPrompt.textContent = '>';
-  termMirror = document.createElement('span');
-  termMirror.className = 'term-mirror';
-  termMirror.setAttribute('aria-hidden', 'true');
-  termMirrorTrack = document.createElement('span');
-  termMirrorTrack.className = 'term-mirror-track';
-  termMirrorValue = document.createElement('span');
-  termMirrorValue.className = 'term-mirror-value';
-  termGhost = document.createElement('span');
-  termGhost.className = 'term-ghost';
-  termMirrorTrack.append(termMirrorValue, termGhost);
-  termMirror.append(termMirrorTrack);
-  termCursor = document.createElement('span');
-  termCursor.className = 'term-cursor';
-  termCursor.setAttribute('aria-hidden', 'true');
-  termCursor.textContent = '_';
-  termSuggestions = document.createElement('div');
-  termSuggestions.id = 'termSuggestions';
-  termSuggestions.className = 'term-suggestions';
-  termSuggestions.setAttribute('role', 'listbox');
-  termSuggestions.setAttribute('aria-label', 'Command suggestions');
-  termSuggestions.hidden = true;
-  textInput.removeAttribute('placeholder');
-  textInput.setAttribute('aria-autocomplete', 'list');
-  textInput.setAttribute('aria-controls', termSuggestions.id);
-  textInput.setAttribute('aria-expanded', 'false');
-  textForm.prepend(promptContext);
-  textForm.append(termSuggestions, termPrompt, termMirror, termCursor);
-  const sasBannerText = document.querySelector('.sas-banner-text');
-  if (sasBannerText) sasBannerText.textContent = 'If the six digits match on both screens, type /accept on both sides to open the secure channel. If they differ, type /abort and reconnect.';
-  const consoleMenu = document.querySelector('.console-menu');
-  const consoleSummary = consoleMenu?.querySelector('summary');
-  if (consoleMenu) consoleMenu.open = false;
-  if (consoleSummary) {
-    consoleSummary.textContent = 'MODE=cli';
-    consoleSummary.tabIndex = -1;
-    consoleSummary.setAttribute('aria-disabled', 'true');
-  }
-  const statusline = document.querySelector('.statusline');
+  promptContext.setAttribute('aria-label', 'Connection and encryption');
+  promptContext.setAttribute('role', 'status');
+  receiveProgress = document.createElement('span');
+  receiveProgress.id = 'receiveProgress';
+  receiveProgress.className = 'terminal-receive-progress';
+  receiveProgress.hidden = true;
+  receiveProgress.setAttribute('role', 'progressbar');
+  receiveProgress.setAttribute('aria-label', 'Receiving');
+  receiveProgress.setAttribute('aria-valuemin', '0');
+  receiveProgress.setAttribute('aria-valuemax', '100');
+  ctx.$('terminalRuler').before(promptContext, receiveProgress);
   const diagnosticRail = document.querySelector('.diagnostic-rail');
-  if (diagnosticRail) diagnosticRail.classList.toggle('logs-visible', ctx.isMockMode || ctx.debugMode);
-  if (statusline && diagnosticRail) diagnosticRail.prepend(statusline);
+  if (diagnosticRail) diagnosticRail.classList.toggle('logs-visible', ctx.debugMode);
   renderTransferDetail();
 
   displayStateObserver = new MutationObserver(() => {
@@ -940,108 +759,29 @@ export function createChatPage(ctx, config) {
 
   ctx.$('connectBtn').addEventListener('click', connect);
   ctx.$('disconnectBtn').addEventListener('click', disconnect);
-  textForm.addEventListener('submit', event => {
-    event.preventDefault();
-    const entered = ctx.$('textInput').value.trim();
-    if (entered.startsWith('/') && !entered.startsWith('//')) { runCommand(entered); return; }
-    if (stagedFile()) {
-      if (!ctx.transport?.isConnected() || !isCryptoUnlocked()) {
-        log('Staged file not sent — /connect and verify first.', 'warn');
-        return;
-      }
-      if (ctx.$('sendFileBtn').disabled) { log('Transfer in progress.', 'warn'); return; }
-      finishCommand();
-      sendSelectedFile();
-      return;
-    }
-    if (entered.startsWith('//')) {
-      ctx.$('textInput').value = entered.slice(1);
-      ctx.$('textInput').dispatchEvent(new Event('input', { bubbles: true }));
-      if (!ctx.$('sendTextBtn').disabled) sendText();
-      dismissAutocomplete(true);
-      updateTerminalCursor();
-      return;
-    }
-    if (!ctx.$('sendTextBtn').disabled) sendText();
-  });
-  textInput.addEventListener('keydown', event => {
-    if (!termSuggestions.hidden) {
-      if (event.key === 'Tab') {
-        event.preventDefault();
-        acceptAutocomplete();
-        return;
-      }
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        const direction = event.key === 'ArrowDown' ? 1 : -1;
-        completionIndex = (completionIndex + direction + completionMatches.length) % completionMatches.length;
-        renderAutocomplete();
-        updateTerminalCursor();
-        return;
-      }
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        dismissAutocomplete(true);
-        updateTerminalCursor();
-        return;
-      }
-    }
-    if (event.key !== 'Enter' || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-    event.preventDefault();
-    textForm.requestSubmit();
-  });
-  textInput.addEventListener('input', () => { refreshAutocomplete(); updateControls(); updateTerminalCursor(); });
-  textInput.addEventListener('focus', updateTerminalCursor);
-  textInput.addEventListener('blur', () => { dismissAutocomplete(true); updateTerminalCursor(); });
-  textInput.addEventListener('scroll', updateTerminalCursor);
-  document.addEventListener('keydown', event => {
-    const targetIsInteractive = event.target instanceof Element && event.target.closest('input, textarea, select, button, a, summary, [contenteditable]');
-    if (targetIsInteractive || event.altKey || event.ctrlKey || event.metaKey || event.isComposing || event.key.length !== 1 || filePickerOpen || pageHasOpenDialog()) return;
-    textInput.focus();
-  });
-  window.addEventListener('resize', updateTerminalCursor);
-  termCursorResizeObserver = new ResizeObserver(updateTerminalCursor);
-  termCursorResizeObserver.observe(textForm);
+  textInput.addEventListener('input', updateControls);
   ctx.$('attachBtn').addEventListener('click', openFilePicker);
-  ctx.$('fileChipClear').addEventListener('click', () => { ctx.$('fileInput').value = ''; refreshFileChip(); updateControls(); });
+  ctx.$('fileChipClear').addEventListener('click', () => { fileInput.value = ''; refreshFileChip(); updateControls(); });
   fileInput.addEventListener('change', () => {
-    filePickerOpen = false;
+    refreshFileChip();
+    updateControls();
     const file = stagedFile();
-    if (!file) {
-      refreshFileChip();
-      updateControls();
-      return;
-    }
-    if (!ctx.transport?.isConnected() || !isCryptoUnlocked()) {
-      refreshFileChip();
-      updateControls();
-      log(`Staged ${file.name} (${formatBytes(file.size)}) — /connect and verify, then Enter to send`);
-      return;
-    }
-    if (pendingFileSend?.file === file) return;
-    if (ctx.isSending || ctx.inboundHelloItemId != null || ctx.inboundMeta) {
-      log('busy — /cancel or wait', 'warn');
-      fileInput.value = '';
-      refreshFileChip();
-      updateControls();
-      return;
-    }
-    log(`Sending ${file.name} (${formatBytes(file.size)})…`);
-    sendSelectedFile();
+    if (file) feedback(`Selected ${file.name} (${formatBytes(file.size)}). Use :s to send, :uf to remove. Your message draft is kept.`);
   });
-  fileInput.addEventListener('cancel', () => { filePickerOpen = false; });
   ctx.$('sendFileBtn').addEventListener('click', sendSelectedFile);
   ctx.$('cancelBtn').addEventListener('click', () => { cancelActiveTransfer('user'); });
-  ctx.$('acceptSasBtn').addEventListener('click', () => ctx.cryptoSession?.acceptSas().catch(error => log(`SAS accept failed: ${error.message}`, 'error')));
-  ctx.$('abortCryptoBtn').addEventListener('click', () => ctx.cryptoSession?.rejectSas().catch(error => log(`Crypto abort failed: ${error.message}`, 'error')));
+  ctx.$('acceptSasBtn').addEventListener('click', () => {
+    const accepting = ctx.cryptoSession?.acceptSas();
+    updateCryptoPanel();
+    accepting?.then(() => updateCryptoPanel()).catch(error => log(`Code confirmation failed: ${error.message}`, 'error'));
+  });
+  ctx.$('abortCryptoBtn').addEventListener('click', () => ctx.cryptoSession?.rejectSas().catch(error => log(`Verification abort failed: ${error.message}`, 'error')));
   ctx.$('clearTranscriptBtn').addEventListener('click', clearTranscriptView);
   ctx.$('clearLogBtn').addEventListener('click', () => ctx.logger.clear());
   updateControls();
   updateCryptoPanel();
-  refreshAutocomplete();
-  updateTerminalCursor();
-  log(ctx.isMockMode ? 'Mock mode ready. Click Connect to start the in-page verifier.' : config.readyLog);
-  window.addEventListener('pagehide', () => { cancelAnimationFrame(termCursorFrame); termCursorResizeObserver.disconnect(); window.removeEventListener('resize', updateTerminalCursor); ctx.transcriptController.dispose(); displayStateObserver.disconnect(); ctx.receiver?.dispose(); ctx.outbound?.cancel(); discardTranscriptDownloads(ctx.$('transcript')); });
+  log(ctx.isMockMode ? 'Mock mode ready. Use :c to connect.' : config.readyLog);
+  window.addEventListener('pagehide', () => { terminal.dispose(); ctx.transcriptController.dispose(); displayStateObserver.disconnect(); ctx.receiver?.dispose(); ctx.outbound?.cancel(); discardTranscriptDownloads(ctx.$('transcript')); });
 
   return {
     connect,

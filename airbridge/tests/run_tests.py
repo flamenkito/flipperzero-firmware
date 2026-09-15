@@ -107,6 +107,17 @@ def main() -> None:
                     "-Itargets/furi_hal_include",
                     "-Itargets/f7/ble_glue",
                 ]
+            if source.stem == "airbridge_ble_dispatch_test":
+                extra = [
+                    "-D__PACKED_STRUCT=struct __attribute__((packed))",
+                    "-Iairbridge/tests/platform",
+                    "-I.",
+                    "-Ifuri",
+                    "-Ilib/mlib",
+                    "-Ilib/stm32wb_copro/wpan",
+                    "-Itargets/furi_hal_include",
+                    "-Itargets/f7/ble_glue",
+                ]
             if source.stem == "airbridge_typing_test":
                 extra = [
                     FAP / "airbridge_typing.c",

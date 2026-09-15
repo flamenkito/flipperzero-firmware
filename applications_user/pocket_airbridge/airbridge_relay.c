@@ -242,14 +242,25 @@ AirbridgeRelayResult airbridge_relay_handle(
     AirbridgeRelay* relay,
     AirbridgeBle* ble,
     BridgeEvent* be,
-    AirbridgeScreen screen) {
+    AirbridgeScreen screen,
+    AirbridgeTypingTransport armed_transport) {
     /* Windows delivers the full 64-byte OUT transfer; macOS sends a short 1-byte
-       transfer. Match on the first byte only so both arm deploy. */
-    const bool deploy_request = be->to_ble && (be->len >= 1) && (be->data[0] == 0x42);
-    if(deploy_request && screen == AirbridgeScreenWaiting) {
-        return AirbridgeRelayDeployRequested;
-    }
-    if(deploy_request && screen != AirbridgeScreenBridge) {
+       transfer. Match on the first byte only so both arm deploy. Direction
+       selects the deploy path: a USB fetch hits the vendor OUT endpoint
+       (to_ble), a BLE fetch arrives over serial (BLE-origin). */
+    const bool usb_deploy_request = be->to_ble && (be->len >= 1) && (be->data[0] == 0x42);
+    const bool ble_deploy_request = !be->to_ble && (be->len >= 1) && (be->data[0] == 0x42);
+    if(screen == AirbridgeScreenWaiting) {
+        /* Waiting is armed per transport by the matching prompt's typing
+         * completion. A cross-direction 0x42 is bridge data, not a deploy:
+         * relay it normally below. */
+        if(usb_deploy_request && armed_transport == AirbridgeTypingTransportUsb) {
+            return AirbridgeRelayDeployRequestedUsb;
+        }
+        if(ble_deploy_request && armed_transport == AirbridgeTypingTransportBle) {
+            return AirbridgeRelayDeployRequestedBle;
+        }
+    } else if((usb_deploy_request || ble_deploy_request) && screen != AirbridgeScreenBridge) {
         return AirbridgeRelayDeployNotArmed;
     }
     if(be->to_ble) {

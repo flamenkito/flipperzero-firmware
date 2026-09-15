@@ -44,6 +44,7 @@ import { itemReceiverAuthTests } from './protocol-item-receiver-auth-tests.js';
 import { itemReceiverGenerationTests } from './protocol-item-receiver-generation-tests.js';
 import { itemReceiverPageRaceTests } from './protocol-item-receiver-page-race-tests.js';
 import { chatUiTests } from './protocol-chat-ui-tests.js';
+import { terminalUiTests } from './protocol-terminal-ui-tests.js';
 import { chatPageTests } from './protocol-chat-pages-tests.js';
 import { chatCleanupTests } from './protocol-chat-cleanup-tests.js';
 import { incompatibilityTests } from './protocol-incompatibility-tests.js';
@@ -128,6 +129,9 @@ const tests = [
   ['bootstrap.js unsupported DecompressionStream error path', testBootstrapUnsupportedDecompression],
   ['bootstrap.js picker-cancel error path', testBootstrapPickerCancel],
   ['bootstrap.js transfer-timeout error path', testBootstrapTransferTimeout],
+  ['bootstrap.js slow steady stream survives', testBootstrapSlowStreamSurvives],
+  ['bootstrap-ble.js eval in browser context', testBootstrapBleJsEval],
+  ['bootstrap-ble.js slow steady stream survives', testBootstrapBleSlowStreamSurvives],
   ['crypto encrypted text', testCryptoEncryptedText],
   ['crypto encrypted attachment', testCryptoEncryptedAttachment],
   ['crypto SAS match unlock', testCryptoSasMatchUnlock],
@@ -166,6 +170,7 @@ const tests = [
   ...itemReceiverGenerationTests(window.sha256),
   ...itemReceiverPageRaceTests(),
   ...chatUiTests(),
+  ...terminalUiTests(),
   ...chatPageTests(),
   ...chatCleanupTests(),
 ];
@@ -1497,7 +1502,21 @@ async function runBootstrapStreamClient(device, bootDocument, options = {}) {
     timing.complete({ bundleBytes: total ?? received, transferBytes: received });
     resolve(true);
   };
+  const armTimeout = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      device.removeEventListener('inputreport', onReport);
+      setStatus('Transfer timed out - retry');
+      timing.fail('timeout', { bundleBytes: total ?? received, transferBytes: received });
+      resolve(false);
+    }, timeoutMs);
+  };
   const onReport = event => {
+    // Per-report inactivity watchdog: a healthy stream of any total length
+    // survives; only a genuine stall longer than timeoutMs fails.
+    armTimeout();
     const report = new Uint8Array(event.data.buffer, event.data.byteOffset, event.data.byteLength);
     timing.markFirstReport();
     if (total === undefined) {
@@ -1518,14 +1537,7 @@ async function runBootstrapStreamClient(device, bootDocument, options = {}) {
     if (received === total) void finish();
   };
   device.addEventListener('inputreport', onReport);
-  timer = setTimeout(() => {
-    if (settled) return;
-    settled = true;
-    device.removeEventListener('inputreport', onReport);
-    setStatus('Transfer timed out - retry');
-    timing.fail('timeout', { bundleBytes: total ?? received, transferBytes: received });
-    resolve(false);
-  }, timeoutMs);
+  armTimeout();
   const request = new Uint8Array(FRAME_SIZE);
   request[0] = 0x42;
   await device.sendReport(0, request);
@@ -1985,6 +1997,374 @@ async function testBootstrapTransferTimeout() {
   assert(!button.disabled, 'button was not re-enabled after transfer timeout');
   assert(statusEl.textContent === 'Transfer timed out - retry', 'timeout did not show retry status');
   assert(mockDevice.closeCallOrder.length > 0, 'HID device close() was not called after timeout');
+
+  document.body.removeChild(iframe);
+}
+
+async function testBootstrapSlowStreamSurvives() {
+  // Regression: the deploy stream used to arm ONE total-transfer deadline
+  // (ABT || 8000) at request time. A healthy stream whose total duration
+  // exceeds that budget was killed mid-transfer (hardware repro: 65930-byte
+  // bundle at ~64B/10ms died at frame 720/1031, exactly 8000ms in).
+  // The watchdog must be per-report inactivity, not a total deadline.
+  const res = await fetch(`./bootstrap.js?cache=${Date.now()}`);
+  assert(res.ok, 'could not fetch bootstrap.js');
+  const source = await res.text();
+
+  const iframe = document.createElement('iframe');
+  iframe.srcdoc = '<!DOCTYPE html><html><head></head><body></body></html>';
+  document.body.appendChild(iframe);
+  await sleep(50);
+
+  const win = iframe.contentWindow;
+  const doc = win.document;
+
+  // Inactivity budget 150ms; frames every 60ms; total stream time ~660ms.
+  // A total-deadline watchdog fires mid-stream; an inactivity watchdog does not.
+  win.ABT = 150;
+
+  // Poorly-compressible payload forces several payload frames.
+  const marker = Array.from(crypto.getRandomValues(new Uint8Array(700)), b => String.fromCharCode(33 + b % 94)).join('');
+  const payloadBytes = encoder.encode(`<b>slow-stream-ok</b><!--${marker}-->`);
+  const compressedPayload = await gzipBytes(payloadBytes);
+  const totalLen = compressedPayload.length;
+  const checksum = compressedPayload.reduce((s, b) => (s + b) >>> 0, 0);
+
+  const headerReport = new Uint8Array(FRAME_SIZE);
+  new DataView(headerReport.buffer).setUint32(0, totalLen, true);
+  new DataView(headerReport.buffer).setUint32(4, checksum, true);
+  const reports = [headerReport];
+  for (let offset = 0; offset < totalLen; offset += FRAME_SIZE) {
+    const report = new Uint8Array(FRAME_SIZE);
+    report.set(compressedPayload.subarray(offset, offset + FRAME_SIZE));
+    reports.push(report);
+  }
+  assert(reports.length >= 5, `slow-stream test needs >= 5 frames to outlast ABT, got ${reports.length}`);
+
+  // Slow mock: delivers one report every 60ms after the 0x42 request.
+  const mockDevice = createHidDeviceMock([]);
+  mockDevice.sendReport = async function(reportId, data) {
+    this.sentReports.push({ reportId, data: new Uint8Array(data) });
+    reports.forEach((report, index) => {
+      setTimeout(() => {
+        const u8 = new Uint8Array(report);
+        if (this.oninputreport) this.oninputreport({ data: new DataView(u8.buffer, u8.byteOffset, u8.byteLength) });
+      }, (index + 1) * 60);
+    });
+  };
+
+  win.__docWriteCalled = false;
+  const origOpen = doc.open.bind(doc);
+  const origWrite = doc.write.bind(doc);
+  const origClose = doc.close.bind(doc);
+  doc.open = function() { win.__docWriteCalled = true; return origOpen(); };
+  doc.write = function(text) { win.__docWriteCalled = true; return origWrite(text); };
+  doc.close = function() { win.__docWriteCalled = true; return origClose(); };
+
+  Object.defineProperty(win, 'navigator', {
+    value: Object.assign({}, win.navigator, {
+      get hid() { return { requestDevice: async () => [mockDevice] }; },
+    }),
+    writable: true,
+    configurable: true,
+  });
+
+  win.Function(source)();
+  await sleep(50);
+  const button = doc.querySelector('button');
+  assert(button, 'bootstrap did not create a button');
+
+  const donePromise = new Promise(resolve => {
+    const interval = setInterval(() => {
+      if (win.__docWriteCalled) { clearInterval(interval); resolve('done'); }
+    }, 50);
+    setTimeout(() => { clearInterval(interval); resolve('timeout'); }, 5000);
+  });
+
+  button.click();
+  const doneResult = await donePromise;
+  assert(doneResult === 'done',
+    'slow but steady stream must survive: watchdog must reset per report, not bound total transfer time ' +
+    `(docWriteCalled=${win.__docWriteCalled}, sentReports=${mockDevice.sentReports.length})`);
+  assert(mockDevice.closeCallOrder.length > 0, 'HID device close() was not called after slow stream');
+
+  document.body.removeChild(iframe);
+}
+
+// ─── bootstrap-ble.js tests ─────────────────────────────────────────────────
+// Mirrors the bootstrap.js USB coverage, but over the mock Web Bluetooth GATT
+// surface bootstrap-ble.js uses: getDevices/requestDevice,
+// gatt.connect/disconnect, getPrimaryService(7b871228-…),
+// getCharacteristic TX 87825ec0-… (startNotifications +
+// characteristicvaluechanged dispatch) and RX 152f7eeb-…
+// (writeValueWithResponse). The Flipper serves the same 8-byte header
+// {total_len u32LE, additive checksum u32LE} + gzip chunks over BLE serial TX
+// notifications.
+
+function createBleGattMock(chunks, options = {}) {
+  const { gapMs = 0, deviceName = 'HP 725 K+M', includeGetDevices = true } = options;
+  const BLE_SERVICE_UUID = '7b871228-baf0-c5b4-5f46-9c2613d627a3';
+  const BLE_TX_UUID = '87825ec0-7398-8cb7-3242-b083eaa34f27';
+  const BLE_RX_UUID = '152f7eeb-e3b7-5898-ba41-7ff66121c98d';
+  const gattListeners = new Set();
+  const txListeners = new Set();
+  const txChar = {
+    uuid: BLE_TX_UUID,
+    removeEventListenerCalls: 0,
+    async startNotifications() {},
+    addEventListener(type, listener) {
+      if (type === 'characteristicvaluechanged') txListeners.add(listener);
+    },
+    removeEventListener(type, listener) {
+      if (type === 'characteristicvaluechanged') {
+        this.removeEventListenerCalls++;
+        txListeners.delete(listener);
+      }
+    },
+  };
+  const rxChar = {
+    uuid: BLE_RX_UUID,
+    written: [],
+    async writeValueWithResponse(data) {
+      this.written.push(new Uint8Array(data));
+      chunks.forEach((chunk, index) => {
+        setTimeout(() => {
+          const u8 = new Uint8Array(chunk);
+          const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+          for (const listener of txListeners) listener({ target: { value: view } });
+        }, (index + 1) * gapMs);
+      });
+    },
+  };
+  const service = {
+    uuid: BLE_SERVICE_UUID,
+    async getCharacteristic(uuid) {
+      if (uuid === BLE_TX_UUID) return txChar;
+      if (uuid === BLE_RX_UUID) return rxChar;
+      throw new Error(`unknown characteristic ${uuid}`);
+    },
+  };
+  const server = {
+    async getPrimaryService(uuid) {
+      if (uuid === BLE_SERVICE_UUID) return service;
+      throw new Error(`unknown service ${uuid}`);
+    },
+  };
+  const device = {
+    name: deviceName,
+    gatt: {
+      async connect() { return server; },
+      disconnect() {
+        for (const listener of gattListeners) {
+          try { listener(); } catch (listenerError) { void listenerError; }
+        }
+      },
+    },
+    addEventListener(type, listener) {
+      if (type === 'gattserverdisconnected') gattListeners.add(listener);
+    },
+    removeEventListener(type, listener) {
+      if (type === 'gattserverdisconnected') gattListeners.delete(listener);
+    },
+  };
+  const bluetooth = {};
+  if (includeGetDevices) bluetooth.getDevices = async () => [device];
+  bluetooth.requestDevice = async () => device;
+  return { device, txChar, rxChar, bluetooth, BLE_SERVICE_UUID };
+}
+
+async function testBootstrapBleJsEval() {
+  // 1. Fetch the real bootstrap-ble.js source (not a copy-paste).
+  const res = await fetch(`./bootstrap-ble.js?cache=${Date.now()}`);
+  assert(res.ok, 'could not fetch bootstrap-ble.js');
+  const source = await res.text();
+  assert(source.includes('navigator.bluetooth'), 'fetched source does not reference navigator.bluetooth');
+  assert(source.includes('HP 725 K+M'), 'fetched source does not filter the configured BLE identity name');
+
+  // 2. Parse it — any SyntaxError here would be the hardware bug.
+  let bleSyntaxOk = false;
+  try { new Function(source); bleSyntaxOk = true; } catch (syntaxError) { void syntaxError; }
+  assert(bleSyntaxOk, 'bootstrap-ble.js has a syntax error and would not parse in a browser');
+
+  // 3. Build an iframe context with mocked navigator.bluetooth + URL.
+  const iframe = document.createElement('iframe');
+  iframe.srcdoc = '<!DOCTYPE html><html><head></head><body></body></html>';
+  document.body.appendChild(iframe);
+  await sleep(50);
+
+  const win = iframe.contentWindow;
+  const doc = win.document;
+
+  // Tiny test payload: '<b>ble-ok</b>' (13 bytes).
+  const payloadBytes = encoder.encode('<b>ble-ok</b>');
+  const compressedPayload = await gzipBytes(payloadBytes);
+  const totalLen = compressedPayload.length;
+  const checksum = compressedPayload.reduce((s, b) => (s + b) >>> 0, 0);
+
+  // First notification carries the 8-byte header (LE total, LE checksum)
+  // followed by payload bytes, exactly like the Flipper BLE stream.
+  const first = new Uint8Array(8 + compressedPayload.length);
+  new DataView(first.buffer).setUint32(0, totalLen, true);
+  new DataView(first.buffer).setUint32(4, checksum, true);
+  first.set(compressedPayload, 8);
+  const mock = createBleGattMock([first]);
+
+  // bootstrap-ble.js lands via documentElement.replaceWith (or a blob URL
+  // fallback), not doc.write — detect both paths like the USB eval test does.
+  win.__bleReplaced = false;
+  let blobFallback = false;
+  win.URL = {
+    createObjectURL(blob) {
+      void blob;
+      blobFallback = true;
+      return 'blob:fake-uuid';
+    },
+  };
+  const origReplace = win.Element.prototype.replaceWith;
+  win.Element.prototype.replaceWith = function(...args) {
+    win.__bleReplaced = true;
+    return origReplace.apply(this, args);
+  };
+
+  // Exercise the bonded fast-path: getDevices() returns the HP device.
+  let getDevicesCalled = false;
+  const bondedGetDevices = mock.bluetooth.getDevices;
+  mock.bluetooth.getDevices = async () => { getDevicesCalled = true; return bondedGetDevices(); };
+  Object.defineProperty(win, 'navigator', {
+    value: Object.assign({}, win.navigator, { bluetooth: mock.bluetooth }),
+    writable: true,
+    configurable: true,
+  });
+
+  // 4. Evaluate the real bootstrap-ble.js source in the iframe context.
+  try {
+    win.Function(source)();
+  } catch (e) {
+    assert(false, `bootstrap-ble.js eval failed: ${e.message}`);
+  }
+
+  // 5. Verify landing DOM: a button and a status element exist.
+  await sleep(50);
+  const button = doc.querySelector('button');
+  const statusEl = doc.querySelector('p');
+  assert(button, 'bootstrap-ble did not create a button element');
+  assert(statusEl, 'bootstrap-ble did not create a status <p> element');
+  assert(button.textContent === 'Connect', 'button text is not "Connect"');
+
+  // 6. Click Connect and wait for the stream to complete.
+  const donePromise = new Promise(resolve => {
+    const interval = setInterval(() => {
+      if (win.__bleReplaced || blobFallback) {
+        clearInterval(interval);
+        resolve('done');
+      }
+    }, 50);
+    setTimeout(() => { clearInterval(interval); resolve('timeout'); }, 5000);
+  });
+
+  button.click();
+  const doneResult = await donePromise;
+  assert(doneResult !== 'timeout',
+    `bootstrap-ble stream timed out. Debug: rxWrites=${mock.rxChar.written.length}, ` +
+    `replaced=${win.__bleReplaced}, blobFallback=${blobFallback}`);
+
+  // 7. Verify the bonded path was used and the 0x42 deploy request was sent.
+  assert(getDevicesCalled, 'bonded fast-path getDevices() was not tried');
+  assert(mock.rxChar.written.length > 0 && mock.rxChar.written[0][0] === 0x42,
+    'BLE RX write (0x42 deploy request) was not sent after clicking Connect');
+
+  // 8. Regression: the TX notification listener was removed (no leak).
+  assert(mock.txChar.removeEventListenerCalls > 0,
+    'TX characteristicvaluechanged listener was never removed — notification leak');
+
+  // 9. Verify one of the landing-page paths was taken.
+  assert(win.__bleReplaced || blobFallback,
+    'neither documentElement.replaceWith nor blob URL path was taken after correct checksum');
+
+  document.body.removeChild(iframe);
+}
+
+async function testBootstrapBleSlowStreamSurvives() {
+  // BLE twin of testBootstrapSlowStreamSurvives: win.ABT=150 is the
+  // per-notification inactivity budget, notifications arrive every 60ms, and
+  // the total stream lasts well past 150ms. A total-deadline watchdog fires
+  // mid-stream; the per-notification watchdog rearmed in bootstrap-ble.js
+  // (self.ABT||8000 per notification) must let the steady stream succeed.
+  const res = await fetch(`./bootstrap-ble.js?cache=${Date.now()}`);
+  assert(res.ok, 'could not fetch bootstrap-ble.js');
+  const source = await res.text();
+
+  const iframe = document.createElement('iframe');
+  iframe.srcdoc = '<!DOCTYPE html><html><head></head><body></body></html>';
+  document.body.appendChild(iframe);
+  await sleep(50);
+
+  const win = iframe.contentWindow;
+  const doc = win.document;
+
+  // Inactivity budget 150ms; notifications every 60ms; total stream ~600ms.
+  // A total-deadline watchdog fires mid-stream; an inactivity watchdog does not.
+  win.ABT = 150;
+
+  // Poorly-compressible payload forces several notification frames.
+  const marker = Array.from(crypto.getRandomValues(new Uint8Array(700)), b => String.fromCharCode(33 + b % 94)).join('');
+  const payloadBytes = encoder.encode(`<b>ble-slow-stream-ok</b><!--${marker}-->`);
+  const compressedPayload = await gzipBytes(payloadBytes);
+  const totalLen = compressedPayload.length;
+  const checksum = compressedPayload.reduce((s, b) => (s + b) >>> 0, 0);
+
+  // Chunk like small GATT notifications; the first chunk carries the 8-byte
+  // header {total_len u32LE, additive checksum u32LE}.
+  const BLE_CHUNK = FRAME_SIZE;
+  const chunks = [];
+  for (let offset = 0; offset < totalLen; offset += BLE_CHUNK) {
+    const piece = compressedPayload.subarray(offset, offset + BLE_CHUNK);
+    if (offset === 0) {
+      const first = new Uint8Array(8 + piece.length);
+      new DataView(first.buffer).setUint32(0, totalLen, true);
+      new DataView(first.buffer).setUint32(4, checksum, true);
+      first.set(piece, 8);
+      chunks.push(first);
+    } else {
+      chunks.push(piece);
+    }
+  }
+  assert(chunks.length >= 5, `ble slow-stream test needs >= 5 frames to outlast ABT, got ${chunks.length}`);
+
+  // No getDevices here: exercise the requestDevice picker path instead.
+  const mock = createBleGattMock(chunks, { gapMs: 60, includeGetDevices: false });
+
+  win.__bleReplaced = false;
+  const origReplace = win.Element.prototype.replaceWith;
+  win.Element.prototype.replaceWith = function(...args) {
+    win.__bleReplaced = true;
+    return origReplace.apply(this, args);
+  };
+
+  Object.defineProperty(win, 'navigator', {
+    value: Object.assign({}, win.navigator, { bluetooth: mock.bluetooth }),
+    writable: true,
+    configurable: true,
+  });
+
+  win.Function(source)();
+  await sleep(50);
+  const button = doc.querySelector('button');
+  assert(button, 'bootstrap-ble did not create a button');
+
+  const donePromise = new Promise(resolve => {
+    const interval = setInterval(() => {
+      if (win.__bleReplaced) { clearInterval(interval); resolve('done'); }
+    }, 50);
+    setTimeout(() => { clearInterval(interval); resolve('timeout'); }, 8000);
+  });
+
+  button.click();
+  const doneResult = await donePromise;
+  assert(doneResult === 'done',
+    'slow but steady BLE stream must survive: watchdog must reset per notification, not bound total transfer time ' +
+    `(replaced=${win.__bleReplaced}, rxWrites=${mock.rxChar.written.length})`);
+  assert(mock.txChar.removeEventListenerCalls > 0, 'TX listener was not removed after slow BLE stream');
 
   document.body.removeChild(iframe);
 }

@@ -33,7 +33,7 @@ Pocket AirBridge is a browser-only, offline, end-to-end encrypted chat and attac
 
 ### Flipper Zero — Bridge Firmware
 - Exposes a **vendor-defined USB HID interface** (Usage Page `0xFF00`) for PC-A communication.
-- Advertises the config-driven **AirBridge BLE impersonation profile** for PC-B: Battery, DIS, and the AirBridge serial service.
+- Advertises the config-driven **AirBridge BLE impersonation profile** for PC-B: Battery, DIS, HIDS, and the AirBridge serial service.
 - Is a **blind stateless byte pipe**: frames arriving on one transport are forwarded verbatim to the other. The bridge does not parse protocol messages, track items, decrypt data, or wait for ACKs.
 - Buffers only a small in-flight event queue (8 slots of one 64-byte frame each); it never stores plaintext, session keys, decrypted files, or a full message or attachment.
 - Never decrypts chat data. E2E keys and plaintext exist only in the two browser endpoints.
@@ -51,10 +51,14 @@ Invalid identity input falls back atomically to compiled HP defaults, with the
 DIS serial derived from a stable hash of the Flipper hardware UID unless
 `ble_dis_serial` is explicitly configured.
 
-The AirBridge profile includes Battery, DIS, and the AirBridge serial service;
-it has no HIDS service. The Bridge watchdog reasserts serial-only advertising
-every 2.5 seconds and restarts advertising only when GAP is idle, without
-disconnecting an active link. The profile uses numeric-comparison pairing with persistent bonding, so first
+The AirBridge profile includes HIDS alongside Battery, DIS, and the AirBridge
+serial service. In the normal active state, the Bridge watchdog re-arms serial
+plus HIDS every 2.5 seconds and restarts advertising only when GAP is idle,
+without disconnecting an active link. Advertising HIDS is distinct from keyboard
+emission: no keyboard reports are emitted while bridging chat traffic or on any
+bridge data path. Keyboard reports exist only in the explicit, user-confirmed
+Deploy typing prompts (USB Deploy over USB HID, BLE Deploy over BLE HIDS). The
+profile uses numeric-comparison pairing with persistent bonding, so first
 pairing needs a code check and later reconnects can be silent.
 
 Browser discovery and data use the generated AirBridge serial UUID family
@@ -101,19 +105,22 @@ values and BLE throughput require physical evidence.
 
 The same flow runs in reverse: PC-B originates **HELLO**, **ITEM_META**, **ITEM_DATA**, and **ITEM_DONE** over BLE; Flipper Zero forwards each message to PC-A over USB HID; PC-A ACKs each chunk back through the bridge.
 
-## USB Deploy Routing
+## Deploy Transport Routing
 
-The Bridge screen provides one explicit, user-confirmed deployment path:
+The Bridge screen provides two distinct, user-confirmed deployment paths:
 
 | FAP control | Typing transport | Bootstrap | Streamed bundle |
 |---|---|---|---|
 | **LEFT/RIGHT → USB Deploy, then OK** | USB HID keyboard | `bootstrap.js` | `app-usb.html.gz` |
+| **LEFT/RIGHT → BLE Deploy, then OK** | BLE HIDS keyboard | `bootstrap-ble.js` | `app-ble.html.gz` |
 
-The bootstrap requires `DecompressionStream("gzip")`, then requests the compressed
-bundle with `0x42` only after a user clicks its landing-page Connect button. USB
-streams fixed 64-byte vendor-HID reports. The bundle is deterministic gzip;
-unsupported browsers fail before the picker, and the deployed app opens WebHID.
-The FAP authenticates the normalized bootstrap and versioned bundle container
+Both bootstraps require `DecompressionStream("gzip")`, then request the compressed
+bundle with `0x42` only after a user clicks their landing-page Connect button. USB
+streams fixed 64-byte vendor-HID reports; BLE streams the same length/checksum
+format over the AirBridge serial notify characteristic. The bundle is deterministic gzip;
+unsupported browsers fail before the picker. The bundle itself matches the bootstrap
+transport, so the deployed app opens WebHID for USB Deploy and Web Bluetooth for
+BLE Deploy. The FAP authenticates the normalized bootstrap and versioned bundle container
 against generated SHA-256 constants before typing or streaming; the container
 also pins the decompressed HTML size and carries explicit `ABND` magic/version.
 

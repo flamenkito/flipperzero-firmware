@@ -13,8 +13,9 @@ reports. BLE AirBridge serial is a byte pipe carrying the same frames. Its
 generated UUIDs live in `web/airbridge-identity.js`: service
 `7b871228-baf0-c5b4-5f46-9c2613d627a3`, TX notify
 `87825ec0-7398-8cb7-3242-b083eaa34f27`, RX write
-`152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery and DIS accompany serial; there is
-no BLE HIDS. Identity, bonding and radio settings are described in
+`152f7eeb-e3b7-5898-ba41-7ff66121c98d`. Battery, DIS, and HIDS accompany serial;
+HIDS exists for explicit BLE Deploy typing and carries no Bridge-mode keyboard
+traffic. Identity, bonding and radio settings are described in
 [architecture](architecture.md); negotiated throughput requires hardware evidence.
 
 All multibyte chat integers are big-endian. The five-byte outer header is:
@@ -267,26 +268,37 @@ plaintext to roughly 256 TiB even before browser limits. In-memory authenticated
 receive normally reaches heap limits much earlier. Historical hardware throughput
 was about 0.5–2 KB/s, not a promise for v2 or all hosts. Chat data is not compressed.
 
-## USB-only bootstrap (separate, unchanged protocol)
+## Dual-transport bootstrap (separate, unchanged protocol)
 
-USB Deploy is explicit on-device consent: LEFT/RIGHT selects the prompt, OK
+Deploy is explicit on-device consent: LEFT/RIGHT selects the USB or BLE prompt, OK
 confirms cursor placement, `TYPING…` stays visible during typing, BACK aborts.
-Bridge data paths never emit keyboard reports. `bootstrap.js` requests only
-`app-usb.html.gz`; there is no BLE deploy output. The canonical builder owns
-`airbridge/dist/app-usb.html`, its `.gz` SD container and the generated digest
+Bridge data paths never emit keyboard reports. The selected deploy transport routes
+each bootstrap to its matching bundle:
+
+| Deploy control | Typed bootstrap | Bundle | Delivery channel |
+|---|---|---|---|
+| **LEFT/RIGHT → USB Deploy, then OK** | `bootstrap.js` | `app-usb.html.gz` | USB vendor HID |
+| **LEFT/RIGHT → BLE Deploy, then OK** | `bootstrap-ble.js` | `app-ble.html.gz` | AirBridge serial TX notify |
+
+The canonical builder owns
+`airbridge/dist/app-usb.html` and `app-ble.html`, their `.gz` SD containers and the generated digest
 header. Bundle regeneration/freshness is a separate integration gate, not implied
-by source-level v2 tests.
+by source-level v2 tests. No per-chunk ACK is used for either bootstrap stream; USB
+interrupt IN reports are hardware-reliable and BLE retries transient notification
+congestion.
 
 The FAP authenticates normalized printable ASCII bootstrap bytes and the complete
 SD bundle container against pinned SHA-256 before execution/delivery. Container:
 `ABND[4] || version:u8=1 || reservedZero[3] || htmlSize:u32le || gzipBytes`.
 It validates magic/version/reserved/size/gzip magic and digest, strips 12 bytes,
-and streams only gzip. Request is byte `0x42` in a 64-byte vendor HID report,
+and streams only gzip. Request is byte `0x42` in a 64-byte vendor HID report (USB) or a BLE RX write,
 accepted only in post-consent Deploy waiting state. In Bridge it is ordinary
 relay data. In other Deploy states the FAP shows `DEPLOY NOT ARMED`.
 
 The first response carries `totalLen:u32le || additiveChecksum:u32le`, padded to
-64 bytes; subsequent reports contain sequential zero-padded gzip bytes, without
+64 bytes on USB and sent as the eight header bytes directly on BLE TX notify;
+subsequent reports contain sequential gzip bytes, zero-padded to 64 bytes on USB
+and sent as raw notification payloads on BLE, without
 chat ACKs. Bootstrap accumulates totalLen, checks the additive uint32 sum,
 inflates with `DecompressionStream("gzip")` and boots HTML. This additive checksum
 is corruption detection, not the SD trust mechanism. Failure copy remains

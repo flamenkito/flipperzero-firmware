@@ -31,6 +31,7 @@ typedef struct {
 } AirbridgeBle;
 
 bool airbridge_ble_ensure_serial_adv(AirbridgeBle* ble);
+void airbridge_ble_set_hids_adv(AirbridgeBle* ble, bool enable);
 void airbridge_ble_service_pending(AirbridgeBle* ble);
 void airbridge_ble_note_rx(AirbridgeBle* ble, uint32_t tick);
 void airbridge_ble_force_reconnect(AirbridgeBle* ble);
@@ -42,4 +43,6 @@ bool airbridge_ble_configure(
     AirbridgeSerialServiceEventCallback callback,
     void* context);
 bool airbridge_ble_send(AirbridgeBle* ble, uint8_t* data, uint16_t len);
+bool airbridge_ble_kb_report(AirbridgeBle* ble, uint16_t key);
+bool airbridge_ble_kb_release(AirbridgeBle* ble);
 bool airbridge_ble_restore(AirbridgeBle* ble);

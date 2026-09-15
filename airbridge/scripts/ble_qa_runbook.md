@@ -57,11 +57,13 @@ user action.
 
    Expected exit `0`: every row is `PASS` (Darwin MAC/OUI/adjacent rows are the
     documented `WARN` exception). The target's local name equals config `ble_name`,
-    no row reports `flipper`, only the AirBridge serial service is advertised,
-    HIDS `0x1812` is absent, HP company data is present, and exactly one matching source exists.
+    no row reports `flipper`, the AirBridge serial service and HIDS `0x1812` are
+    advertised, HP company data is present, and exactly one matching source exists.
     On Windows/Linux, the actual address must exactly equal config `ble_mac` and its
-     OUI must be allowed. USB keyboard reports remain restricted to an explicitly
-     confirmed USB Deploy typing flow.
+     OUI must be allowed. The normal active state after startup/watchdog recovery
+     advertises both services in Bridge and Deploy; advertising HIDS does not emit
+     keyboard reports. Keyboard reports remain restricted to an explicitly
+     confirmed Deploy typing prompt (USB Deploy over USB HID, BLE Deploy over BLE HIDS).
 4. **Pair and enumerate GATT — physical gate when the OS dialog appears.** Start:
 
    ```sh
@@ -75,7 +77,7 @@ user action.
    the same numeric comparison then. Do not cancel the dialog.
 
    Expected exit `0`: the pre-flight scan is green, then GATT has only GAP `0x1800`,
-   GATT `0x1801`, DIS `0x180A`, Battery `0x180F`, and the serial
+   GATT `0x1801`, DIS `0x180A`, Battery `0x180F`, HIDS `0x1812`, and the serial
    service parsed from `airbridge/web/airbridge-identity.js`. DIS has only its four expected
    characteristics and config strings, no readable value matches a git hash, GAP has
    the config name and appearance `0x03C1`, and serial has exactly the four canonical
@@ -146,7 +148,7 @@ one named in the `question` prompt. Save captures only in `/tmp`,
 4. Expected console result is `BLE_QA_PASS`, the HP device name, and the generated
    AirBridge serial UUID. No `SecurityError` may appear. This proves the user can select
    the HP device from unfiltered discovery and `getPrimaryService(identity.SERIAL_SERVICE_UUID)`
-    succeeds via `optionalServices`; the profile exposes no HIDS `0x1812` service.
+    succeeds via `optionalServices` without requesting blocklisted HIDS `0x1812` in a filter.
 5. Capture the run. Expected browser evidence is: the requested picker options contain
    `acceptAllDevices: true`; `optionalServices` contains only the generated AirBridge
    serial UUID; no request filter contains `0x1812`; and the serial service is obtained

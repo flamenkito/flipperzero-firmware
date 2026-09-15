@@ -1,5 +1,6 @@
 #include "gap.h"
 #include "gap_command.h"
+#include "gap_int.h"
 
 #include "app_common.h" // IWYU pragma: keep
 #include <core/mutex.h>
@@ -21,10 +22,12 @@
 #define GAP_AD_STRUCTURE_OVERHEAD     2U
 #define GAP_ADV_FLAGS_LEN             (GAP_AD_STRUCTURE_OVERHEAD + 1U)
 #define GAP_ADV_128_BIT_UUID_LIST_LEN (GAP_AD_STRUCTURE_OVERHEAD + 16U)
+#define GAP_ADV_16_BIT_UUID_LIST_LEN  (GAP_AD_STRUCTURE_OVERHEAD + 2U)
 
 _Static_assert(
-    GAP_ADV_FLAGS_LEN + GAP_ADV_128_BIT_UUID_LIST_LEN <= GAP_ADV_DATA_MAX_LEN,
-    "Advertising data exceeds the legacy advertising limit");
+    GAP_ADV_FLAGS_LEN + GAP_ADV_128_BIT_UUID_LIST_LEN + GAP_ADV_16_BIT_UUID_LIST_LEN <=
+        GAP_ADV_DATA_MAX_LEN,
+    "AirBridge advertising data exceeds the legacy advertising limit");
 
 #define GAP_INTERVAL_TO_MS(x) (uint16_t)((x) * 1.25)
 
@@ -52,6 +55,7 @@ typedef struct {
     FuriThread* thread;
     FuriMessageQueue* command_queue;
     bool enable_adv;
+    bool advertise_hids;
     bool stop_requested;
     bool is_secure;
     uint8_t negotiation_round;
@@ -528,6 +532,18 @@ static bool gap_advertise_start(GapState new_state) {
             FURI_LOG_E(TAG, "delete TX power advertising data failed %d", status);
         }
     }
+    if(advertising_started && gap->advertise_hids) {
+        const uint8_t hids_adv_data[] = {
+            3U,
+            AD_TYPE_16_BIT_SERV_UUID_CMPLT_LIST,
+            HUMAN_INTERFACE_DEVICE_SERVICE_UUID & 0xFFU,
+            HUMAN_INTERFACE_DEVICE_SERVICE_UUID >> 8U,
+        };
+        status = aci_gap_update_adv_data(sizeof(hids_adv_data), hids_adv_data);
+        if(status) {
+            FURI_LOG_E(TAG, "add HIDS advertising data failed %d", status);
+        }
+    }
     if(!advertising_started) {
         gap->state = GapStateIdle;
         return false;
@@ -608,6 +624,30 @@ void gap_stop_advertising(void) {
     }
 }
 
+void gap_set_adv_hids(bool enable) {
+    if(!gap) {
+        return;
+    }
+
+    if(furi_mutex_acquire(gap->state_mutex, GAP_STOP_MUTEX_TIMEOUT) != FuriStatusOk) return;
+
+    if(gap->advertise_hids == enable) {
+        /* No-change early-out: callers may re-command idempotently (the FAP's
+         * adv watchdog re-arms HIDS every tick) without paying an adv
+         * stop/start refresh each time. */
+        furi_check(furi_mutex_release(gap->state_mutex) == FuriStatusOk);
+        return;
+    }
+    gap->advertise_hids = enable;
+
+    if(gap->state == GapStateAdvFast || gap->state == GapStateAdvLowPower) {
+        const GapCommand command = GapCommandAdvRefresh;
+        furi_check(furi_message_queue_put(gap->command_queue, &command, 0) == FuriStatusOk);
+    }
+
+    furi_check(furi_mutex_release(gap->state_mutex) == FuriStatusOk);
+}
+
 static void gap_advetise_timer_callback(void* context) {
     UNUSED(context);
     Gap* instance = gap;
@@ -640,6 +680,7 @@ bool gap_init(
     gap->state = GapStateIdle;
     gap->service.connection_handle = 0xFFFF;
     gap->enable_adv = true;
+    gap->advertise_hids = false;
 
     // Command queue allocation
     gap->command_queue = furi_message_queue_alloc(8, sizeof(GapCommand));
@@ -758,6 +799,10 @@ static int32_t gap_app(void* context) {
             (void)gap_advertise_start(GapStateAdvFast);
         } else if(command == GapCommandAdvLowPower) {
             (void)gap_advertise_start(GapStateAdvLowPower);
+        } else if(command == GapCommandAdvRefresh) {
+            if(gap->state == GapStateAdvFast || gap->state == GapStateAdvLowPower) {
+                gap_advertise_start(gap->state);
+            }
         } else if(command == GapCommandAdvStop) {
             gap_advertise_stop();
         } else if(command == GapCommandForceIdle) {

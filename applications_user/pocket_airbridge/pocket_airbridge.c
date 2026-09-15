@@ -49,8 +49,10 @@ static AirbridgeApp* airbridge_app_alloc(void) {
 
 static void airbridge_app_init_services(AirbridgeApp* app) {
     app->storage = furi_record_open(RECORD_STORAGE);
-    airbridge_typing_init(&app->typing, app->storage, airbridge_screens_show_error, app->screens);
-    airbridge_stream_init(&app->stream, app->storage, airbridge_screens_show_error, app->screens);
+    airbridge_typing_init(
+        &app->typing, app->storage, &app->ble, airbridge_screens_show_error, app->screens);
+    airbridge_stream_init(
+        &app->stream, app->storage, &app->ble, airbridge_screens_show_error, app->screens);
     airbridge_ui_init_view(app->ui);
     airbridge_ui_open_gui(app->ui);
     airbridge_ui_add_view(app->ui);

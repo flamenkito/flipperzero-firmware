@@ -71,6 +71,8 @@ export function itemReceiverAuthTests(vendor) {
     check(calls === 1, 'duplicate decryption');
     const acks = f.sent.slice(before).filter(m => m.type === p.MSG.ACK && m.ackedType === p.MSG.ITEM_DATA);
     check(acks.length === (action === 'duplicate' ? 2 : 0), 'stale DATA ACK');
+    const total = t.data.reduce((sum, frame) => sum + BigInt(p.parseV2Frame(frame).body.length), 0n);
+    check(f.receiver.snapshot().receivedCiphertextBytes === (action === 'duplicate' ? total : 0n), 'late authentication changed receive progress');
     if (action === 'duplicate') { await f.receiver.onMessage(t.done); check(f.items.length === 1, 'duplicate lost original'); }
     else check(f.items.length === 0 && f.receiver.snapshot().plaintextBytes === 0n, 'invalidated plaintext escaped');
     f.receiver.dispose();

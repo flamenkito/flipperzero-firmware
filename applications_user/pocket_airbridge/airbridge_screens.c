@@ -13,6 +13,10 @@ struct AirbridgeScreens {
     AirbridgeError error;
     AirbridgeScreenActions actions;
     void* context;
+    AirbridgeTypingTransport prompt_transport;
+    AirbridgeTypingTransport armed_transport;
+    bool deploy_request_accepted;
+    uint32_t waiting_pump_tick;
 };
 
 static void airbridge_screens_set_error(
@@ -32,7 +36,7 @@ static void airbridge_screens_describe_error(AirbridgeError* error, const char* 
     if(strstr(message, "bootstrap") != NULL || strstr(message, "BYTE 0x") != NULL) {
         title = strstr(message, "NO ") == message ? "Bootstrap missing" : "Invalid bootstrap";
         action = "Fix asset, then BACK";
-    } else if(strstr(message, "app-usb") != NULL) {
+    } else if(strstr(message, "app-usb") != NULL || strstr(message, "app-ble") != NULL) {
         title = "App bundle unavailable";
         action = "Copy bundle, then BACK";
     } else if(strcmp(message, "KEYBOARD SEND ERROR") == 0) {
@@ -86,14 +90,32 @@ const AirbridgeError* airbridge_screens_error(const AirbridgeScreens* screens) {
     return &screens->error;
 }
 
+/* Carousel slots: Bridge -> USB Deploy -> BLE Deploy -> Bridge. The prompt
+ * slot owns the transport that Confirm arms for typing and the later stream. */
+static int airbridge_screens_slot_of(const AirbridgeScreens* screens) {
+    if(screens->current != AirbridgeScreenDeployPrompt) return 0;
+    return screens->prompt_transport == AirbridgeTypingTransportBle ? 2 : 1;
+}
+
 static void airbridge_screens_carousel_next(AirbridgeScreens* screens, int direction) {
-    const int current = screens->current == AirbridgeScreenDeployPrompt ? 1 : 0;
-    const int next = (current + direction + 2) % 2;
-    if(next == 1 && !screens->actions.deploy_supported(screens->context)) {
+    const int next = (airbridge_screens_slot_of(screens) + direction + 3) % 3;
+    if(next == 1 &&
+       !screens->actions.deploy_supported(screens->context, AirbridgeTypingTransportUsb)) {
         airbridge_screens_show_error(screens, "Set USB to Kbd+Vendor");
         return;
     }
-    screens->current = next == 1 ? AirbridgeScreenDeployPrompt : AirbridgeScreenBridge;
+    if(next == 2 &&
+       !screens->actions.deploy_supported(screens->context, AirbridgeTypingTransportBle)) {
+        airbridge_screens_show_error(screens, "BLE NOT INSTALLED");
+        return;
+    }
+    if(next == 0) {
+        screens->current = AirbridgeScreenBridge;
+    } else {
+        screens->current = AirbridgeScreenDeployPrompt;
+        screens->prompt_transport =
+            next == 2 ? AirbridgeTypingTransportBle : AirbridgeTypingTransportUsb;
+    }
 }
 
 void airbridge_screens_show_error(void* context, const char* message) {
@@ -128,17 +150,49 @@ void airbridge_screens_show_fatal(AirbridgeScreens* screens, const char* message
 void airbridge_screens_typing_complete(AirbridgeScreens* screens) {
     if(screens->current == AirbridgeScreenTyping) {
         screens->current = AirbridgeScreenWaiting;
+        screens->waiting_pump_tick = furi_get_tick();
     }
 }
 
-void airbridge_screens_deploy_requested(AirbridgeScreens* screens) {
+void airbridge_screens_deploy_requested(
+    AirbridgeScreens* screens,
+    AirbridgeTypingTransport transport) {
     if(screens->current == AirbridgeScreenWaiting) {
-        if(screens->actions.stream_start(screens->context)) {
+        /* The relay only forwards direction-matching requests, so a mismatch
+         * here is stale input: hold Waiting rather than erroring out. */
+        if(transport != screens->armed_transport) return;
+        if(screens->actions.stream_start(screens->context, transport)) {
             screens->current = AirbridgeScreenStreaming;
+            screens->deploy_request_accepted = true;
         }
     } else if(screens->current != AirbridgeScreenBridge) {
         airbridge_screens_show_error(screens, "DEPLOY NOT ARMED");
     }
+}
+
+AirbridgeTypingTransport airbridge_screens_armed_transport(const AirbridgeScreens* screens) {
+    return screens->armed_transport;
+}
+
+AirbridgeTypingTransport airbridge_screens_render_transport(const AirbridgeScreens* screens) {
+    if(screens->current == AirbridgeScreenDeployPrompt) return screens->prompt_transport;
+    return screens->armed_transport;
+}
+
+bool airbridge_screens_deploy_request_accepted(const AirbridgeScreens* screens) {
+    return screens->deploy_request_accepted;
+}
+
+void airbridge_screens_note_ble_reconnect(AirbridgeScreens* screens) {
+    screens->deploy_request_accepted = false;
+}
+
+uint32_t airbridge_screens_waiting_pump_tick(const AirbridgeScreens* screens) {
+    return screens->waiting_pump_tick;
+}
+
+void airbridge_screens_waiting_pump_mark(AirbridgeScreens* screens, uint32_t tick) {
+    screens->waiting_pump_tick = tick;
 }
 
 void airbridge_screens_stream_complete(AirbridgeScreens* screens) {
@@ -175,7 +229,8 @@ bool airbridge_screens_handle_ui_intent(void* context, AirbridgeUiIntent intent)
         if(intent == AirbridgeUiIntentBack) {
             screens->current = AirbridgeScreenBridge;
         } else if(intent == AirbridgeUiIntentConfirm) {
-            if(screens->actions.typing_start(screens->context)) {
+            if(screens->actions.typing_start(screens->context, screens->prompt_transport)) {
+                screens->armed_transport = screens->prompt_transport;
                 screens->current = AirbridgeScreenTyping;
             }
         } else if(intent == AirbridgeUiIntentPrevious) {

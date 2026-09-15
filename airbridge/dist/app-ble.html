@@ -282,30 +282,30 @@ a { color: var(--ab-blue); text-underline-offset: 0.15em; }
 }
 
 </style>
-<title>Pocket AirBridge — USB Chat</title>
+<title>Pocket AirBridge — BLE Chat</title>
 </head>
-<body data-endpoint="usb">
-<h1 class="visually-hidden">Pocket AirBridge — USB Chat</h1>
+<body data-endpoint="ble">
+<h1 class="visually-hidden">Pocket AirBridge — BLE Chat</h1>
 <header class="console-chrome" aria-hidden="true">
   <nav class="tabline" aria-label="AirBridge endpoint">
     <span class="tabline-product">airbridge</span>
-    <span class="tabline-endpoint">usb/webhid</span>
+    <span class="tabline-endpoint">ble/web-bt</span>
     <span id="headerStatus" class="header-status" aria-label="Connection summary">No device · idle</span>
     <details class="console-menu">
       <summary>console</summary>
       <div class="console-menu-panel">
-        <button id="connectBtn" type="button" class="btn-primary">Connect USB</button>
+        <button id="connectBtn" type="button" class="btn-primary">Connect BLE</button>
         <button id="disconnectBtn" type="button" disabled>Disconnect</button>
-        <span class="endpoint-helper-slot"><span class="hint endpoint-helper">Select Pocket AirBridge when prompted.</span></span>
+        <span class="endpoint-helper-slot"><span class="hint endpoint-helper" id="pickerHint">Pick the HP Wireless device in the list.</span></span>
       </div>
     </details>
     <details class="mock-banner">
       <summary>MODE=mock</summary>
-      <span class="mock-help">Mock mode bypasses WebHID. Use <span class="mono">?mock=1&amp;mockPeer=demo</span> on both pages for paired chat, or <span class="mono">?mock=1</span> alone for the in-page sender verifier.</span>
+      <span class="mock-help">Mock mode bypasses Web Bluetooth. Use <span class="mono">?mock=1&amp;mockPeer=demo</span> on both pages for paired chat, or <span class="mono">?mock=1</span> alone for the in-page sender verifier.</span>
     </details>
   </nav>
   <div class="statusline" aria-label="Connection and encryption status">
-    <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span class="status-field"><span aria-hidden="true">USB=</span><span id="connectionStatus">disconnected</span></span></span>
+    <span id="statusPill" class="status-pill status-disconnected"><span class="dot"></span><span class="status-field"><span aria-hidden="true">BLE=</span><span id="connectionStatus">disconnected</span></span></span>
     <span id="cryptoPill" class="status-pill crypto-pill crypto-locked" aria-live="polite"><span class="status-field"><span id="cryptoLock" class="crypto-lock" aria-hidden="true">SEC</span><span aria-hidden="true">=</span><span id="cryptoState" class="mono">locked</span></span></span>
     <span class="status-pill"><span class="status-field">SAS=<strong id="sasCode">------</strong></span><span class="sas-verified" aria-label="verified" hidden>✓</span></span>
     <span id="displayState" class="status-state">state=idle</span>
@@ -6248,10 +6248,10 @@ return { createChatPage };
 const { createChatOutbound } = __airbridgeModules['airbridge-chat-outbound.js'];
 const { AirBridgeCryptoSession, CRYPTO_ROLE, ItemReceiver } = __airbridgeModules['airbridge-protocol.js'];
 const { createChatPage } = __airbridgeModules['airbridge-chat-page.js'];
-const { WebHIDAdapter } = __airbridgeModules['airbridge-transports.js'];
+const { WebBluetoothAdapter } = __airbridgeModules['airbridge-transports.js'];
 const { addMessage, createLogger } = __airbridgeModules['airbridge-ui.js'];
 
-const isMockMode = new URLSearchParams(location.search).get('mock') === '1';
+const mockMode = new URLSearchParams(location.search).get('mock') === '1';
 const mockPeer = new URLSearchParams(location.search).get('mockPeer');
 const evidenceMode = new URLSearchParams(location.search).get('evidence') === '1';
 const debugMode = new URLSearchParams(location.search).get('debug') === '1';
@@ -6285,11 +6285,11 @@ const ctx = {
   get inboundHelloItemId() { return inboundHelloItemId; },
   set inboundHelloItemId(value) { inboundHelloItemId = value; },
   $, logger, log, transcriptController,
-  isMockMode, mockPeerName: mockPeer, evidenceMode, debugMode,
+  isMockMode: mockMode, mockPeerName: mockPeer, evidenceMode, debugMode,
 };
 
-function setupProtocol() { return page.wireReceiverEvents(); }
-async function handleInboundFrame(frame) { return page.handleInboundFrame(frame); }
+function wireProtocolEvents() { return page.wireReceiverEvents(); }
+async function handleFrame(frame) { return page.handleInboundFrame(frame); }
 async function connect() { return page.connect(); }
 async function disconnect() { return page.disconnect(); }
 function updateCryptoPanel(status) { return page.updateCryptoPanel(status); }
@@ -6299,13 +6299,13 @@ async function sendText() { return page.sendText(); }
 async function sendSelectedFile() { return page.sendSelectedFile(); }
 
 const page = createChatPage(ctx, {
-  endpoint: 'usb',
-  cryptoRole: CRYPTO_ROLE.USB,
-  TransportAdapter: WebHIDAdapter,
-  mockPeerRole: CRYPTO_ROLE.BLE,
-  mockNames: { local: 'Mock USB', peer: 'Mock BLE peer' },
-  readyLog: 'WebHID mode ready. Use Chrome/Edge on localhost or HTTPS.',
-  evidenceEndpoint: 'usb-chat',
+  endpoint: 'ble',
+  cryptoRole: CRYPTO_ROLE.BLE,
+  TransportAdapter: WebBluetoothAdapter,
+  mockPeerRole: CRYPTO_ROLE.USB,
+  mockNames: { local: 'Mock BLE (PC-B)', peer: 'Mock USB peer' },
+  readyLog: 'Web Bluetooth mode ready. Use Chrome/Edge on localhost or HTTPS.',
+  evidenceEndpoint: 'ble-chat',
 });
 </script>
 </body>

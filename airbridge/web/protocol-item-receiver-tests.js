@@ -39,6 +39,36 @@ export function doneAcks(sent) { return sent.filter(m => m.type === p.MSG.ACK &&
 
 export function itemReceiverTests(vendor) {
   const tests = [];
+  tests.push(['Receiver progress counts unique bytes across segments and resets for the next item', async () => {
+    const f = await fixture(vendor);
+    let expected = 0n;
+    f.receiver.on('data', progress => check(progress.receivedCiphertextBytes === expected, 'incorrect progress event'));
+    try {
+      for (const size of [0, 140000]) {
+        const transfer = await item(f.sender, new Uint8Array(size));
+        const completed = f.items.length;
+        expected = 0n;
+        await start(f.receiver, transfer);
+        check(f.receiver.snapshot().receivedCiphertextBytes === 0n, 'new item inherited progress');
+        for (let index = 0; index < transfer.data.length; index++) {
+          const frame = transfer.data[index], msg = p.parseV2Frame(frame);
+          expected += BigInt(msg.body.length);
+          await f.receiver.onMessage(frame);
+          check(f.receiver.snapshot().receivedCiphertextBytes === expected, 'progress reset at a segment boundary');
+          if (msg.seq === 0 || index === transfer.data.length - 1 || p.parseV2Frame(transfer.data[index + 1]).segment !== msg.segment) {
+            await f.receiver.onMessage(frame);
+            check(f.receiver.snapshot().receivedCiphertextBytes === expected, 'duplicate DATA advanced progress');
+          }
+        }
+        const meta = p.decodeMeta(transfer.meta.map(frame => p.parseV2Frame(frame, transfer.id).payload));
+        check(expected === BigInt(meta.totalCiphertextBytes), 'progress did not reach the advertised total');
+        check(f.items.length === completed, 'progress published a download before verification');
+        await f.receiver.onMessage(transfer.done);
+        check(f.errors.length === 0 && f.items.length === completed + 1, 'progress affected verification');
+        check(f.receiver.snapshot().receivedCiphertextBytes === 0n, 'completed item retained progress');
+      }
+    } finally { f.receiver.dispose(); }
+  }]);
   for (const stage of ['idle', 'hello', 'meta']) tests.push([`Receiver DATA before ready at ${stage}`, async () => {
     // Given an idle or incompletely negotiated item.
     const f = await fixture(vendor), t = await item(f.sender);

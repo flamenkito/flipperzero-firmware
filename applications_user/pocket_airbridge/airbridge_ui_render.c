@@ -24,12 +24,19 @@ void airbridge_ui_draw_progress(Canvas* canvas, uint8_t y, uint64_t position, ui
 }
 
 void airbridge_ui_render_deploy_prompt(Canvas* canvas, const AirbridgeUiSnapshot* snapshot) {
+    const bool use_ble = snapshot->deploy_transport == AirbridgeTypingTransportBle;
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 0, 10, "USB Deploy");
+    canvas_draw_str(canvas, 0, 10, use_ble ? "BLE Deploy" : "USB Deploy");
     canvas_set_font(canvas, FontSecondary);
     airbridge_ui_draw_identity(canvas, snapshot, 19);
-    canvas_draw_str(canvas, 0, 31, "Place cursor in browser");
-    canvas_draw_str(canvas, 0, 42, "console, then press OK");
+    if(use_ble) {
+        canvas_draw_str(canvas, 0, 31, "Pair in BT settings:");
+        canvas_draw_str(canvas, 0, 42, snapshot->ble_name);
+        canvas_draw_str(canvas, 0, 54, "then press OK");
+    } else {
+        canvas_draw_str(canvas, 0, 31, "Place cursor in browser");
+        canvas_draw_str(canvas, 0, 42, "console, then press OK");
+    }
 }
 
 void airbridge_ui_render_callback(Canvas* canvas, void* context) {
