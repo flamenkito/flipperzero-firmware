@@ -26,6 +26,9 @@ There is no separate product repository, patch bundle, or patch-application step
 For a browser-only protocol check, open the canonical harness URL:
 `http://127.0.0.1:8081/protocol-harness.html`.
 
+For deploy timeouts, pairing problems, or persistent `TXERR`, see
+[troubleshooting and the BLE Deploy restoration findings](docs/troubleshooting.md).
+
 ## Terminal controls
 
 The interface follows a Vim/Neovim terminal layout: a numbered text buffer,
@@ -179,6 +182,12 @@ Tested on a real Flipper Zero between `chat-usb.html` and `chat-ble.html`:
 
 ## Current verification scope
 
+The 2026-09-15 restoration (`90a19db1`, API 87.15) passed firmware/FAP builds,
+host tests, bundle checks, and the 275/275 browser harness. After the firmware
+update, the owner reported “all works perfectly.” See the
+[verification record](docs/troubleshooting.md#ble-deploy-restoration-2026-09-15)
+for the captured checks and the scope of that hardware report.
+
 Earlier roadmap work added browser-only E2E crypto, SAS unlock, deterministic gzip Deploy bundles, exact-frame retry, BLE static tuning evidence, deploy typing jitter, and per-device DIS serials. Current protocol v2 streaming is covered by Node and browser/mock tests; the historical hardware results above are not v2 proof. Generated bundle integration and physical USB/BLE verification are separate gates. BLE service UUID hiding, Windows USB tree comparison and negotiated radio/throughput claims still need physical evidence. Resume is not implemented.
 
 ## Project Structure
@@ -269,7 +278,7 @@ Static BLE tuning evidence records configured ATT MTU 414, DLE enabled, 2M PHY p
 
 The custom FAP lives in `applications_user/pocket_airbridge/` and is built with this repository's full firmware build system.
 
-Rebuild firmware and the FAP together at API 87.14. Exit waits on a `Closing...`
+Rebuild firmware and the FAP together at API 87.15. Exit waits on a `Closing...`
 screen until both transports are restored. An independent supervisor reports
 stalled operations; it does not forcibly unload the app. See
 [firmware ownership and fault limits](docs/firmware-boundary.md).

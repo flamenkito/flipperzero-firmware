@@ -59,8 +59,10 @@ cd /Users/asutov/projects/flipperzero-firmware
 python3 airbridge/tests/run_tests.py
 ```
 
-Firmware and FAP must be rebuilt together at API 87.14. Obsolete AirBridge exports
-were removed without changing the API major, by explicit local policy. Do not
+Firmware and FAP must be rebuilt together at API 87.15. The earlier API 87.14
+ownership refactor removed obsolete AirBridge exports without changing the API
+major, by explicit local policy. The BLE Deploy restoration adds the HIDS
+advertising control; only minor API bumps are permitted. Do not
 deploy an older AirBridge FAP against this firmware. Ordinary loader checks remain
 enabled. The remaining shared changes are documented in
 [firmware-boundary.md](firmware-boundary.md).
@@ -101,7 +103,8 @@ python3 scripts/runfap.py -p /dev/cu.usbmodemflip_Luwot1 \
   -t /ext/apps/Tools/pocket_airbridge.fap
 ```
 
-The `size` command should report the uploaded FAP size. In the verified build it reported `3776` bytes.
+The `size` command must match the local FAP's current byte size; do not compare
+against a historical build's size.
 
 **Canonical location:** the FAP lives ONLY at `/ext/apps/Tools/pocket_airbridge.fap` (the `fap_category="Tools"` menu location). Never deploy a copy to `/ext/apps/` root or another category folder — a second copy goes stale silently and the menu can launch the old build. Before deploying, check for duplicates:
 ```bash
@@ -252,10 +255,10 @@ in-flight transfer.
 
 ### The Deploy Flow
 
-1. From the Bridge screen, press **RIGHT** (or **LEFT**) to reach the USB Deploy prompt or the BLE Deploy prompt, then press **OK** on the prompt to start that deploy.
+1. From the Bridge screen, press **RIGHT** (or **LEFT**) to reach the USB Deploy prompt or the BLE Deploy prompt. Leave the prompt open while preparing the target computer.
 2. On the target PC, open a tab at `https://blank.org` (not `about:blank` — some Chrome builds report `window.isSecureContext === false` there; blank.org loads from browser cache offline), open DevTools, and place the cursor in the console. For BLE Deploy, pair the target to the Flipper BLE identity first if this is the first use. HIDS stays enabled in the advertising policy for the complete AirBridge profile lifetime and is disabled only during teardown; the Bridge watchdog reasserts that idempotent HAL policy within its 2.5-second cadence and restarts advertising only when GAP is idle, without disconnecting an active link. Advertising HIDS alone does not emit keyboard reports.
 3. On OK, the FAP authenticates and types `bootstrap.js` over the USB keyboard collection or `bootstrap-ble.js` over BLE HIDS with a small bounded per-key timing jitter. The `TYPING via USB` / `TYPING via BLE` screen shows a determinate progress bar (chars typed / total, plus %) for the entire emission; BACK aborts instantly. No keyboard report is emitted in Bridge mode or on a bridge data path; typing is available only after the explicit Deploy menu action and confirmation.
-4. The executed bootstrap paints a landing page. While it waits, the FAP shows `Waiting for browser...` with an indeterminate marquee and the hint `Click Connect in the browser`. Clicking **Connect** supplies the browser user gesture, opens the matching WebHID or Web Bluetooth transport, and sends `0x42` (over the USB vendor collection, or as a BLE RX write). During BLE Deploy Waiting, a central that has not requested the bundle is disconnected after 15 seconds and advertising resumes, preventing a bonded macOS HID connection from starving a new browser picker.
+4. The executed bootstrap paints a landing page. While it waits, the FAP shows `Waiting for browser...` with an indeterminate marquee and the hint `Click Connect in the browser`. Clicking **Connect** supplies the browser user gesture, opens the matching WebHID or Web Bluetooth transport, and sends `0x42` (over the USB vendor collection, or as a BLE RX write). During BLE Deploy Waiting, an unsubscribed central is disconnected after 15 seconds and advertising resumes; active numeric-comparison pairing restarts that window. A subscribed central that never requests the bundle has a separate 90-second Waiting limit.
 5. The FAP authenticates and streams the length+checksum header and transport-matched `app-usb.html.gz` or `app-ble.html.gz` bundle (see [protocol.md](protocol.md), "Bootstrap Stream Protocol"). The bootstrap inflates it with `DecompressionStream("gzip")`; unsupported browsers show `Transfer unsupported - retry`. The `Serving app via USB` / `Serving app via BLE` screen shows a determinate progress bar (KB sent / total, plus %); BACK aborts.
 6. The screen shows `Done` and returns to Bridge.
 
@@ -391,8 +394,16 @@ use the chat pages above for all transfers.
 Bonding is on and persists across app sessions. The first pairing on each host
 shows a numeric-comparison code; later bonded reconnects are silent. macOS may
 auto-reconnect the bonded keyboard through its HID daemon. The BLE Deploy
-Waiting screen disconnects a central that does not request the bundle within 15
-seconds, then resumes advertising, so a browser picker gets another chance.
+Waiting screen disconnects an unsubscribed central after 15 seconds, then resumes
+advertising, so a browser picker gets another chance. Active pairing pauses that
+eviction by restarting the window.
+
+For first-time BLE Deploy use on macOS, pair through **System Settings → Bluetooth**
+before Web Bluetooth so the OS binds the keyboard service. The effective GAP
+appearance stays `GAP_APPEARANCE_UNKNOWN` (`0x0000`), even when the config contains
+keyboard appearance `0x03C1`; that override avoids keyboard-style PIN entry.
+HIDS remains advertised. A four-second eviction window was rejected on hardware
+because it interrupted discovery before serial subscription.
 
 For chat, Chrome tries `navigator.bluetooth.getDevices()` before opening a
 picker. Enable `chrome://flags/#enable-web-bluetooth-new-permissions-backend`
@@ -422,6 +433,9 @@ only the confirmed Deploy typing prompts send keyboard reports.
 
 ## Troubleshooting
 
+See [troubleshooting](troubleshooting.md) for the 2026-09-15 root cause, diagnostic
+logs, watchdog timing, GATT return conventions, and regression checklist.
+
 | Symptom | Fix |
 |---|---|
 | `API version is still WIP` | Edit `targets/f7/api_symbols.csv` — change `?` to `+` for new entries, then rebuild |
@@ -436,12 +450,12 @@ only the confirmed Deploy typing prompts send keyboard reports.
 | `runfap.py` ends with `Device not configured` | Expected for Pocket AirBridge after launch because the app switches USB from CDC serial to custom HID |
 | Flipper unresponsive after app launch or a USB mode switch | Probe with `python3 airbridge/tools/flipper_alive.py --wait 30`. A healthy CLI answers `\r` with a `>:` prompt within 5 s. Port present but silent means the firmware is hung (USB CDC still enumerated, firmware dead). Recovery is a physical reset; do not attempt a DTR-toggle reset from software |
 | `storage.py` can't find `/dev/cu.usbmodemflip_*` | The AirBridge app is still running — exit it (long BACK) or restart the Flipper so the serial port reappears |
-| `TXERR` counter is non-zero | One `TXERR` can occur during a mid-flight cancel race (a frame reaches the main loop after the peer went away); benign if the transfer error is visible on both pages. Persistent `TXERR` growth means the BLE link is down — reconnect PC-B |
-| Pairing code dialog vanishes during deploy Connect before it can be confirmed | The Waiting advertising pump runs every 2.5 s but only restarts advertising when GAP is idle; it does not disconnect an active numeric-comparison pairing. Separately, the Waiting watchdog disconnects an unsubscribed central after 15 s, while a subscribed central that sends no deploy `0x42` request is treated as a zombie after 90 s. Redeploy the current FAP if an older 2.5 s force-disconnect build is installed. |
+| `TXERR` counter is non-zero | One `TXERR` can occur during a visible mid-flight cancel race. Persistent errors can mean a disconnected link or an unsubscribed serial service. If discovery succeeds but both forwarding counters stay zero, check HID event ownership; the fix requires a full firmware flash. |
+| Pairing code dialog vanishes during deploy Connect before it can be confirmed | The 2.5 s advertising pump restarts only from GAP idle. The separate 15 s unsubscribed-link watchdog restarts its window during active pairing; a subscribed central with no accepted `0x42` has a 90 s Waiting limit. Use the current pairing-aware FAP; a four-second eviction variant was rejected. |
 | App is missing an icon | Add `applications_user/pocket_airbridge/icon.png` and `fap_icon="icon.png"` in `application.fam`, then rebuild/redeploy |
 
 ## Important Notes
 
 - **This is a custom firmware/apps repository.** Core firmware changes are in-tree and must be reviewed with the rest of this repository.
-- **The BLE Serial service is shared.** While Pocket AirBridge is running, qFlipper/mobile app RPC will NOT work because we intercept serial data. This is expected for the demo.
+- **AirBridge owns its BLE serial service.** The FAP replaces the default Bluetooth profile and routes its custom serial UUIDs directly to the relay. Stock Bluetooth RPC is unavailable while this profile is active.
 - **The WebHID data channel** is the vendor-defined collection inside the active impersonation profile. When the app exits, it restores the previous USB mode (usually `usb_cdc_dual`).

@@ -2,20 +2,22 @@
 
 Pocket AirBridge's USB profiles, BLE profile, DIS strings, serial UUIDs, GATT
 service, relay routing, and reconnect policy live in
-`applications_user/pocket_airbridge/`. Browser assets and their wire protocol are
-unchanged. `gen_identity.py` reads the app-owned UUID header.
+`applications_user/pocket_airbridge/`. Browser assets and their wire protocol
+live under `airbridge/`. `gen_identity.py` reads the app-owned UUID header.
 
 The comparison base is firmware commit `c9ab2b68`. The vendor submodule is back
 at `133182d5583e998bb263cd947105be4df9c29cb3`. The USB HAL and `furi/core/` match
-that base. The only remaining `lib/` source change is generic native HID
-partial-creation cleanup, needed alongside the GATT allocator's failure reporting.
+that base. Shared native HID changes cover partial-creation cleanup and event
+ownership: the HID callback must not consume another service's GATT writes.
 Normal advertising returns to the firmware's low-power interval after its initial
 fast period.
 
-Against `c9ab2b68`, the shared-source delta went from 49 paths (+4,128/-334)
-at implementation baseline `3b253f12` to 19 paths (+1,111/-209): about 70% fewer
+At the ownership refactor, against `c9ab2b68`, the shared-source delta went from
+49 paths (+4,128/-334) at implementation baseline `3b253f12` to 19 paths
+(+1,111/-209): about 70% fewer
 changed lines. This counts `applications/services/`, `targets/`, `furi/`, and
 `lib/`, including the vendor gitlink; it excludes the app and product assets.
+These are historical refactor counts, before the BLE Deploy restoration.
 
 ## Remaining Shared Changes
 
@@ -23,12 +25,12 @@ changed lines. This counts `applications/services/`, `targets/`, `furi/`, and
 | --- | --- |
 | `bt.c`, `bt_i.h`, `bt_profile_quiescence.h` | Service-owned profile publication and reader references prevent destruction during direct GATT operations. A mailbox avoids blocking the BLE event worker on the service queue. SD reload leaves external profiles alone; retries retain only the firmware's default profile. |
 | `bt_api.c`, `bt.h`, `bt_status_registration.h` | Callback registration, ordered initial status, and draining must synchronize with the firmware dispatcher. A pairing-wait flag lets the app exclude human input from deadlines. |
-| `furi_hal_bt.c`, `ble_event_thread.c` | Join the event worker before destroying service callbacks; late IRQ notifications must not address a freed thread. Completed teardown is synchronous. |
+| `furi_hal_bt.c`, `ble_event_thread.c` | Join the event worker before destroying service callbacks; late IRQ notifications must not address a freed thread. Completed teardown is synchronous. The HAL also exposes idempotent HIDS advertising control. |
 | `ble_app.c`, `ble_glue.c` | Idempotent failed-start cleanup, with one owner for BLE app destruction. |
-| `gap.c`, `gap.h`, `gap_command.h` | Custom complete names and manufacturer data share a scan response; honest connection/disconnection state and timer/worker draining prevent stale events accessing freed state. |
+| `gap.c`, `gap.h`, `gap_int.h`, `gap_command.h` | Custom complete names and manufacturer data share a scan response; honest connection/disconnection state and timer/worker draining prevent stale events accessing freed state. The GAP worker refreshes HIDS advertising on request. |
 | `furi_ble/gatt.c`, `services/battery_service.c` | Partial GATT creation reports failure and unwinds allocations; the app cannot implement this inside the existing firmware GATT allocator. |
-| `lib/ble_profile/extra_services/hid_service.c` | Native HID creation unwinds partial allocations and unregisters its event callback before freeing the service, including allocation-failure paths. |
-| `target.json`, `api_symbols.csv` | Existing GAP state query, public service-header lookup, profile references and status registration exports. No AirBridge-specific exports. |
+| `lib/ble_profile/extra_services/hid_service.c` | Native HID creation unwinds partial allocations and unregisters its callback before freeing the service. The callback acknowledges only its own attribute range and does not swallow serial subscriptions/RX writes or other services' indication confirmations. |
+| `target.json`, `api_symbols.csv` | Existing GAP state query, public service-header lookup, profile references, status registration, and HIDS advertising exports. No AirBridge-specific exports. |
 
 ## Exit And Faults
 
@@ -69,9 +71,11 @@ supervisor.
 
 ## Compatibility And Verification
 
-API 87.14 intentionally removes the old product exports without a major bump.
-Rebuild and deploy firmware plus Pocket AirBridge together. Old AirBridge FAPs
-are unsupported; unrelated API exports and loader validation are preserved.
+The ownership refactor at API 87.14 intentionally removed the old product exports
+without a major bump. Current API **87.15** includes the HIDS advertising control.
+Only minor API bumps are permitted. Rebuild and deploy firmware plus Pocket
+AirBridge together. Old AirBridge FAPs are unsupported; unrelated API exports
+and loader validation are preserved.
 
 Run `python3 airbridge/tests/run_tests.py`, `./fbt`, and
 `./fbt fap_pocket_airbridge`. Host tests include an independently blocked cleanup
@@ -81,8 +85,20 @@ the real USB driver's reinitialization and detach paths, protocol crypto checks,
 browser transport races, and identity generation.
 
 Host success is not hardware acceptance. Required device checks remain bidirectional
-text, file SHA-256, USB Deploy and BACK abort, browser protocol harness,
+text, file SHA-256, USB/BLE Deploy and BACK abort, browser protocol harness,
 active-link exit/relaunch/reconnect, and stalled-operation warning/late cleanup.
+
+### Verification Record (2026-09-15)
+
+The BLE Deploy restoration and shared HID event-routing fix are in `90a19db1`.
+Firmware/FAP builds, 16 host C modules, 213 JavaScript tests, 14 bundle tests,
+and the 275/275 browser harness passed. The new dispatcher regression fails on
+the original HID handler and passes with either registration order after the
+fix, including under sanitizers. The owner reported “all works perfectly” after
+the firmware update. See [troubleshooting](troubleshooting.md) for the full
+incident record and distinction between recorded tests and owner-reported hardware
+results. The earlier pending deployment notes below describe the September 7
+session, not the current restoration status.
 
 ### Verification Record (2026-09-07)
 

@@ -305,3 +305,11 @@ is corruption detection, not the SD trust mechanism. Failure copy remains
 `Transfer unsupported - retry`, `Transfer corrupt - retry` or
 `Transfer timed out - retry`; Connect re-arms. Bootstrap behavior is not changed
 by chat protocol v2.
+
+Both bootstraps use an eight-second **inactivity** watchdog, refreshed by each
+incoming report/notification; this is not a total transfer deadline. The BLE
+stream promise/watchdog starts after GATT discovery and TX subscription, before
+the `0x42` write, so a human picker/pairing delay does not pre-expire the stream.
+The completed BLE bootstrap intentionally disconnects before booting the page;
+that disconnect must not overwrite success with a transfer error. Diagnostic
+logs and failure examples are in [troubleshooting](troubleshooting.md#bootstrap-deadlines-and-logs).

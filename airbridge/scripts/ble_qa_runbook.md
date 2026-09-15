@@ -4,6 +4,12 @@ Run this only after the W8 tooling self-test is green. It is the hardware eviden
 procedure for the BLE half of the HP impersonation goal. It does not flash,
 deploy, or claim a result that was not observed.
 
+For the BLE Deploy restoration, event-routing defect, and watchdog rules, see
+[troubleshooting](../docs/troubleshooting.md). Current effective GAP appearance
+is unknown (`0x0000`), with both AirBridge serial and HIDS advertised. The profile
+deliberately overrides a configured keyboard appearance to avoid macOS
+keyboard-style PIN entry.
+
 ## Preconditions
 
 1. The W1–W6 and W10 firmware image is flashed to the Flipper and the Pocket
@@ -74,14 +80,26 @@ user action.
    numeric-comparison dialog appears, use the alert and `question` tool; compare the
    number shown on the host with the Flipper and accept only when they agree. On macOS,
    CoreBluetooth owns pairing and may prompt on the first authenticated access; accept
-   the same numeric comparison then. Do not cancel the dialog.
+   the same numeric comparison then, or stop this step if pairing is canceled.
+   For first-time BLE Deploy use on macOS, pair in **System Settings → Bluetooth**
+   first so the OS binds the HIDS keyboard; serial discovery alone does not verify
+   keyboard binding.
 
-   Expected exit `0`: the pre-flight scan is green, then GATT has only GAP `0x1800`,
+   Expected service inventory: the pre-flight scan is green, then GATT has only GAP `0x1800`,
    GATT `0x1801`, DIS `0x180A`, Battery `0x180F`, HIDS `0x1812`, and the serial
    service parsed from `airbridge/web/airbridge-identity.js`. DIS has only its four expected
    characteristics and config strings, no readable value matches a git hash, GAP has
-   the config name and appearance `0x03C1`, and serial has exactly the four canonical
+   the config name and effective appearance `0x0000`, and serial has exactly the four canonical
    UUIDs parsed from that module.
+
+   **Known checker mismatch (2026-09-15):** `ble_qa_scan.py gatt` still compares
+   GAP appearance to `config.appearance`, and the sample config contains `0x03C1`.
+   On Windows/Linux this row can report `FAIL` for the correct firmware override.
+   Preserve the measured row and mark this as a checker mismatch, rather than
+   claiming an all-green scan or changing the firmware back to keyboard appearance.
+   The checker needs to follow the effective profile policy. On macOS,
+   CoreBluetooth hides GAP/GATT; appearance is reported as `WARN` and cannot
+   validate the override. Passive `scan` does not check the GAP appearance value.
 5. **Exit FAP — physical gate.** Long-press BACK to leave Pocket AirBridge. Confirm with
    `question` when the Flipper has returned to its desktop; this exercises the FAP's
    mandatory profile restore path.
