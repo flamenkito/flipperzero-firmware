@@ -34,6 +34,19 @@ import {
 } from './airbridge-ui.js';
 
 const textEncoder = new TextEncoder();
+const COMMANDS = Object.freeze([
+  Object.freeze({ name: 'connect', description: 'connect transport', aliases: [] }),
+  Object.freeze({ name: 'disconnect', description: 'disconnect transport', aliases: [] }),
+  Object.freeze({ name: 'clear', description: 'clear transcript', aliases: [] }),
+  Object.freeze({ name: 'clearlog', description: 'clear diagnostics', aliases: [] }),
+  Object.freeze({ name: 'cancel', description: 'cancel active transfer', aliases: [] }),
+  Object.freeze({ name: 'accept', description: 'accept matching SAS', aliases: [] }),
+  Object.freeze({ name: 'abort', description: 'abort SAS session', aliases: [] }),
+  Object.freeze({ name: 'file', description: 'pick now; send immediately when verified', aliases: ['attach'] }),
+  Object.freeze({ name: 'logs', description: 'toggle diagnostics', aliases: [] }),
+  Object.freeze({ name: 'help', description: 'list commands', aliases: [] }),
+]);
+const COMMAND_BY_TOKEN = new Map(COMMANDS.flatMap(command => [command.name, ...command.aliases].map(token => [token, command])));
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -77,6 +90,20 @@ export function createChatPage(ctx, config) {
   let inboundMeter = null;
   let inboundTiming = null;
   let displayStateObserver = null;
+  let promptContext = null;
+  let termPrompt = null;
+  let termMirror = null;
+  let termMirrorTrack = null;
+  let termMirrorValue = null;
+  let termGhost = null;
+  let termCursor = null;
+  let termSuggestions = null;
+  let termCursorFrame = 0;
+  let termCursorResizeObserver = null;
+  let completionMatches = [];
+  let completionIndex = 0;
+  let completionDismissedValue = null;
+  let pendingFileSend = null;
   const evidenceRecords = [];
 
   const log = (message, level) => ctx.log(message, level);
@@ -102,6 +129,7 @@ export function createChatPage(ctx, config) {
     if (!detail) return;
     const phase = ctx.$('panelState').dataset.phase || 'Ready';
     const active = phase === 'Hashing' || phase === 'Sending' || phase === 'Receiving' || phase === 'Verifying';
+    document.querySelector('.diagnostic-rail')?.classList.toggle('transfer-active', active);
     if (!active) {
       detail.hidden = true;
       detail.textContent = '';
@@ -158,30 +186,213 @@ export function createChatPage(ctx, config) {
     const unlocked = isCryptoUnlocked();
     const phase = ctx.$('panelState').dataset.phase || 'Ready';
     const state = !connected ? 'idle' : !unlocked ? 'locked' : phase === 'Ready' ? 'ready' : phase.toLowerCase();
-    ctx.$('displayState').dataset.state = state;
-    ctx.$('displayState').textContent = `state=${state}`;
+    const displayState = ctx.$('displayState');
+    displayState.dataset.state = state;
+    let value = displayState.querySelector('.status-value');
+    if (!value) {
+      const key = document.createElement('span');
+      key.className = 'status-key';
+      key.dataset.label = 'state:';
+      key.textContent = 'state=';
+      value = document.createElement('span');
+      value.className = 'status-value';
+      const cursor = document.createElement('span');
+      cursor.className = 'status-cursor';
+      cursor.setAttribute('aria-hidden', 'true');
+      displayState.replaceChildren(key, value, cursor);
+    }
+    value.textContent = state;
     updateHeaderStatus(state);
     updateStateSurfaces(connected, unlocked);
+    renderPromptContext();
   }
 
   function updateHeaderStatus(plainState = 'idle') {
     const banner = ctx.$('headerStatus');
     if (!banner) return;
-    // When the statusline rail is visible (mock/debug) it already shows every
-    // fact, so the header carries only the state; in production it is the sole summary.
-    const railVisible = document.body.classList.contains('mock') || document.body.classList.contains('debug');
-    if (railVisible) {
-      banner.textContent = plainState;
+    banner.dataset.state = plainState;
+    banner.textContent = plainState;
+  }
+
+  function renderPromptContext() {
+    if (!promptContext) return;
+    const endpoint = document.querySelector('.tabline-endpoint')?.textContent.trim() || config.endpoint;
+    const connection = ctx.$('connectionStatus').textContent;
+    const crypto = ctx.$('cryptoState').textContent;
+    const sas = ctx.$('sasCode').textContent;
+    const mode = ctx.isMockMode ? ' (mock)' : '';
+    let tone = 'idle';
+    let parts;
+
+    if (ctx.$('statusPill').classList.contains('status-error')) {
+      tone = 'failure';
+      parts = [[endpoint, 'endpoint'], [' ● failure', 'failure'], [' — /connect to retry', 'hint']];
+    } else if (connection === 'disconnected') {
+      parts = [[endpoint, 'endpoint'], [' ○ disconnected', 'idle'], [' — /connect to begin', 'hint']];
+    } else if (connection === 'connecting') {
+      tone = 'pending';
+      parts = [[endpoint, 'endpoint'], [' ● connecting', 'pending'], mode && [mode, 'mode']];
+    } else if (crypto === 'verified') {
+      tone = 'live';
+      parts = [[endpoint, 'endpoint'], [' ● connected', 'live'], [' ✔ verified', 'live'], [` sas ${sas}`, 'sas'], mode && [mode, 'mode']];
+    } else if (crypto === 'aborted') {
+      tone = 'failure';
+      parts = [[endpoint, 'endpoint'], [' ● connected', 'live'], [' ✖ aborted', 'failure'], [` sas ${sas}`, 'sas'], mode && [mode, 'mode']];
+    } else {
+      tone = 'pending';
+      parts = [[endpoint, 'endpoint'], [' ● connected', 'live'], [` • ${crypto}`, 'pending'], [` sas ${sas}`, 'sas'], mode && [mode, 'mode']];
+    }
+
+    promptContext.replaceChildren(...parts.filter(Boolean).map(([text, role]) => {
+      const span = document.createElement('span');
+      span.className = `prompt-context-${role}`;
+      span.textContent = text;
+      return span;
+    }));
+    promptContext.dataset.tone = tone;
+    promptContext.title = promptContext.textContent;
+  }
+
+  function renderInputMirror() {
+    if (!termMirrorValue) return;
+    const value = ctx.$('textInput').value;
+    const plain = document.createElement('span');
+    plain.className = 'term-token term-token-plain';
+    if (!value.startsWith('/') || value.startsWith('//')) {
+      plain.textContent = value;
+      termMirrorValue.replaceChildren(plain);
       return;
     }
-    const device = ctx.$('deviceName')?.textContent?.trim() || 'No device';
-    banner.textContent = `${device} · ${plainState}`;
+
+    const commandToken = value.match(/^\/\S*/)?.[0] ?? value;
+    const commandName = commandToken.slice(1).toLowerCase();
+    const exact = COMMAND_BY_TOKEN.has(commandName);
+    const prefix = !exact && COMMANDS.some(command => command.name.startsWith(commandName));
+    const command = document.createElement('span');
+    command.className = `term-token term-token-${exact ? 'valid' : prefix ? 'prefix' : 'invalid'}`;
+    command.textContent = commandToken;
+    plain.textContent = value.slice(commandToken.length);
+    termMirrorValue.replaceChildren(command, plain);
+  }
+
+  function dismissAutocomplete(remember = false) {
+    completionMatches = [];
+    completionIndex = 0;
+    completionDismissedValue = remember ? ctx.$('textInput').value : null;
+    if (termSuggestions) {
+      termSuggestions.hidden = true;
+      termSuggestions.replaceChildren();
+    }
+    if (termGhost) termGhost.textContent = '';
+    ctx.$('textInput').setAttribute('aria-expanded', 'false');
+    ctx.$('textInput').removeAttribute('aria-activedescendant');
+  }
+
+  function renderAutocomplete() {
+    if (!termSuggestions || completionMatches.length === 0) return;
+    const prefix = ctx.$('textInput').value.slice(1);
+    completionIndex = Math.min(completionIndex, completionMatches.length - 1);
+    const rows = completionMatches.map((command, index) => {
+      const row = document.createElement('div');
+      row.className = 'term-suggestion';
+      row.id = `term-suggestion-${index}`;
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', String(index === completionIndex));
+      const name = document.createElement('span');
+      name.className = 'term-suggestion-name';
+      name.textContent = `/${command.name}`;
+      const description = document.createElement('span');
+      description.className = 'term-suggestion-description';
+      description.textContent = ` — ${command.description}`;
+      const marker = document.createElement('span');
+      marker.className = 'term-suggestion-marker';
+      marker.textContent = index === completionIndex ? '◄' : '';
+      row.append(name, description, marker);
+      return row;
+    });
+    termSuggestions.replaceChildren(...rows);
+    termSuggestions.hidden = false;
+    const selected = completionMatches[completionIndex];
+    termGhost.textContent = selected.name.slice(prefix.length);
+    const input = ctx.$('textInput');
+    input.setAttribute('aria-expanded', 'true');
+    input.setAttribute('aria-activedescendant', `term-suggestion-${completionIndex}`);
+  }
+
+  function refreshAutocomplete() {
+    const value = ctx.$('textInput').value;
+    if (completionDismissedValue !== null && completionDismissedValue !== value) completionDismissedValue = null;
+    if (!/^\/[a-z]*$/i.test(value) || value.startsWith('//') || completionDismissedValue === value) {
+      dismissAutocomplete(completionDismissedValue === value);
+      return;
+    }
+    const prefix = value.slice(1).toLowerCase();
+    completionMatches = COMMANDS.filter(command => command.name.startsWith(prefix));
+    if (completionMatches.length === 0) {
+      dismissAutocomplete();
+      return;
+    }
+    completionIndex = 0;
+    renderAutocomplete();
+  }
+
+  function acceptAutocomplete() {
+    if (completionMatches.length === 0) return;
+    const names = completionMatches.map(command => command.name);
+    let completion = names[0];
+    for (let index = 1; index < names.length; index++) {
+      let length = 0;
+      while (length < completion.length && length < names[index].length && completion[length] === names[index][length]) length++;
+      completion = completion.slice(0, length);
+    }
+    const input = ctx.$('textInput');
+    input.value = `/${completion}`;
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function updateTerminalCursor() {
+    cancelAnimationFrame(termCursorFrame);
+    termCursorFrame = requestAnimationFrame(() => {
+      if (!termPrompt || !termMirror || !termMirrorValue || !termCursor) return;
+      const form = ctx.$('textForm');
+      const input = ctx.$('textInput');
+      renderInputMirror();
+      const inputStyle = getComputedStyle(input);
+      const font = inputStyle.font;
+      const letterSpacing = inputStyle.letterSpacing;
+      termPrompt.style.font = font;
+      termPrompt.style.letterSpacing = letterSpacing;
+      termMirror.style.font = font;
+      termMirror.style.letterSpacing = letterSpacing;
+      termMirror.style.paddingInline = inputStyle.paddingInline;
+      termMirror.style.lineHeight = inputStyle.height;
+      termMirror.style.blockSize = inputStyle.height;
+      termCursor.style.font = font;
+      termCursor.style.letterSpacing = letterSpacing;
+      termCursor.style.lineHeight = inputStyle.height;
+
+      const formRect = form.getBoundingClientRect();
+      const inputRect = input.getBoundingClientRect();
+      const paddingStart = Number.parseFloat(inputStyle.paddingInlineStart) || 0;
+      const paddingEnd = Number.parseFloat(inputStyle.paddingInlineEnd) || 0;
+      const textStart = inputRect.left - formRect.left + paddingStart;
+      const textWidth = termMirrorValue.getBoundingClientRect().width;
+      const cursorWidth = termCursor.getBoundingClientRect().width;
+      const textEnd = inputRect.right - formRect.left - paddingEnd - cursorWidth;
+      const cursorX = Math.max(textStart, Math.min(textStart + textWidth - input.scrollLeft, textEnd));
+      form.style.setProperty('--term-input-x', `${inputRect.left - formRect.left}px`);
+      form.style.setProperty('--term-input-width', `${inputRect.width}px`);
+      form.style.setProperty('--term-input-scroll', `${-input.scrollLeft}px`);
+      form.style.setProperty('--term-cursor-x', `${cursorX}px`);
+      form.style.setProperty('--term-cursor-y', `${inputRect.top - formRect.top}px`);
+    });
   }
 
   function currentEmptyPlaceholder(connected = Boolean(ctx.transport?.isConnected()), unlocked = isCryptoUnlocked()) {
-    if (!connected) return 'Connect, then send a message or attachment.';
-    if (!unlocked) return 'Compare the SAS code with your peer to unlock the channel.';
-    return 'Secure channel ready — send a message or attachment.';
+    if (!connected) return 'Type /connect to open a secure channel.';
+    if (!unlocked) return 'Compare the SAS code, then type /accept or /abort.';
+    return 'Secure channel ready — type a message or /file.';
   }
 
   function updateStateSurfaces(connected, unlocked) {
@@ -190,8 +401,6 @@ export function createChatPage(ctx, config) {
       const body = emptyBubble.lastElementChild;
       if (body?.previousElementSibling?.classList?.contains('meta-line')) body.textContent = currentEmptyPlaceholder(connected, unlocked);
     }
-    const hint = ctx.$('attachmentLimits');
-    if (hint) hint.textContent = unlocked ? 'Channel verified. Files stay in memory only.' : 'Files stay in memory until verified.';
   }
 
   let prevCryptoState = null;
@@ -240,13 +449,16 @@ export function createChatPage(ctx, config) {
     const connected = Boolean(ctx.transport?.isConnected());
     const unlocked = isCryptoUnlocked();
     const isReceiving = ctx.inboundHelloItemId != null;
-    const canCancel = ctx.isSending || isReceiving || Boolean(ctx.inboundMeta);
+    const fileBusy = ctx.isSending || isReceiving || Boolean(ctx.inboundMeta);
+    const selectedFile = stagedFile();
+    const pendingSelectedFile = pendingFileSend?.file === selectedFile;
+    const canCancel = fileBusy;
     ctx.$('connectBtn').disabled = connected || isConnecting;
     ctx.$('disconnectBtn').disabled = !connected || isConnecting;
-    ctx.$('textInput').disabled = !connected || !unlocked || ctx.isSending || isReceiving;
+    ctx.$('textInput').disabled = false;
     ctx.$('sendTextBtn').disabled = !connected || !unlocked || ctx.isSending || isReceiving || !ctx.$('textInput').value.trim();
-    ctx.$('fileInput').disabled = !connected || !unlocked || ctx.isSending || isReceiving;
-    ctx.$('sendFileBtn').disabled = !connected || !unlocked || ctx.isSending || isReceiving || !ctx.$('fileInput').files?.length;
+    ctx.$('fileInput').disabled = fileBusy;
+    ctx.$('sendFileBtn').disabled = !connected || !unlocked || !selectedFile || (fileBusy && !pendingSelectedFile);
     const attachBtn = ctx.$('attachBtn');
     if (attachBtn) attachBtn.disabled = ctx.$('fileInput').disabled;
     ctx.$('cancelBtn').hidden = !canCancel;
@@ -282,7 +494,7 @@ export function createChatPage(ctx, config) {
     // re-added those emissions — the BLE page's old dual wiring is dropped.
     ctx.receiver.on('hello', detail => {
       ctx.inboundHelloItemId = detail.itemId;
-      transferLabel = 'incoming item';
+      transferLabel = 'awaiting meta…';
       setPageTransferPhase('Receiving', { bytes: 0n, total: null, reset: true });
       inboundTiming = createTimingRecorder({ operation: 'chat-receive', direction: 'inbound', mock: ctx.isMockMode, hardware: !ctx.isMockMode, sink: publishEvidence });
       inboundTiming.markFirstReport();
@@ -306,7 +518,7 @@ export function createChatPage(ctx, config) {
         inboundTiming.record.metadata = inboundTiming.record.details;
       }
       updateControls();
-      setPageTransferPhase('Receiving', { bytes: 0n, total: null });
+      setPageTransferPhase('Receiving', { bytes: 0n, total: BigInt(metaTransferSize(meta)) });
       const totalChunks = metaChunkCount(meta);
       inboundTiming?.setBytes(metaTransferSize(meta));
       inboundMeter = createThroughputMeter();
@@ -316,8 +528,8 @@ export function createChatPage(ctx, config) {
         pendingReceiveRow = addMessage(ctx.$('transcript'), { side: 'peer', kind: 'attachment', meta, data: null, hash: null, pending: true, progress: { percent: 0, label: 'Receiving…' } });
       }
     });
-    ctx.receiver.on('data', ({ plaintextBytes }) => {
-      setPageTransferPhase('Receiving', { bytes: plaintextBytes, total: null });
+    ctx.receiver.on('data', ({ ciphertextBytes, plaintextBytes }) => {
+      setPageTransferPhase('Receiving', { bytes: BigInt(ciphertextBytes) });
       inboundTiming?.tickTransferBytes(Number(plaintextBytes));
     });
     ctx.receiver.on('item', handleReceivedItem);
@@ -488,15 +700,24 @@ export function createChatPage(ctx, config) {
     markOutboundDelivered();
   }
 
-  async function sendSelectedFile() {
-    const file = ctx.$('fileInput').files?.[0];
-    if (!file) return;
+  function sendSelectedFile() {
+    const file = stagedFile();
+    if (!file) return pendingFileSend?.promise ?? Promise.resolve();
+    if (pendingFileSend?.file === file) return pendingFileSend.promise;
+    if (pendingFileSend) return pendingFileSend.promise;
     transferLabel = file.name;
-    await ctx.outbound?.sendFile(file);
-    markOutboundDelivered();
-    ctx.$('fileInput').value = '';
+    const promise = Promise.resolve(ctx.outbound?.sendFile(file))
+      .then(() => markOutboundDelivered())
+      .finally(() => {
+        if (pendingFileSend?.file === file) pendingFileSend = null;
+        if (stagedFile() === file) ctx.$('fileInput').value = '';
+        refreshFileChip();
+        updateControls();
+      });
+    pendingFileSend = { file, promise };
     refreshFileChip();
     updateControls();
+    return promise;
   }
 
   async function cancelActiveTransfer(origin) {
@@ -551,7 +772,7 @@ export function createChatPage(ctx, config) {
     const file = stagedFile();
     const chip = ctx.$('fileChip');
     if (!chip) return;
-    if (!file) { chip.hidden = true; return; }
+    if (!file || pendingFileSend?.file === file) { chip.hidden = true; return; }
     const label = chip.querySelector('.file-chip-text');
     if (label) label.textContent = `${file.name} · ${formatBytes(file.size)}`;
     chip.hidden = false;
@@ -569,6 +790,71 @@ export function createChatPage(ctx, config) {
     updateControls();
   }
 
+  function finishCommand() {
+    const input = ctx.$('textInput');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function runCommand(entered) {
+    const [token] = entered.toLowerCase().split(/\s+/);
+    const command = COMMAND_BY_TOKEN.get(token.slice(1));
+    if (!command) {
+      log(entered);
+      log(`Unknown command: ${token} — try /help`, 'warn');
+      finishCommand();
+      return;
+    }
+    if (command.name === 'clearlog') {
+      ctx.$('clearLogBtn').click();
+      log(entered);
+      finishCommand();
+      return;
+    }
+
+    log(entered);
+    switch (command.name) {
+      case 'connect':
+        if (isConnecting) log('Connection already in progress.', 'warn');
+        else if (ctx.transport?.isConnected()) log('Already connected.', 'warn');
+        else ctx.$('connectBtn').click();
+        break;
+      case 'disconnect':
+        if (isConnecting) log('Connection in progress.', 'warn');
+        else if (!ctx.transport?.isConnected()) log('Not connected.', 'warn');
+        else ctx.$('disconnectBtn').click();
+        break;
+      case 'clear':
+        ctx.$('clearTranscriptBtn').click();
+        break;
+      case 'cancel':
+        if (ctx.$('cancelBtn').disabled) log('No active transfer.', 'warn');
+        else ctx.$('cancelBtn').click();
+        break;
+      case 'accept':
+        if (ctx.$('acceptSasBtn').disabled) log('No SAS confirmation is pending.', 'warn');
+        else ctx.$('acceptSasBtn').click();
+        break;
+      case 'abort':
+        if (ctx.$('abortCryptoBtn').disabled) log('No crypto session to abort.', 'warn');
+        else ctx.$('abortCryptoBtn').click();
+        break;
+      case 'file':
+        if (ctx.$('fileInput').disabled) log('Transfer in progress.', 'warn');
+        else openFilePicker();
+        break;
+      case 'logs':
+        document.querySelector('.diagnostic-rail')?.classList.toggle('logs-visible');
+        break;
+      case 'help':
+        log('Commands:');
+        for (const availableCommand of COMMANDS) log(`/${availableCommand.name} — ${availableCommand.description}`);
+        log('//text — send literal /text');
+        break;
+    }
+    finishCommand();
+  }
+
   globalThis.AirBridgeEvidence = Object.freeze({
     records: evidenceRecords,
     record: publishEvidence,
@@ -581,6 +867,69 @@ export function createChatPage(ctx, config) {
 
   if (ctx.isMockMode) document.body.classList.add('mock');
   if (ctx.debugMode) document.body.classList.add('debug');
+  const textForm = ctx.$('textForm');
+  const textInput = ctx.$('textInput');
+  const fileInput = ctx.$('fileInput');
+  let filePickerOpen = false;
+  const pageHasOpenDialog = () => Boolean(document.querySelector('dialog[open], [role="dialog"]:not([hidden])'));
+  const openFilePicker = () => {
+    filePickerOpen = true;
+    try {
+      fileInput.click();
+    } catch (error) {
+      filePickerOpen = false;
+      log(`File picker unavailable: ${error instanceof Error ? error.message : 'request blocked'}`, 'warn');
+    }
+  };
+  promptContext = document.createElement('div');
+  promptContext.className = 'prompt-context';
+  promptContext.setAttribute('aria-hidden', 'true');
+  termPrompt = document.createElement('span');
+  termPrompt.className = 'term-prompt';
+  termPrompt.setAttribute('aria-hidden', 'true');
+  termPrompt.textContent = '>';
+  termMirror = document.createElement('span');
+  termMirror.className = 'term-mirror';
+  termMirror.setAttribute('aria-hidden', 'true');
+  termMirrorTrack = document.createElement('span');
+  termMirrorTrack.className = 'term-mirror-track';
+  termMirrorValue = document.createElement('span');
+  termMirrorValue.className = 'term-mirror-value';
+  termGhost = document.createElement('span');
+  termGhost.className = 'term-ghost';
+  termMirrorTrack.append(termMirrorValue, termGhost);
+  termMirror.append(termMirrorTrack);
+  termCursor = document.createElement('span');
+  termCursor.className = 'term-cursor';
+  termCursor.setAttribute('aria-hidden', 'true');
+  termCursor.textContent = '_';
+  termSuggestions = document.createElement('div');
+  termSuggestions.id = 'termSuggestions';
+  termSuggestions.className = 'term-suggestions';
+  termSuggestions.setAttribute('role', 'listbox');
+  termSuggestions.setAttribute('aria-label', 'Command suggestions');
+  termSuggestions.hidden = true;
+  textInput.removeAttribute('placeholder');
+  textInput.setAttribute('aria-autocomplete', 'list');
+  textInput.setAttribute('aria-controls', termSuggestions.id);
+  textInput.setAttribute('aria-expanded', 'false');
+  textForm.prepend(promptContext);
+  textForm.append(termSuggestions, termPrompt, termMirror, termCursor);
+  const sasBannerText = document.querySelector('.sas-banner-text');
+  if (sasBannerText) sasBannerText.textContent = 'If the six digits match on both screens, type /accept on both sides to open the secure channel. If they differ, type /abort and reconnect.';
+  const consoleMenu = document.querySelector('.console-menu');
+  const consoleSummary = consoleMenu?.querySelector('summary');
+  if (consoleMenu) consoleMenu.open = false;
+  if (consoleSummary) {
+    consoleSummary.textContent = 'MODE=cli';
+    consoleSummary.tabIndex = -1;
+    consoleSummary.setAttribute('aria-disabled', 'true');
+  }
+  const statusline = document.querySelector('.statusline');
+  const diagnosticRail = document.querySelector('.diagnostic-rail');
+  if (diagnosticRail) diagnosticRail.classList.toggle('logs-visible', ctx.isMockMode || ctx.debugMode);
+  if (statusline && diagnosticRail) diagnosticRail.prepend(statusline);
+  renderTransferDetail();
 
   displayStateObserver = new MutationObserver(() => {
     renderDisplayState();
@@ -591,15 +940,96 @@ export function createChatPage(ctx, config) {
 
   ctx.$('connectBtn').addEventListener('click', connect);
   ctx.$('disconnectBtn').addEventListener('click', disconnect);
-  ctx.$('textForm').addEventListener('submit', event => {
+  textForm.addEventListener('submit', event => {
     event.preventDefault();
-    if (stagedFile() && !ctx.$('textInput').value.trim()) { if (!ctx.$('sendFileBtn').disabled) sendSelectedFile(); return; }
+    const entered = ctx.$('textInput').value.trim();
+    if (entered.startsWith('/') && !entered.startsWith('//')) { runCommand(entered); return; }
+    if (stagedFile()) {
+      if (!ctx.transport?.isConnected() || !isCryptoUnlocked()) {
+        log('Staged file not sent — /connect and verify first.', 'warn');
+        return;
+      }
+      if (ctx.$('sendFileBtn').disabled) { log('Transfer in progress.', 'warn'); return; }
+      finishCommand();
+      sendSelectedFile();
+      return;
+    }
+    if (entered.startsWith('//')) {
+      ctx.$('textInput').value = entered.slice(1);
+      ctx.$('textInput').dispatchEvent(new Event('input', { bubbles: true }));
+      if (!ctx.$('sendTextBtn').disabled) sendText();
+      dismissAutocomplete(true);
+      updateTerminalCursor();
+      return;
+    }
     if (!ctx.$('sendTextBtn').disabled) sendText();
   });
-  ctx.$('textInput').addEventListener('input', updateControls);
-  ctx.$('attachBtn').addEventListener('click', () => ctx.$('fileInput').click());
+  textInput.addEventListener('keydown', event => {
+    if (!termSuggestions.hidden) {
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        acceptAutocomplete();
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const direction = event.key === 'ArrowDown' ? 1 : -1;
+        completionIndex = (completionIndex + direction + completionMatches.length) % completionMatches.length;
+        renderAutocomplete();
+        updateTerminalCursor();
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        dismissAutocomplete(true);
+        updateTerminalCursor();
+        return;
+      }
+    }
+    if (event.key !== 'Enter' || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    event.preventDefault();
+    textForm.requestSubmit();
+  });
+  textInput.addEventListener('input', () => { refreshAutocomplete(); updateControls(); updateTerminalCursor(); });
+  textInput.addEventListener('focus', updateTerminalCursor);
+  textInput.addEventListener('blur', () => { dismissAutocomplete(true); updateTerminalCursor(); });
+  textInput.addEventListener('scroll', updateTerminalCursor);
+  document.addEventListener('keydown', event => {
+    const targetIsInteractive = event.target instanceof Element && event.target.closest('input, textarea, select, button, a, summary, [contenteditable]');
+    if (targetIsInteractive || event.altKey || event.ctrlKey || event.metaKey || event.isComposing || event.key.length !== 1 || filePickerOpen || pageHasOpenDialog()) return;
+    textInput.focus();
+  });
+  window.addEventListener('resize', updateTerminalCursor);
+  termCursorResizeObserver = new ResizeObserver(updateTerminalCursor);
+  termCursorResizeObserver.observe(textForm);
+  ctx.$('attachBtn').addEventListener('click', openFilePicker);
   ctx.$('fileChipClear').addEventListener('click', () => { ctx.$('fileInput').value = ''; refreshFileChip(); updateControls(); });
-  ctx.$('fileInput').addEventListener('change', () => { refreshFileChip(); updateControls(); });
+  fileInput.addEventListener('change', () => {
+    filePickerOpen = false;
+    const file = stagedFile();
+    if (!file) {
+      refreshFileChip();
+      updateControls();
+      return;
+    }
+    if (!ctx.transport?.isConnected() || !isCryptoUnlocked()) {
+      refreshFileChip();
+      updateControls();
+      log(`Staged ${file.name} (${formatBytes(file.size)}) — /connect and verify, then Enter to send`);
+      return;
+    }
+    if (pendingFileSend?.file === file) return;
+    if (ctx.isSending || ctx.inboundHelloItemId != null || ctx.inboundMeta) {
+      log('busy — /cancel or wait', 'warn');
+      fileInput.value = '';
+      refreshFileChip();
+      updateControls();
+      return;
+    }
+    log(`Sending ${file.name} (${formatBytes(file.size)})…`);
+    sendSelectedFile();
+  });
+  fileInput.addEventListener('cancel', () => { filePickerOpen = false; });
   ctx.$('sendFileBtn').addEventListener('click', sendSelectedFile);
   ctx.$('cancelBtn').addEventListener('click', () => { cancelActiveTransfer('user'); });
   ctx.$('acceptSasBtn').addEventListener('click', () => ctx.cryptoSession?.acceptSas().catch(error => log(`SAS accept failed: ${error.message}`, 'error')));
@@ -608,8 +1038,10 @@ export function createChatPage(ctx, config) {
   ctx.$('clearLogBtn').addEventListener('click', () => ctx.logger.clear());
   updateControls();
   updateCryptoPanel();
+  refreshAutocomplete();
+  updateTerminalCursor();
   log(ctx.isMockMode ? 'Mock mode ready. Click Connect to start the in-page verifier.' : config.readyLog);
-  window.addEventListener('pagehide', () => { ctx.transcriptController.dispose(); displayStateObserver.disconnect(); ctx.receiver?.dispose(); ctx.outbound?.cancel(); discardTranscriptDownloads(ctx.$('transcript')); });
+  window.addEventListener('pagehide', () => { cancelAnimationFrame(termCursorFrame); termCursorResizeObserver.disconnect(); window.removeEventListener('resize', updateTerminalCursor); ctx.transcriptController.dispose(); displayStateObserver.disconnect(); ctx.receiver?.dispose(); ctx.outbound?.cancel(); discardTranscriptDownloads(ctx.$('transcript')); });
 
   return {
     connect,

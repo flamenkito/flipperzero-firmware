@@ -25,12 +25,89 @@ export function attachmentDownloadName(value) {
     ? `attachment${name ? `-${name}` : ''}` : name;
 }
 
+const asciiWidthCaches = new WeakMap();
+const asciiResizeWindows = new WeakSet();
+const asciiFontReadyDocuments = new WeakSet();
+
+export function fillAsciiProgress(container, fraction) {
+  const fill = container.querySelector('.ab-progress-fill');
+  if (!fill) return '';
+  const doc = container.ownerDocument;
+  const view = doc.defaultView;
+  if (doc.fonts && !asciiFontReadyDocuments.has(doc)) {
+    asciiFontReadyDocuments.add(doc);
+    doc.fonts.ready.then(() => {
+      asciiWidthCaches.delete(doc);
+      for (const bar of doc.querySelectorAll('.ab-progress')) {
+        fillAsciiProgress(bar, Number(bar.dataset.progressFraction || '0'));
+      }
+    });
+  }
+  if (view && !asciiResizeWindows.has(view)) {
+    asciiResizeWindows.add(view);
+    view.addEventListener('resize', () => {
+      asciiWidthCaches.delete(doc);
+      for (const bar of doc.querySelectorAll('.ab-progress')) {
+        fillAsciiProgress(bar, Number(bar.dataset.progressFraction || '0'));
+      }
+    });
+  }
+  let cache = asciiWidthCaches.get(doc);
+  if (!cache) { cache = new Map(); asciiWidthCaches.set(doc, cache); }
+  let charWidth = cache.get('ab-progress-fill');
+  if (!charWidth) {
+    const probe = doc.createElement('span');
+    probe.className = 'ab-progress-fill';
+    probe.textContent = '█';
+    probe.style.cssText = 'position:absolute;visibility:hidden;display:inline-block;inline-size:auto;overflow:visible;';
+    doc.body.appendChild(probe);
+    charWidth = probe.getBoundingClientRect().width;
+    probe.remove();
+    if (charWidth > 0 && (!doc.fonts || doc.fonts.status === 'loaded')) cache.set('ab-progress-fill', charWidth);
+  }
+  const safe = Math.max(0, Math.min(1, Number(fraction) || 0));
+  container.dataset.progressFraction = String(safe);
+  const style = view?.getComputedStyle(container);
+  const contentWidth = container.clientWidth - (parseFloat(style?.paddingInlineStart || '0') + parseFloat(style?.paddingInlineEnd || '0'));
+  fill.textContent = charWidth > 0 ? '█'.repeat(Math.max(0, Math.floor(contentWidth / charWidth * safe))) : '';
+  return fill.textContent;
+}
+
+function createAsciiProgress(doc) {
+  const group = doc.createElement('div');
+  group.className = 'ab-progress-ui';
+  const label = doc.createElement('div');
+  label.className = 'ab-progress-label';
+  const caption = doc.createElement('span');
+  caption.className = 'ab-progress-caption';
+  const value = doc.createElement('span');
+  value.className = 'ab-progress-value';
+  label.append(caption, value);
+  const bar = doc.createElement('div');
+  bar.className = 'ab-progress';
+  bar.setAttribute('aria-hidden', 'true');
+  const fill = doc.createElement('span');
+  fill.className = 'ab-progress-fill';
+  bar.appendChild(fill);
+  group.append(label, bar);
+  return group;
+}
+
+function updateAsciiProgress(group, phase, percent, visible = true) {
+  const safe = Math.max(0, Math.min(100, Number(percent) || 0));
+  group.hidden = !visible;
+  group.querySelector('.ab-progress-caption').textContent = `${String(phase).toUpperCase()}:`;
+  group.querySelector('.ab-progress-value').textContent = `${Number.isInteger(safe) ? safe : safe.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}%`;
+  fillAsciiProgress(group.querySelector('.ab-progress'), safe / 100);
+}
+
 export function setTransferPhase(phase, progress = {}) {
   const panel = document.getElementById('panelState');
   const meter = document.getElementById('throughput');
   const same = !progress.reset && panel.dataset.phase === phase;
   const previous = BigInt(meter.dataset.bytes || '0');
   const bytes = progress.bytes == null ? previous : same && progress.bytes < previous ? previous : progress.bytes;
+  if (progress.reset) meter.dataset.progress = '0';
   panel.dataset.phase = phase;
   panel.textContent = phase;
   panel.setAttribute('role', 'status');
@@ -46,7 +123,7 @@ export function setTransferPhase(phase, progress = {}) {
   } else if (phase === 'Ready') meter.dataset.progress = '100';
   if (phase === 'Ready') meter.textContent = '--';
   else if (phase === 'Cancelled' || phase === 'Failed') meter.textContent = `${formatBytes(bytes)} bytes`;
-  else if (total && BigInt(total) > 0n) meter.textContent = `${formatBytes(bytes)}/${formatBytes(total)} · ${Number(bytes * 10000n / BigInt(total)) / 100}%`;
+  else if (total && BigInt(total) > 0n) meter.textContent = `${formatBytes(bytes)}/${formatBytes(total)}`;
   else meter.textContent = `${formatBytes(bytes)} bytes`;
   meter.setAttribute('role', 'progressbar');
   meter.setAttribute('aria-label', `${phase}: ${meter.textContent}`);
@@ -57,6 +134,15 @@ export function setTransferPhase(phase, progress = {}) {
   } else {
     for (const attribute of ['aria-valuemin','aria-valuemax','aria-valuenow']) meter.removeAttribute(attribute);
   }
+  let ascii = meter.parentElement.querySelector(':scope > .transfer-ascii-progress');
+  if (!ascii) {
+    ascii = createAsciiProgress(document);
+    ascii.classList.add('transfer-ascii-progress');
+    meter.before(ascii);
+  }
+  const active = phase === 'Hashing' || phase === 'Sending' || phase === 'Receiving' || phase === 'Verifying';
+  const percent = total && BigInt(total) > 0n ? Number(bytes * 10000n / BigInt(total)) / 100 : Number(meter.dataset.progress || '0');
+  updateAsciiProgress(ascii, phase, percent, active);
   const failure = document.getElementById('transferFailure');
   if (failure) { failure.hidden = phase !== 'Failed'; failure.textContent = progress.error || 'Transfer failed. Retry the attachment; reconnect and compare SAS if the problem persists.'; }
 }
@@ -316,6 +402,7 @@ export function addMessage(transcriptEl, { side, kind, text, meta, data, hash, p
 
   row.appendChild(bubble);
   transcriptEl.appendChild(row);
+  for (const bar of row.querySelectorAll('.ab-progress')) fillAsciiProgress(bar, Number(bar.dataset.progressFraction || '0'));
   if (controller) controller.messageAppended(wasPinned);
   else transcriptEl.scrollTop = transcriptEl.scrollHeight;
   return row;
@@ -367,22 +454,22 @@ export function renderAttachmentCard(meta, data, hash, pending, progress, lifecy
   if (progress != null) {
     const container = document.createElement('div');
     container.className = 'progress-container';
-    const track = document.createElement('div');
-    track.className = 'progress-bar-track';
+    const ascii = createAsciiProgress(document);
+    const track = ascii.querySelector('.ab-progress');
+    track.classList.add('progress-bar-track');
+    track.removeAttribute('aria-hidden');
     track.setAttribute('role', 'progressbar');
     track.setAttribute('aria-valuenow', Math.round(progress.percent));
     track.setAttribute('aria-valuemin', '0');
     track.setAttribute('aria-valuemax', '100');
-    const fill = document.createElement('div');
-    fill.className = `progress-bar-fill${progress.complete ? ' complete' : ''}${progress.cancelled ? ' cancelled' : ''}`;
-    fill.style.width = `${progress.percent}%`;
-    fill.setAttribute('aria-hidden', 'true');
-    track.appendChild(fill);
+    const fill = track.querySelector('.ab-progress-fill');
+    fill.className = `ab-progress-fill progress-bar-fill${progress.complete ? ' complete' : ''}${progress.cancelled ? ' cancelled' : ''}`;
     const label = document.createElement('div');
     label.className = 'progress-label';
     label.textContent = progress.label;
-    container.append(track, label);
+    container.append(label, ascii);
     card.appendChild(container);
+    updateAsciiProgress(ascii, progress.label.split(':')[0], progress.percent);
   }
 
   if (data) {
@@ -413,7 +500,8 @@ export function renderVerifiedAttachmentCard(verified, lifecycle) {
     || hash.length !== 64 || !/^[0-9a-f]+$/.test(hash) || blob.type !== mime.toLowerCase()) {
     throw new TypeError('Expected verified Blob receipt');
   }
-  return renderAttachmentCard({ name, mimeType: mime, size, hash }, blob, hash, false, undefined, lifecycle);
+  return renderAttachmentCard({ name, mimeType: mime, size, hash }, blob, hash, false,
+    {percent:100, complete:true, label:'Verified: 100%'}, lifecycle);
 }
 
 const attachmentCleanups = new WeakMap();
@@ -518,9 +606,9 @@ export function updateCardProgress(messageRow, percent, label, state) {
   if (!track || !fill || !labelEl) return;
   const safe = Math.max(0, Math.min(100, percent));
   track.setAttribute('aria-valuenow', Math.round(safe));
-  fill.style.width = `${safe}%`;
-  fill.className = `progress-bar-fill${state === 'complete' ? ' complete' : ''}${state === 'cancelled' ? ' cancelled' : ''}`;
+  fill.className = `ab-progress-fill progress-bar-fill${state === 'complete' ? ' complete' : ''}${state === 'cancelled' ? ' cancelled' : ''}`;
   labelEl.textContent = label;
+  updateAsciiProgress(track.closest('.ab-progress-ui'), label.split(':')[0], safe);
 }
 
 export function completeOutboundCard(row, receipt, file) {
@@ -536,6 +624,7 @@ export function completeOutboundCard(row, receipt, file) {
       }, lifecycle);
       if (!target.isConnected) throw new Error('Outbound attachment card is detached');
       replaceAttachmentCard(target, replacement);
+      for (const bar of replacement.querySelectorAll('.ab-progress')) fillAsciiProgress(bar, Number(bar.dataset.progressFraction || '0'));
     } catch (error) {
       if (!replacement?.isConnected) {
         try { lifecycle.dispose(); } catch (_) { /* Preserve the original setup/replacement failure. */ }

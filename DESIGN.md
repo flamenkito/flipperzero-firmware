@@ -44,6 +44,8 @@ Key characteristics:
 - No brand color, no gradients on surfaces, no imagery — color count stays at seven
 - State is never color-only: LIVE has a blinking dot + text, mute has `[M]` + red,
   checkboxes flip `[_]` ↔ `[x]` glyphs in addition to color
+- State/liveness is conveyed by text + glyph; color is a secondary amplifier —
+  values are white by default and green only when live/true/actionable
 
 ## 3. Typography
 
@@ -117,6 +119,68 @@ No formal scale; spacing is ad-hoc 4px multiples — 8/12/16/24/48px recur.
 - Character width measured offscreen and cached (`measureCharWidth`), cache
   busted on resize
 
+### Progress bar (ASCII fill)
+
+- Elevated-black container with a 1px `--border`; green `█` fill at 0.65rem with
+  1px letter-spacing, repeated to the measured content width and current fraction
+- Label row pairs muted text with a green value; one offscreen character measurement
+  is cached per class and busted on resize
+- Interactive variants overlay a transparent native range input; read-only variants
+  omit it
+
+### Buttons
+
+- Transparent or elevated-black tiles use a 1px `--border` and muted text; state is
+  border + text only: primary hover is signal green, neutral hover white, danger red
+- No filled buttons, solid-color backgrounds, or green squares; the sole glow is the
+  primary action hover halo (`0 0 30px rgba(0,255,0,0.15)`)
+- `:active { transform: scale(0.99) }` supplies press feedback; keyboard hints use
+  keycap chips
+
+### Command line
+
+- The terminal fills the chat card without a panel title; its bottom line is a
+  borderless `>` prompt with no placeholder or native input caret. One green `_`
+  cursor blinks after the typed text at all times; the real input retains value,
+  selection, copy, and paste while its glyph paint is transparent. A same-font,
+  same-padding mirror overlay renders the visible text and measures its width so the
+  cursor tracks typing, focus changes, horizontal scrolling, and resizing
+- Mirror syntax is white for messages, `//` literal escapes, and proper command
+  prefixes; exact commands use signal green and unknown command tokens use failure red
+- A fish-style completion row inserts a muted candidate suffix after the cursor and a
+  keyboard list above the prompt shows `/name — description`; `Tab` accepts the longest
+  common prefix (or the full unique match), arrows cycle, and `Esc` dismisses
+- One command table owns each command name and short description and is consumed by
+  parsing, completion, and `/help`; aliases such as `/attach` remain table metadata
+- Keyboard-first: typing anywhere focuses the prompt
+- The prompt is a fixed two-line terminal block: context always occupies its reserved first line, input always occupies the second, and transcript scrolling absorbs state/content changes
+- A compact, decorative shell-context line sits immediately above the prompt and
+  derives from the canonical right-rail state: `usb/webhid` or `ble/web-bt`, then
+  connection, crypto verification, SAS, and `(mock)` when applicable
+- Live connection and verified state use signal green (`● connected`, `✔ verified`),
+  connecting/locked/pending use warning yellow, and failures use error red; glyphs
+  and words keep every state legible without color
+- Disconnected context is muted and ends with the actionable hint
+  `○ disconnected — /connect to begin`; detailed pinned status remains in the
+  right-panel tree while redundant header status and mode readouts stay hidden
+- Transcript and composer are one continuous canvas with matching horizontal padding,
+  no separating rule, form fill, or input box; attachment-limit helper copy is absent
+- Enter submits plain text as a message and leading-slash input as a
+  case-insensitive command; `//text` escapes command parsing and sends `/text`
+- Every command echoes to the log; `/help` lists available commands there without
+  adding system messages to the transcript
+- `/file` always opens attachment selection when no transfer is active (`/attach` is an
+  undocumented alias). A connected, verified endpoint sends the selection immediately;
+  disconnected or unverified selections remain staged as terminal lines above the prompt,
+  explain that connection and verification are required, and send on Enter after verification.
+  `/logs` toggles the right-rail log
+- File selection immediately activates a live Hashing panel on the sender; its byte
+  counter and ASCII bar advance during the incremental digest pass. The receiver activates
+  an `awaiting meta…` Receiving state as soon as protocol HELLO arrives; HELLO follows the
+  digest pass because encrypted metadata includes the completed plaintext SHA-256
+- No action buttons are visible; wired DOM buttons remain only as hidden programmatic
+  fallbacks for tests and integrations
+
 ### Ambient checkboxes
 
 - Native checkbox hidden; visual is a text glyph `[_]` → green `[x]` (implied by
@@ -126,7 +190,16 @@ No formal scale; spacing is ad-hoc 4px multiples — 8/12/16/24/48px recur.
 ### Status output
 
 - Tree glyphs (`├─`/`└─`) list stream, source, format, channels, state
-- Ends with a blinking cursor `_` (1s blink) — the console is always "running"
+- Keys are lowercase plus a colon (`stream:`, `state:`) and muted; values carry
+  color: pure white by default, signal green only for `.value.active`
+- State stays legible in text; green only amplifies live/true/actionable values
+- Horizontal status bars place `├─ key: value` segments inline, end with `└─`,
+  and terminate in a green blinking cursor `_` (1s blink); narrow views may stack
+  the same tree lines
+- Tree glyphs and cursors are decorative (CSS-generated or `aria-hidden` spans),
+  preserving machine-readable text contracts
+- Headers pair a shebang-style green wordmark with a muted comment; right-side
+  readouts use `key: value` with green values
 
 ### Keybindings
 

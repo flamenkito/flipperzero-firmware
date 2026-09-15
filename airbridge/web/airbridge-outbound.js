@@ -83,6 +83,7 @@ export class OutboundTransfer {
       if (!Number.isSafeInteger(file.size) || file.size < 0) throw new Error('invalid file size');
       this.size = BigInt(file.size);
       this.progress('Hashing', 0n);
+      await this.wait(new Promise(resolve => setTimeout(resolve, 0)));
       pass = new FileHashPass(file, this);
       for await (const unused of pass) void unused;
       this.assertActive();

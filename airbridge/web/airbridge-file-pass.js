@@ -6,6 +6,7 @@ export function payloadDigestHex(bytes) {
 
 export class FileHashPass {
   #file; #owner; #reader; #hash; #expected; #ended = false; #closing;
+  #nextPaintYield = 1024n * 1024n;
   #onAbort;
   bytes = 0n;
   digest = null;
@@ -37,7 +38,13 @@ export class FileHashPass {
       this.bytes += BigInt(bytes.length);
       if (this.bytes > this.#owner.size) throw new Error('file size mismatch');
       this.#hash.update(bytes);
-      if (this.#expected === null) this.#owner.progress('Hashing', this.bytes);
+      if (this.#expected === null) {
+        this.#owner.progress('Hashing', this.bytes);
+        if (this.bytes >= this.#nextPaintYield) {
+          while (this.#nextPaintYield <= this.bytes) this.#nextPaintYield += 1024n * 1024n;
+          await this.#owner.wait(new Promise(resolve => setTimeout(resolve, 0)));
+        }
+      }
       this.#owner.assertActive();
       return {done:false, value:bytes};
     } catch (error) {

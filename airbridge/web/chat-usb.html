@@ -61,11 +61,11 @@
       <button id="attachBtn" type="button" aria-label="Attach file">+</button>
       <span id="fileChip" class="file-chip" hidden><span class="file-chip-text"></span><button id="fileChipClear" type="button" aria-label="Clear attachment">×</button></span>
       <input id="fileInput" type="file" class="file-input-hidden" aria-label="Attachment" aria-describedby="attachmentLimits" disabled>
-      <input id="textInput" type="text" aria-label="Message" placeholder="Type a message…" autocomplete="off" disabled>
+      <input id="textInput" type="text" aria-label="Message" autocomplete="off" disabled>
       <button id="sendTextBtn" type="submit" class="btn-primary" disabled>Send</button>
       <button id="sendFileBtn" type="button" class="btn-primary send-file-hidden" disabled>Send Attachment</button>
     </form>
-    <p class="hint composer-subtext" id="attachmentLimits">Files stay in memory until verified.</p>
+    <p class="hint composer-subtext" id="attachmentLimits" hidden></p>
   </section>
 
   <aside class="card shell-stack diagnostic-rail" aria-labelledby="transferTitle">
