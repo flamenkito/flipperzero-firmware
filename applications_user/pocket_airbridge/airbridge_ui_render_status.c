@@ -1,5 +1,6 @@
 #include "airbridge_ui_i.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 
 static const uint8_t icon_usb_outline[] = {
@@ -29,6 +30,29 @@ static void draw_bt_glyph(Canvas* canvas, uint8_t x, uint8_t y, bool connected) 
     if(connected) canvas_draw_box(canvas, x, y + 6, 5, 2);
 }
 
+static void format_direction_counter(char* line, size_t size, uint32_t count) {
+    if(count <= UINT32_C(99999999)) {
+        snprintf(line, size, "%" PRIu32, count);
+    } else if(count < UINT32_C(1000000000)) {
+        snprintf(line, size, "%" PRIu32 "M", count / UINT32_C(1000000));
+    } else {
+        snprintf(
+            line,
+            size,
+            "%" PRIu32 ".%02" PRIu32 "G",
+            count / UINT32_C(1000000000),
+            (count % UINT32_C(1000000000)) / UINT32_C(10000000));
+    }
+}
+
+static void format_fault_counter(char* line, size_t size, uint32_t count) {
+    if(count > UINT32_C(999)) {
+        snprintf(line, size, "999+");
+    } else {
+        snprintf(line, size, "%" PRIu32, count);
+    }
+}
+
 void airbridge_ui_render_bridge(Canvas* canvas, const AirbridgeUiSnapshot* snapshot) {
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 0, 10, "Pocket AirBridge");
@@ -38,19 +62,19 @@ void airbridge_ui_render_bridge(Canvas* canvas, const AirbridgeUiSnapshot* snaps
     draw_usb_glyph(canvas, 0, 24, snapshot->metrics.usb_connected);
     canvas_draw_xbm(canvas, 9, 26, 5, 5, icon_arrow_r);
     draw_bt_glyph(canvas, 16, 24, snapshot->ble_connected);
-    draw_bt_glyph(canvas, 32, 24, snapshot->ble_connected);
-    canvas_draw_xbm(canvas, 39, 26, 5, 5, icon_arrow_r);
-    draw_usb_glyph(canvas, 46, 24, snapshot->metrics.usb_connected);
-    canvas_draw_xbm(canvas, 64, 24, 8, 8, icon_trash);
-    canvas_draw_xbm(canvas, 96, 24, 9, 8, icon_alert);
+    draw_bt_glyph(canvas, 44, 24, snapshot->ble_connected);
+    canvas_draw_xbm(canvas, 51, 26, 5, 5, icon_arrow_r);
+    draw_usb_glyph(canvas, 58, 24, snapshot->metrics.usb_connected);
+    canvas_draw_xbm(canvas, 88, 24, 8, 8, icon_trash);
+    canvas_draw_xbm(canvas, 108, 24, 9, 8, icon_alert);
 
     char line[16];
-    snprintf(line, sizeof(line), "%lu", snapshot->metrics.chunks_usb_to_ble);
+    format_direction_counter(line, sizeof(line), snapshot->metrics.chunks_usb_to_ble);
     canvas_draw_str_aligned(canvas, 0, 35, AlignLeft, AlignTop, line);
-    snprintf(line, sizeof(line), "%lu", snapshot->metrics.chunks_ble_to_usb);
-    canvas_draw_str_aligned(canvas, 32, 35, AlignLeft, AlignTop, line);
-    snprintf(line, sizeof(line), "%lu", snapshot->metrics.dropped);
-    canvas_draw_str_aligned(canvas, 64, 35, AlignLeft, AlignTop, line);
-    snprintf(line, sizeof(line), "%lu", snapshot->metrics.tx_errors);
-    canvas_draw_str_aligned(canvas, 96, 35, AlignLeft, AlignTop, line);
+    format_direction_counter(line, sizeof(line), snapshot->metrics.chunks_ble_to_usb);
+    canvas_draw_str_aligned(canvas, 44, 35, AlignLeft, AlignTop, line);
+    format_fault_counter(line, sizeof(line), snapshot->metrics.dropped);
+    canvas_draw_str_aligned(canvas, 88, 35, AlignLeft, AlignTop, line);
+    format_fault_counter(line, sizeof(line), snapshot->metrics.tx_errors);
+    canvas_draw_str_aligned(canvas, 108, 35, AlignLeft, AlignTop, line);
 }
