@@ -18,6 +18,12 @@ HIDS exists for explicit BLE Deploy typing and carries no Bridge-mode keyboard
 traffic. Identity, bonding and radio settings are described in
 [architecture](architecture.md); negotiated throughput requires hardware evidence.
 
+Browser BLE writes prefer write-without-response when both the characteristic
+and browser support it; otherwise they use write-with-response. AirBridge ACKs
+remain authoritative. The adapter serializes at most eight pending writes and
+discards queued writes belonging to a disconnected session. A failed write is
+reported to the protocol owner rather than silently replayed by the transport.
+
 All multibyte chat integers are big-endian. The five-byte outer header is:
 
 | Offset | Bytes | Field |
@@ -59,9 +65,42 @@ requires exactly the next expected nonempty slice length (1..51). The context
 prefix is excluded from ciphertext totals and plaintext hashes. META has no
 item prefix: the accepted HELLO binds it, and every META ACK binds that item.
 
+### Bounded DATA windows
+
+The optional `AB2W` capability extends the HELLO exchange only:
+
+| Frame | Payload |
+| --- | --- |
+| Window HELLO | `itemId[4] || "AB2W"[4] || windowSize:u8` (9 bytes) |
+| Window HELLO ACK | `HELLO:u8 || 0:u16be || "AB2W"[4] || itemId[4] || 0xffffffff:u32be || windowSize:u8` (16 bytes) |
+
+Valid requested/granted windows are **2 or 4**. The granted window must not exceed
+the request. An ordinary 15-byte AB2S HELLO ACK grants a one-frame window. All
+other item frames, ACKs and NACKs retain the layouts above; `AB2W` never replaces
+the private header, META protocol version, AEAD inputs or crypto handshake.
+Current chat pages request four; `ItemSender` defaults to one for callers that
+do not request this capability.
+
+Within each segment, send batches of at most the granted number of DATA frames.
+Every frame retains its own item/segment/type/sequence ACK and exact retry copy.
+Await every ACK in the batch before starting another batch or segment. A final
+partial batch is allowed. The receiver buffers reordered slices within that
+batch, consumes them in sequence, and remembers their bytes until the next
+batch starts. Identical duplicates wait for the original acceptance and are
+re-ACKed without appending or counting bytes twice. A gap waits for retransmission;
+an out-of-window frame or conflicting duplicate is terminal. HELLO, META and
+DONE remain stop-and-wait.
+
+New receivers also accept the original AB2S HELLO. Older receivers reject AB2W
+with `Unsupported protocol version`; current senders stop before META/DATA and
+require refreshed pages and a fresh confirmed session. There is no speculative
+window or automatic downgrade after an incompatibility error. See
+[ADR 0004](../../docs/adr/0004-hid-data-windows.md).
+
 ### Explicit incompatibility
 
-The extended HELLO ACK proves `AB2S` before the sender emits any META or DATA.
+The extended HELLO ACK proves `AB2S` or the requested `AB2W` capability before
+the sender emits any META or DATA.
 A v1 four-byte HELLO, absent/malformed HELLO magic, plain/legacy ACK, absent or
 malformed ACK capability proof, or a peer explicitly rejecting streaming fails
 with the exact reason **`Unsupported protocol version`**. Before capability is
@@ -215,8 +254,10 @@ Receiver states: idle → hello → meta → data → done → terminal. Monoton
 item/segment/seq, exact lengths and order are checked. Authenticate each complete
 ciphertext segment before releasing any of its plaintext to the private receive
 accumulator. Retain at most one 65,552-byte ciphertext segment plus a 51-byte
-retry slice. Sender retains one plaintext segment, one ciphertext segment and
-one exact outstanding frame, plus bounded source/residual storage. These are
+retry slice; window mode additionally retains at most `windowSize * 51` bytes
+for the current batch. Sender retains one plaintext segment, one ciphertext
+segment and at most `windowSize` exact outstanding 64-byte frames, plus bounded
+source/residual storage. These are
 protocol working-set bounds, not total JS/native/browser heap bounds.
 
 The accumulator deliberately retains **O(file size) authenticated plaintext**
@@ -229,12 +270,14 @@ Removal, replacement, invalidation and page disposal revoke that URL exactly
 once; remove/invalidate the card atomically so no live link points at a revoked
 URL. Releasing references is not guaranteed secure memory erasure.
 
-One item and one outstanding frame at a time. Collision ordering is lexicographic
+One item at a time, with one outstanding control frame or a negotiated DATA
+batch. Collision ordering is lexicographic
 `(itemId, role)`; USB role 1 wins equal-ID ties. No interleaving. ACK/NACK matches
 type, seq, magic, itemId and segment. Controls use the sentinel; DATA uses its
 real segment. NACK reasons remain 1=missing, 2=malformed,
 3=auth-failed-retryable, 4=busy-window; these codes do not authorize retrying an
-AEAD failure. Retry only the exact current frame, not byte offsets or resume.
+AEAD failure. Retry only the exact pending frame from the current batch, not
+byte offsets or resume.
 `ItemSender` defaults are 2000 ms and 3 retransmissions; chat's
 `createChatOutbound` selects 5000 ms and 4 retransmissions. A still-pending write
 times out instead of starting a concurrent retry. Exhaustion terminates the

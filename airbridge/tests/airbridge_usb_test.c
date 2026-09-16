@@ -12,6 +12,7 @@ static unsigned allocations;
 static unsigned frees;
 static unsigned received_events;
 static uint16_t written_size;
+static unsigned write_calls;
 static void (*on_acquire)(void);
 static usbd_device device;
 static FuriHalUsbInterface* profile;
@@ -135,6 +136,7 @@ static int32_t write_endpoint(uint8_t endpoint, const void* data, uint16_t size)
     UNUSED(endpoint);
     UNUSED(data);
     written_size = size;
+    write_calls++;
     return size;
 }
 
@@ -218,6 +220,10 @@ static void reinitialize_during_send(void) {
     assert(allocations == 2);
 }
 
+static void complete_vendor_send(void) {
+    device.endpoint[HID_VENDOR_EP_IN & 0x7F](&device, usbd_evt_eptx, HID_VENDOR_EP_IN);
+}
+
 int main(void) {
     assert(airbridge_usb_profile_count() == 5);
     const struct usbd_driver driver = {
@@ -256,6 +262,15 @@ int main(void) {
     assert(received_events == 1);
 
     uint8_t frame[64] = {0};
+    assert(airbridge_usb_vendor_send_response(frame, sizeof(frame)));
+    const unsigned first_write = write_calls;
+    assert(!airbridge_usb_vendor_send_response(frame, sizeof(frame)));
+    assert(write_calls == first_write);
+    on_acquire = complete_vendor_send;
+    assert(airbridge_usb_vendor_send_response_blocking(frame, sizeof(frame), 10));
+    assert(write_calls == first_write + 1);
+    assert(!airbridge_usb_vendor_send_response(frame, sizeof(frame) + 1));
+    complete_vendor_send();
     on_acquire = reinitialize_during_send;
     assert(airbridge_usb_vendor_send_response_blocking(frame, sizeof(frame), 100));
     assert(written_size == 64);

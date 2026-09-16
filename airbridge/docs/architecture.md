@@ -26,7 +26,7 @@ Pocket AirBridge is a browser-only, offline, end-to-end encrypted chat and attac
 - Sends text messages and file attachments to PC-B.
 - Uses v2 AB2S: hashes/counts one File.stream() pass, then encrypts a second pass in 65,536-byte plaintext segments. Private metadata and SHA-256 live in authenticated segment zero.
 - Sends protocol messages: **HELLO → ITEM_META → ITEM_DATA[0…N] → ITEM_DONE**.
-- Waits for **ACK** after each chunk before sending the next (backpressure).
+- Sends up to four DATA chunks per batch and waits for every **ACK** before sending the next batch (backpressure).
 - Receives incoming text messages and attachments from PC-B over USB.
 - Displays a chat transcript, transfer state, throughput, and status log.
 - Starts the browser-only crypto handshake, shows the six-digit SAS, and keeps sending disabled until both browsers accept the same SAS.
@@ -90,14 +90,14 @@ values and BLE throughput require physical evidence.
 
 1. After mutual SAS unlock and the first hash/count pass, PC-A allocates a monotonic item ID and sends v2 **HELLO** over USB HID.
 2. Flipper Zero forwards **HELLO** to PC-B over BLE.
-3. PC-A requires the item-bound AB2S HELLO ACK before sending **ITEM_META** with transport-only fields. An old/plain peer fails with `Unsupported protocol version`; no fallback exists.
+3. PC-A requires the item-bound HELLO ACK before sending **ITEM_META** with transport-only fields. Chat requests the AB2W four-frame DATA window; the receiver must explicitly grant it. An incompatible peer fails with `Unsupported protocol version`.
 4. Flipper Zero forwards **ITEM_META** to PC-B.
-5. **Loop for each segment and chunk in the second stream pass:**
+5. **Loop for each segment and bounded DATA batch in the second stream pass:**
    a. PC-A sends **ITEM_DATA** (header chunk index, item/segment prefix, at most 51 ciphertext bytes).
    b. Flipper Zero buffers the chunk and forwards it to PC-B.
    c. PC-B accepts the slice into one bounded ciphertext segment and sends a contextual **ACK**. The final slice waits for segment authentication before plaintext enters the private accumulator.
    d. Flipper Zero forwards **ACK** to PC-A.
-   e. PC-A advances to the next chunk.
+   e. PC-A advances to the next batch after every frame in the current batch is acknowledged. Reordered slices and exact retries stay within that bounded batch.
 6. PC-A sends **ITEM_DONE**.
 7. PC-B verifies all segment/header/payload counts and incremental plaintext SHA-256, constructs a Blob from authenticated chunks, delivers the verified item, then ACKs DONE. No download exists before verification.
 
@@ -131,7 +131,7 @@ also pins the decompressed HTML size and carries explicit `ABND` magic/version.
 | **Vendor HID Bridge data path** | The selected composite USB personality exposes keyboard and vendor collections to the host. Bridge frames use only the vendor HID collection on usage page `0xFF00`; no keyboard reports are emitted in Bridge mode or on bridge data paths. Keyboard reports are limited to the explicit, user-confirmed Deploy flow; see the "Honest framing" section in README.md. |
 | **AirBridge BLE notifications** | The custom serial TX characteristic uses GATT notify, which Chromium exposes through `characteristicvaluechanged`; low overhead suits small data. |
 | **51-byte encrypted DATA slices** | Eight payload bytes bind item and segment; the five-byte header and 59-byte outer payload still fit one 64-byte report. |
-| **ACK-per-chunk backpressure** | Ensures Flipper Zero never buffers more than a couple of frames. Simple, reliable for demo. |
+| **Bounded DATA windows** | Up to four outstanding DATA frames, with an ACK and exact retry copy per frame, reduce round-trip stalls while preserving the eight-slot Flipper queue. Control frames remain stop-and-wait. |
 | **Browser E2E encryption and SHA-256 verification** | Unchanged cryptoVersion 1 SAS/P-256/HKDF protects v2 segmented AES-GCM. Authenticate each segment before retaining plaintext; final payload SHA-256 and counts precede Blob/DONE ACK. |
 | **Half-duplex, one item in flight** | Lexicographic `(itemId, role)` ordering, USB winning ties; enforced in browsers, not firmware. |
 | **Stateless bridge** | The Flipper only copies bytes between transports. Keeping all protocol state in the endpoints means the firmware cannot desync from either side, and a bridge restart never corrupts protocol state. |

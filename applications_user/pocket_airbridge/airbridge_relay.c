@@ -4,6 +4,7 @@
 #include "airbridge_relay.h"
 
 #include "airbridge_usb.h"
+#include "airbridge_exit_contract.h"
 #include <furi_hal_usb_hid.h>
 #include <furi_hal_usb_spoof.h>
 
@@ -272,7 +273,8 @@ AirbridgeRelayResult airbridge_relay_handle(
     } else {
         uint8_t report[HID_VENDOR_PACKET_LEN] = {0};
         memcpy(report, be->data, be->len);
-        if(airbridge_usb_vendor_send_response(report, HID_VENDOR_PACKET_LEN)) {
+        if(airbridge_usb_vendor_send_response_blocking(
+               report, HID_VENDOR_PACKET_LEN, AIRBRIDGE_EXIT_POLL_INTERVAL_MS)) {
             airbridge_relay_increment(&relay->metrics.chunks_ble_to_usb);
         } else {
             airbridge_relay_increment(&relay->metrics.tx_errors);

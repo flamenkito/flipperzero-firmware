@@ -37,7 +37,7 @@ export function createChatOutbound({session, transport, setBusy, log}) {
       rejectedOfferId:null, collisionSeen:false, capabilityProven:false};
     active = item;
     item.owner = new OutboundTransfer({session, send:write, isCurrent:() => active === item,
-      timeoutMs:5000, retries:4, onProgress:event => {
+      timeoutMs:5000, retries:4, windowSize:4, onProgress:event => {
         if (active !== item) return;
         if (event.phase === 'Sending') {
           item.capabilityProven = true;

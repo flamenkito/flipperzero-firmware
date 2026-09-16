@@ -19,6 +19,7 @@ export const V2_DATA_SLICE_LEN = MAX_PAYLOAD - 8;
 export const V2_SEGMENT_PLAINTEXT = 65536;
 export const V2_SEGMENT_CIPHERTEXT = 65552;
 export const V2_CONTROL_SEGMENT = 0xffffffff;
+export const V2_MAX_DATA_WINDOW = 4;
 export const AIRBRIDGE_CRYPTO_V1 = 1;
 export const NACK_REASON = Object.freeze({
   MISSING: 1,
@@ -830,8 +831,10 @@ export class AirBridgeCryptoSession {
     return stream;
   }
 
-  openSegmentReceiver(meta) {
-    const receiver = new V2SegmentReceiver(this, meta);
+  openSegmentReceiver(meta, {windowSize = 1} = {}) {
+    requireV2Window(windowSize);
+    const receiver = windowSize === 1 ? new V2SegmentReceiver(this, meta) :
+      new V2WindowSegmentReceiver(this, meta, windowSize);
     this.#inboundStream?.abort(); this.#inboundStream = receiver;
     return receiver;
   }
@@ -902,6 +905,12 @@ export class AirBridgeCryptoSession {
 }
 
 const v2Magic = new Uint8Array([65, 66, 50, 83]);
+const v2WindowMagic = new Uint8Array([65, 66, 50, 87]);
+
+function requireV2Window(size) {
+  if (![1, 2, V2_MAX_DATA_WINDOW].includes(size)) throw new Error('invalid DATA window');
+  return size;
+}
 const v2FatalDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const v2ItemTypes = [MSG.HELLO, MSG.ITEM_META, MSG.ITEM_DATA, MSG.ITEM_DONE, MSG.CANCEL];
 
@@ -950,8 +959,11 @@ function validateV2Context({ type, seq, itemId, segment }) {
 
 export function makeV2AckPayload(context, reason) {
   validateV2Context(context);
-  const ack = concatBytes([makeAckPayload(context.type, context.seq), v2Magic,
+  const windowSize = context.type === MSG.HELLO ? requireV2Window(context.windowSize ?? 1) : 1;
+  const windowAck = reason === undefined && windowSize > 1;
+  const ack = concatBytes([makeAckPayload(context.type, context.seq), windowAck ? v2WindowMagic : v2Magic,
     u32Bytes(context.itemId), u32Bytes(context.segment)]);
+  if (windowAck) return concatBytes([ack, new Uint8Array([windowSize])]);
   if (reason === undefined) return ack;
   if (!Object.values(NACK_REASON).includes(reason)) throw new Error('invalid NACK reason');
   return concatBytes([ack, new Uint8Array([reason])]);
@@ -961,7 +973,12 @@ export function buildV2Frame(type, seq, itemId, segment = V2_CONTROL_SEGMENT, da
   requireUint32(itemId, 'itemId');
   let payload;
   switch (type) {
-    case MSG.HELLO: payload = concatBytes([u32Bytes(itemId), v2Magic]); break;
+    case MSG.HELLO: {
+      const windowSize = requireV2Window(data ?? 1);
+      payload = windowSize === 1 ? concatBytes([u32Bytes(itemId), v2Magic]) :
+        concatBytes([u32Bytes(itemId), v2WindowMagic, new Uint8Array([windowSize])]);
+      break;
+    }
     case MSG.ITEM_META: payload = normalizePayload(data); break;
     case MSG.ITEM_DATA:
       payload = concatBytes([u32Bytes(itemId), u32Bytes(segment), normalizePayload(data)]);
@@ -1004,10 +1021,13 @@ export function parseV2RoutingFrame(raw, activeItemId) {
   let itemId;
   let segment = V2_CONTROL_SEGMENT;
   let body = p;
+  let windowSize;
   const magicAt = offset => bytesEqual(p.slice(offset, offset + 4), v2Magic);
   switch (msg.type) {
     case MSG.HELLO:
-      if (p.length !== 8 || !magicAt(4)) throw new Error('Unsupported protocol version');
+      if (p.length === 8 && magicAt(4)) windowSize = 1;
+      else if (p.length === 9 && bytesEqual(p.slice(4, 8), v2WindowMagic) && [2, 4].includes(p[8])) windowSize = p[8];
+      else throw new Error('Unsupported protocol version');
       itemId = readU32(p, 0);
       break;
     case MSG.ITEM_META:
@@ -1031,16 +1051,19 @@ export function parseV2RoutingFrame(raw, activeItemId) {
       break;
     case MSG.ACK:
     case MSG.NACK: {
-      if (p.length !== (msg.type === MSG.ACK ? 15 : 16) || !magicAt(3) || msg.seq !== 0) throw new Error('invalid v2 ACK/NACK');
+      const windowAck = msg.type === MSG.ACK && p[0] === MSG.HELLO && p.length === 16 &&
+        bytesEqual(p.slice(3, 7), v2WindowMagic) && [2, 4].includes(p[15]);
+      if ((!windowAck && (p.length !== (msg.type === MSG.ACK ? 15 : 16) || !magicAt(3))) || msg.seq !== 0) throw new Error('invalid v2 ACK/NACK');
       const context = {type:p[0], seq:(p[1]<<8)|p[2], itemId:readU32(p,7), segment:readU32(p,11)};
       validateV2Context(context);
       if (msg.type === MSG.NACK && !Object.values(NACK_REASON).includes(p[15])) throw new Error('invalid NACK reason');
-      return {...msg, ...context, type:msg.type, ackedType:context.type, ackedSeq:context.seq, seq:msg.seq, reason:p[15]};
+      return {...msg, ...context, type:msg.type, ackedType:context.type, ackedSeq:context.seq, seq:msg.seq,
+        reason:msg.type === MSG.NACK ? p[15] : undefined, windowSize:windowAck ? p[15] : 1};
     }
     default: throw new Error('Unsupported protocol version');
   }
   if (v2ItemTypes.includes(msg.type)) validateV2Context({...msg, itemId, segment});
-  return {...msg, itemId, segment, body};
+  return {...msg, itemId, segment, body, ...(windowSize === undefined ? {} : {windowSize})};
 }
 
 export function compareV2Offers(leftId, leftRole, rightId, rightRole) {
@@ -1137,7 +1160,7 @@ export function verifyV2Completion(meta, proof) {
 }
 
 export class V2StopAndWait {
-  constructor() { this.pending = null; this.capabilityItemId = null; }
+  constructor() { this.pending = null; this.capabilityItemId = null; this.windowSize = 1; }
 
   begin(frame, itemId = this.capabilityItemId) {
     if (this.pending) throw new Error('one outstanding frame allowed');
@@ -1145,7 +1168,7 @@ export class V2StopAndWait {
     const msg = parseV2Frame(ownedFrame,itemId);
     validateV2Context(msg);
     if (msg.type !== MSG.HELLO && msg.itemId !== this.capabilityItemId) throw new Error('AB2S capability proof required');
-    this.pending = {type:msg.type, seq:msg.seq, itemId:msg.itemId, segment:msg.segment, frame:ownedFrame};
+    this.pending = {type:msg.type, seq:msg.seq, itemId:msg.itemId, segment:msg.segment, frame:ownedFrame, windowSize:msg.windowSize ?? 1};
   }
 
   receive(frame) {
@@ -1156,8 +1179,9 @@ export class V2StopAndWait {
       // KEY acknowledgements retain their old shape, but cannot prove AB2S.
       if (raw.type === MSG.ACK && raw.payload.length === 3 &&
           [MSG.KEY_OFFER, MSG.KEY_REPLY, MSG.KEY_CONFIRM].includes(raw.payload[0])) return 'ignored';
-      const missingProof = raw.type === MSG.ACK && raw.seq === 0 &&
-        (raw.payload.length !== 15 || !bytesEqual(raw.payload.slice(3, 7), v2Magic));
+      const standardProof = raw.payload.length === 15 && bytesEqual(raw.payload.slice(3, 7), v2Magic);
+      const windowProof = raw.payload.length === 16 && bytesEqual(raw.payload.slice(3, 7), v2WindowMagic);
+      const missingProof = raw.type === MSG.ACK && raw.seq === 0 && !standardProof && !windowProof;
       const unsupported = raw.type === MSG.ERROR && raw.seq === 0 &&
         bytesEqual(raw.payload, ascii('Unsupported protocol version'));
       if (missingProof || unsupported) {
@@ -1177,13 +1201,17 @@ export class V2StopAndWait {
     }
     if (![MSG.ACK,MSG.NACK].includes(msg.type) || msg.ackedType !== p.type || msg.ackedSeq !== p.seq || msg.segment !== p.segment) return 'ignored';
     if (msg.type === MSG.NACK) return 'retry';
-    if (p.type === MSG.HELLO) this.capabilityItemId = p.itemId;
+    if (p.type === MSG.HELLO) {
+      if (msg.windowSize > p.windowSize) throw new Error('unrequested DATA window');
+      this.capabilityItemId = p.itemId;
+      this.windowSize = msg.windowSize;
+    }
     if ([MSG.CANCEL,MSG.ITEM_DONE].includes(p.type)) this.capabilityItemId = null;
     this.pending = null;
     return 'ack';
   }
 
-  abort() { this.pending = null; this.capabilityItemId = null; }
+  abort() { this.pending = null; this.capabilityItemId = null; this.windowSize = 1; }
 }
 
 // Parser/order state only: no ciphertext accumulation or decryption. Task 4/6
@@ -1499,6 +1527,87 @@ export class V2HeaderParser {
   abort() { this.#buffer = null; this.#header = null; this.#failed = true; }
 }
 
+class V2WindowSegmentReceiver {
+  #inner; #meta; #window; #entries = new Map(); #batch = null;
+  #segment = 0; #next = 0; #draining = false; #closed = false;
+  constructor(session, meta, windowSize) {
+    this.#meta = validateV2Meta(meta, meta);
+    this.#window = requireV2Window(windowSize);
+    this.#inner = new V2SegmentReceiver(session, meta);
+  }
+  snapshot() {
+    const inner = this.#inner.snapshot();
+    return Object.freeze({...inner, retrySliceBytes:inner.retrySliceBytes +
+      [...this.#entries.values()].reduce((total, entry) => total + entry.bytes.length, 0),
+      windowFrames:this.#entries.size});
+  }
+  abort(error = new Error('window receiver aborted')) {
+    this.#closed = true; this.#inner.abort();
+    for (const entry of this.#entries.values()) if (!entry.done) entry.reject(error);
+    this.#entries.clear();
+  }
+  async push(context, raw) {
+    try {
+      this.#inner.assertActive();
+      requireUint32(context.segmentIndex, 'segment index');
+      requireUint16(context.chunkInSegment, 'chunk index');
+      if (context.itemId !== this.#meta.itemId) throw new Error('stale item DATA');
+      let bytes = normalizePayload(raw);
+      if (!bytes.length || bytes.length > V2_DATA_SLICE_LEN) throw new Error('invalid DATA slice length');
+      const key = `${context.segmentIndex}:${context.chunkInSegment}`;
+      const previous = this.#entries.get(key);
+      if (previous) {
+        if (!bytesEqual(previous.bytes, bytes)) throw new Error('conflicting duplicate DATA');
+        raw = null; bytes = null; context = null;
+        await previous.completion;
+        this.#inner.assertActive();
+        return {action:'duplicate'};
+      }
+      const base = Math.floor(this.#next / this.#window) * this.#window;
+      if (context.segmentIndex !== this.#segment || context.chunkInSegment < this.#next ||
+          context.chunkInSegment >= base + this.#window || this.#segment >= this.#meta.segmentCount ||
+          context.chunkInSegment >= Math.ceil(v2SegmentLength(this.#meta, this.#segment) / V2_DATA_SLICE_LEN)) {
+        throw new Error('DATA outside receive window');
+      }
+      const batch = `${this.#segment}:${base}`;
+      if (batch !== this.#batch) {
+        if ([...this.#entries.values()].some(entry => !entry.done)) throw new Error('incomplete DATA window');
+        this.#entries.clear(); this.#batch = batch;
+      }
+      let resolve, reject;
+      const accepted = new Promise((yes, no) => { resolve = yes; reject = no; });
+      const completion = accepted.then(() => {});
+      completion.catch(() => {});
+      this.#entries.set(key, {context:{...context}, bytes:new Uint8Array(bytes), resolve, reject, completion, done:false});
+      raw = null; bytes = null; context = null;
+      void this.#drain();
+      return await accepted;
+    } catch (error) { this.abort(error); throw error; }
+  }
+  async #drain() {
+    if (this.#draining || this.#closed) return;
+    this.#draining = true;
+    try {
+      while (!this.#closed) {
+        const entry = this.#entries.get(`${this.#segment}:${this.#next}`);
+        if (!entry || entry.done) break;
+        const result = await this.#inner.push(entry.context, entry.bytes);
+        this.#inner.assertActive();
+        entry.done = true; entry.resolve(result);
+        this.#next++;
+        if (this.#next === Math.ceil(v2SegmentLength(this.#meta, this.#segment) / V2_DATA_SLICE_LEN)) {
+          this.#segment++; this.#next = 0;
+        }
+      }
+    } catch (error) { this.abort(error); }
+    finally { this.#draining = false; }
+  }
+  finish() {
+    if ([...this.#entries.values()].some(entry => !entry.done)) throw new Error('incomplete DATA window');
+    return this.#inner.finish();
+  }
+}
+
 class V2SegmentReceiver {
   #session; #keys; #meta; #cipher = null; #last = null; #tail = null;
   #index = 0; #seq = 0; #offset = 0; #busy = false; #closed = false;
@@ -1584,56 +1693,62 @@ class V2SegmentReceiver {
 
 export class ItemSender {
   #streamWait = null;
-  #streamSettle = null;
+  #streamControls = new Set();
   #stream = null;
 
   streamSnapshot() {
     return Object.freeze({...this.#stream?.snapshot(),
       ciphertextBytes:this.#stream?.snapshot().ciphertextBytes ?? 0,
-      frameBytes:this.#streamWait?.pending?.frame.byteLength ?? 0});
+      frameBytes:[...this.#streamControls].reduce((total, slot) => total + (slot.wait.pending?.frame.byteLength ?? 0), 0)});
   }
 
   receiveStreamControl(raw) {
-    if (!this.#streamWait || !this.#streamSettle) return false;
-    try {
-      const result = this.#streamWait.receive(raw);
-      if (result === 'ignored') return false;
-      this.#streamSettle({result});
-    } catch (error) { this.#streamSettle({error}); }
-    return true;
+    for (const slot of this.#streamControls) {
+      if (!slot.settle) continue;
+      try {
+        const result = slot.wait.receive(raw);
+        if (result === 'ignored') continue;
+        slot.settle({result});
+      } catch (error) { slot.settle({error}); }
+      return true;
+    }
+    return false;
   }
 
   abortEncryptedStream(error = new Error('encrypted send aborted')) {
     this.#stream?.abort();
-    this.#streamSettle?.({error});
+    for (const slot of this.#streamControls) slot.settle?.({error});
   }
 
-  async #sendStreamFrame(raw) {
+  async #sendStreamFrame(raw, wait = this.#streamWait) {
+    const stream = this.#stream, slot = {wait, settle:null};
     let frame = new Uint8Array(64); frame.set(raw); raw = null;
-    this.#streamWait.begin(frame, this.#stream.meta.itemId);
+    wait.begin(frame, stream.meta.itemId);
     frame = null;
-    for (let attempt = 0; attempt <= this.retries; attempt++) {
-      this.#stream.assertActive();
-      let timer, written = false;
-      const control = new Promise(resolve => { this.#streamSettle = resolve; });
-      const deadline = new Promise(resolve => {
-        timer = setTimeout(() => resolve(written ? {result:'retry'} : {error:new Error('transport write timed out')}), this.timeoutMs);
-      });
-      try {
-        // The transport owns its copy; it cannot mutate the retained retry bytes.
-        const stream = this.#stream, wait = this.#streamWait;
-        const sent = Promise.resolve().then(() => {
+    this.#streamControls.add(slot);
+    try {
+      for (let attempt = 0; attempt <= this.retries; attempt++) {
+        stream.assertActive();
+        let timer, written = false;
+        const control = new Promise(resolve => { slot.settle = resolve; });
+        const deadline = new Promise(resolve => {
+          timer = setTimeout(() => resolve(written ? {result:'retry'} : {error:new Error('transport write timed out')}), this.timeoutMs);
+        });
+        try {
+          // The transport owns its copy; it cannot mutate the retained retry bytes.
+          const sent = Promise.resolve().then(() => {
+            stream.assertActive();
+            return this.sendFn(wait.pending.frame.slice());
+          }).then(() => { stream.assertActive(); written = true; });
+          const response = await Promise.race([sent.then(() => control), control.then(result => result.error ? result : sent.then(() => result)), deadline]);
           stream.assertActive();
-          return this.sendFn(wait.pending.frame.slice());
-        }).then(() => { stream.assertActive(); written = true; });
-        const response = await Promise.race([sent.then(() => control), control.then(result => result.error ? result : sent.then(() => result)), deadline]);
-        this.#stream.assertActive();
-        if (response.error) throw response.error;
-        if (response.result === 'ack') return;
-        if (response.result !== 'retry') throw new Error(`Peer stream ${response.result}`);
-      } finally { clearTimeout(timer); this.#streamSettle = null; }
-    }
-    throw new Error('stream retry exhausted');
+          if (response.error) throw response.error;
+          if (response.result === 'ack') return;
+          if (response.result !== 'retry') throw new Error(`Peer stream ${response.result}`);
+        } finally { clearTimeout(timer); slot.settle = null; }
+      }
+      throw new Error('stream retry exhausted');
+    } finally { this.#streamControls.delete(slot); }
   }
 
   async sendEncryptedStream(stream, options = {}) {
@@ -1642,7 +1757,7 @@ export class ItemSender {
     this.#stream = stream; this.#streamWait = new V2StopAndWait();
     const itemId = stream.meta.itemId;
     try {
-      await this.#sendStreamFrame(buildV2Frame(MSG.HELLO, 0, itemId));
+      await this.#sendStreamFrame(buildV2Frame(MSG.HELLO, 0, itemId, V2_CONTROL_SEGMENT, this.windowSize));
       stream.assertActive();
       options.onProgress?.(0n);
       stream.assertActive();
@@ -1651,15 +1766,26 @@ export class ItemSender {
         await this.#sendStreamFrame(buildMessage(MSG.ITEM_META, seq, fragments[seq]));
       }
       for await (const segment of stream) {
-        for (let offset = 0, seq = 0; offset < segment.bytes.length; offset += 51, seq++) {
-          await this.#sendStreamFrame(buildV2Frame(MSG.ITEM_DATA, seq, itemId,
-            segment.index, segment.bytes.subarray(offset, offset + 51)));
+        const windowSize = this.#streamWait.windowSize;
+        for (let offset = 0; offset < segment.bytes.length; offset += V2_DATA_SLICE_LEN * windowSize) {
+          const batch = [];
+          for (let index = 0; index < windowSize && offset + index * V2_DATA_SLICE_LEN < segment.bytes.length; index++) {
+            const position = offset + index * V2_DATA_SLICE_LEN;
+            const wait = windowSize === 1 ? this.#streamWait : new V2StopAndWait();
+            wait.capabilityItemId = itemId;
+            batch.push(this.#sendStreamFrame(buildV2Frame(MSG.ITEM_DATA, position / V2_DATA_SLICE_LEN, itemId,
+              segment.index, segment.bytes.subarray(position, position + V2_DATA_SLICE_LEN)), wait));
+          }
+          await Promise.all(batch);
           stream.assertActive();
-          options.onProgress?.(BigInt(segment.index) * 65536n + BigInt(Math.min(offset + 51, segment.bytes.length - 16)));
+          options.onProgress?.(BigInt(segment.index) * 65536n + BigInt(Math.min(offset + V2_DATA_SLICE_LEN * windowSize, segment.bytes.length - 16)));
           stream.assertActive();
         }
       }
       await this.#sendStreamFrame(buildV2Frame(MSG.ITEM_DONE, 0, itemId));
+    } catch (error) {
+      this.abortEncryptedStream(error);
+      throw error;
     } finally {
       stream.abort(); this.#streamWait.abort(); this.#streamWait = null; this.#stream = null;
     }
@@ -1667,13 +1793,14 @@ export class ItemSender {
 
   /**
    * @param {Function} sendFn Async callback that writes a Uint8Array frame.
-   * @param {{timeoutMs?:number, retries?:number}} [options] ACK/NACK retry options.
+   * @param {{timeoutMs?:number, retries?:number, windowSize?:number}} [options] ACK/NACK retry options.
    */
   constructor(sendFn, options = {}) {
     assertSendFn(sendFn);
     this.sendFn = sendFn;
     this.timeoutMs = options.timeoutMs ?? 2000;
     this.retries = options.retries ?? 3;
+    this.windowSize = requireV2Window(options.windowSize ?? 1);
     this.ackCallbacks = new Set();
     this.nackCallbacks = new Set();
     this.pendingAcks = new Map();

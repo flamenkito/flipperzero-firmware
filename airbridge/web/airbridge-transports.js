@@ -172,10 +172,11 @@ export class WebHIDAdapter {
 
 /**
  * Thin Web Bluetooth transport adapter for Pocket AirBridge BLE Serial frames.
- * It only opens/closes GATT, writes frames to RX with response, and forwards TX
- * characteristic indications as Uint8Array frames.
+ * It only opens/closes GATT, writes frames to RX, and forwards TX
+ * characteristic notifications as Uint8Array frames.
  */
 export class WebBluetoothAdapter {
+  #writes = {tail:Promise.resolve(), pending:0};
   /**
    * @param {{onDisconnect?:Function}} [options] Optional lifecycle callbacks.
    */
@@ -522,17 +523,35 @@ export class WebBluetoothAdapter {
   }
 
   /**
-   * Send one protocol frame to the RX characteristic using write-with-response.
+   * Send one protocol frame, preferring write-without-response when supported.
+   * Protocol ACKs retain end-to-end delivery checks and backpressure.
    * @param {Uint8Array|ArrayBuffer|ArrayBufferView} frame Unpadded frame bytes.
    * @returns {Promise<void>}
    */
   async send(frame) {
-    if (!this.rxChar) throw new Error('Web Bluetooth transport is not connected');
-    await this.rxChar.writeValueWithResponse(normalizeFrame(frame));
+    const rxChar = this.rxChar;
+    if (!rxChar) throw new Error('Web Bluetooth transport is not connected');
+    const writes = this.#writes;
+    if (writes.pending >= 8) throw new Error('BLE write queue full');
+    const view = normalizeFrame(frame);
+    if (view.byteLength > 64) throw new RangeError('BLE frame must be 64 bytes or less');
+    const bytes = new Uint8Array(view);
+    writes.pending++;
+    const sent = writes.tail.then(async () => {
+      if (this.#writes !== writes || this.rxChar !== rxChar) throw new Error('Web Bluetooth transport is not connected');
+      if (rxChar.properties?.writeWithoutResponse && typeof rxChar.writeValueWithoutResponse === 'function') {
+        await rxChar.writeValueWithoutResponse(bytes);
+      } else {
+        await rxChar.writeValueWithResponse(bytes);
+      }
+    });
+    writes.tail = sent.catch(() => {});
+    try { await sent; }
+    finally { writes.pending--; }
   }
 
   /**
-   * Register the callback fired for each incoming TX indication frame.
+   * Register the callback fired for each incoming TX notification frame.
    * @param {Function} callback Receives a Uint8Array frame.
    * @returns {Function} Unsubscribe callback.
    */
@@ -656,6 +675,7 @@ export class WebBluetoothAdapter {
   }
 
   clearGattState() {
+    this.#writes = {tail:Promise.resolve(), pending:0};
     if (this.txChar) {
       this.txChar.removeEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
     }

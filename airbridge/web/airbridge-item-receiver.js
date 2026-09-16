@@ -130,7 +130,10 @@ export class ItemReceiver {
   }
   async #hello(msg, owner) {
     if (!this.#session.isUnlocked()) throw new Error('crypto session locked');
-    if (this.#active?.id === msg.itemId && this.state === 'hello') return this.#ack(msg);
+    if (this.#active?.id === msg.itemId && this.state === 'hello') {
+      if (this.#active.windowSize !== msg.windowSize) throw new Error('conflicting HELLO window');
+      return this.#ack(msg);
+    }
     if (msg.itemId <= this.#highWater) return this.#send(buildV2Frame(MSG.ERROR, 0, msg.itemId, undefined, 'Inactive item'));
     if (this.#busy || this.#active) {
       await this.#send(buildV2Frame(MSG.BUSY, 0, msg.itemId));
@@ -138,7 +141,7 @@ export class ItemReceiver {
     }
     owner.generation = ++this.#generation; owner.itemId = msg.itemId;
     this.#receipt = null; this.#highWater = msg.itemId;
-    this.#active = {id:msg.itemId, fragments:[], meta:null, segment:null, accumulator:null, pendingDone:null, receivedCiphertextBytes:0n};
+    this.#active = {id:msg.itemId, windowSize:msg.windowSize, fragments:[], meta:null, segment:null, accumulator:null, pendingDone:null, receivedCiphertextBytes:0n};
     this.state = 'hello'; this.#arm();
     const generation = this.#generation;
     await this.#emit('hello', {itemId:msg.itemId});
@@ -160,7 +163,7 @@ export class ItemReceiver {
       const meta = decodeMeta(active.fragments);
       active.meta = validateV2Meta(meta, {keyId:this.#session.keyId,
         direction:this.#session.role === 1 ? 'ble-to-usb' : 'usb-to-ble', itemId:active.id});
-      active.segment = this.#session.openSegmentReceiver(meta);
+      active.segment = this.#session.openSegmentReceiver(meta, {windowSize:active.windowSize});
       active.accumulator = createReceiveAccumulator(this.#hash);
       this.state = 'data';
       await this.#emit('meta', Object.freeze({...meta}));

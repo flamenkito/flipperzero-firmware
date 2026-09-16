@@ -529,16 +529,7 @@ static void hid_vendor_on_suspend(usbd_device* dev) {
 }
 
 bool airbridge_usb_vendor_send_response(uint8_t* data, uint8_t len) {
-    if(hid_vendor_semaphore == NULL) return false;
-    if(furi_semaphore_acquire(hid_vendor_semaphore, 0) != FuriStatusOk) return false;
-    if(hid_vendor_connected) {
-        if(usbd_ep_write(usb_dev, hid_vendor_ep_in, data, len) < 0) {
-            furi_semaphore_release(hid_vendor_semaphore);
-            return false;
-        }
-    }
-    furi_semaphore_release(hid_vendor_semaphore);
-    return hid_vendor_connected;
+    return airbridge_usb_vendor_send_response_blocking(data, len, 0);
 }
 
 bool airbridge_usb_vendor_send_response_blocking(uint8_t* data, uint8_t len, uint32_t timeout) {

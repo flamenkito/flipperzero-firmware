@@ -137,7 +137,9 @@ uint32_t airbridge_usb_vendor_get_request(uint8_t* data) {
     return 0;
 }
 
-bool airbridge_usb_vendor_send_response(uint8_t* data, uint8_t length) {
+bool airbridge_usb_vendor_send_response_blocking(uint8_t* data, uint8_t length, uint32_t timeout) {
+    assert(timeout > 0 && timeout <= 10);
+    UNUSED(timeout);
     UNUSED(data);
     UNUSED(length);
     return true;

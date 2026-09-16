@@ -68,7 +68,7 @@ function makeMockDevice({
     },
   };
   server.device = device;
-  return { device, gatt, server, txChar, listeners };
+  return { device, gatt, server, txChar, rxChar, listeners };
 }
 
 function installNavigatorBluetooth(device) {
@@ -105,6 +105,124 @@ function installDomGlobals() {
   };
   return listeners;
 }
+
+test('BLE command writes preserve a BufferSource view and await transport completion', async () => {
+  const { device, rxChar } = makeMockDevice();
+  installNavigatorBluetooth(device);
+  installDomGlobals();
+  const adapter = new WebBluetoothAdapter();
+  let release;
+  const completion = new Promise(resolve => { release = resolve; });
+  const writes = [];
+  rxChar.properties = { write: true, writeWithoutResponse: true };
+  rxChar.writeValueWithoutResponse = async bytes => { writes.push([...bytes]); await completion; };
+  rxChar.writeValueWithResponse = async () => { assert.fail('extra GATT response requested'); };
+  try {
+    await adapter.connect();
+    await assert.rejects(adapter.send(new Uint8Array(65)), /64 bytes or less/);
+    const buffer = Uint8Array.of(99, 3, 0, 1, 0, 88);
+    let settled = false;
+    const sent = adapter.send(new DataView(buffer.buffer, 1, 4)).then(() => { settled = true; });
+    await Promise.resolve();
+    assert.deepEqual(writes, [[3, 0, 1, 0]]);
+    assert.equal(settled, false, 'send settled before the transport write');
+    release();
+    await sent;
+    assert.equal(settled, true);
+    await adapter.disconnect();
+    await assert.rejects(adapter.send(buffer), /not connected/);
+    assert.equal(writes.length, 1, 'disconnected send reached the characteristic');
+  } finally { release(); adapter.dispose(); }
+});
+
+for (const unsupported of ['characteristic', 'browser', 'properties']) {
+  test(`BLE retains response writes when ${unsupported} lacks command-write support`, async () => {
+    const { device, rxChar } = makeMockDevice();
+    installNavigatorBluetooth(device);
+    installDomGlobals();
+    const adapter = new WebBluetoothAdapter();
+    if (unsupported !== 'properties') rxChar.properties = { writeWithoutResponse: unsupported !== 'characteristic' };
+    if (unsupported !== 'browser') rxChar.writeValueWithoutResponse = async () => { assert.fail('unsupported command write'); };
+    const writes = [];
+    rxChar.writeValueWithResponse = async bytes => { writes.push([...bytes]); };
+    try {
+      await adapter.connect();
+      await adapter.send(Uint8Array.of(4, 0, 0).buffer);
+      assert.deepEqual(writes, [[4, 0, 0]]);
+    } finally { adapter.dispose(); }
+  });
+}
+
+for (const method of ['writeValueWithoutResponse', 'writeValueWithResponse']) {
+  test(`BLE ${method} failure propagates without replaying a possibly delivered frame`, async () => {
+    const { device, rxChar } = makeMockDevice();
+    installNavigatorBluetooth(device);
+    installDomGlobals();
+    const adapter = new WebBluetoothAdapter();
+    const failure = new DOMException('link dropped during write', 'NetworkError');
+    const writes = [];
+    rxChar.properties = { writeWithoutResponse: method === 'writeValueWithoutResponse' };
+    for (const name of ['writeValueWithoutResponse', 'writeValueWithResponse']) {
+      rxChar[name] = async () => { writes.push(name); throw failure; };
+    }
+    try {
+      await adapter.connect();
+      await assert.rejects(adapter.send(Uint8Array.of(3, 0, 0)), error => error === failure);
+      assert.deepEqual(writes, [method], 'transport silently replayed the write');
+    } finally { adapter.dispose(); }
+  });
+}
+
+test('BLE serializes a bounded write queue and owns queued bytes', async () => {
+  const {device, rxChar} = makeMockDevice();
+  installNavigatorBluetooth(device); installDomGlobals();
+  const adapter = new WebBluetoothAdapter();
+  let release, active = 0, peak = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const writes = [];
+  rxChar.properties = {writeWithoutResponse:true};
+  rxChar.writeValueWithoutResponse = async bytes => {
+    peak = Math.max(peak, ++active); writes.push([...bytes]);
+    if (writes.length === 1) await gate;
+    active--;
+  };
+  try {
+    await adapter.connect();
+    const buffer = Uint8Array.of(7);
+    const pending = Array.from({length:8}, () => adapter.send(buffer));
+    buffer[0] = 99;
+    await assert.rejects(adapter.send(buffer), /queue full/);
+    assert.equal(writes.length, 1);
+    release(); await Promise.all(pending);
+    assert.equal(peak, 1);
+    assert.deepEqual(writes, Array.from({length:8}, () => [7]));
+    await adapter.send(Uint8Array.of(8));
+    assert.deepEqual(writes.at(-1), [8]);
+  } finally { release(); adapter.dispose(); }
+});
+
+test('BLE reconnect discards queued writes even when a characteristic object is reused', async () => {
+  const {device, rxChar} = makeMockDevice();
+  installNavigatorBluetooth(device); installDomGlobals();
+  const adapter = new WebBluetoothAdapter();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const writes = [];
+  rxChar.properties = {writeWithoutResponse:true};
+  rxChar.writeValueWithoutResponse = async bytes => {
+    writes.push(bytes[0]); if (bytes[0] === 1) await gate;
+  };
+  try {
+    await adapter.connect();
+    const first = adapter.send(Uint8Array.of(1));
+    const queued = assert.rejects(adapter.send(Uint8Array.of(2)), /not connected/);
+    await Promise.resolve();
+    await adapter.disconnect(); await adapter.connect();
+    await adapter.send(Uint8Array.of(3));
+    release(); await first; await queued;
+    assert.deepEqual(writes, [1, 3]);
+  } finally { release(); adapter.dispose(); }
+});
 
 for (const stage of ['services', 'serial-service', 'notifications']) {
   test(`initial GATT drop during ${stage} retries the selected device without a competing reconnect`, async () => {

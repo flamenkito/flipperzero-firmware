@@ -100,7 +100,7 @@ Read the full architecture in [`docs/architecture.md`](docs/architecture.md).
 
 ## Protocol
 
-Protocol **v2 (AB2S)** uses 64-byte frames, 59-byte outer payloads and 51-byte encrypted DATA slices. Item ACKs are 15 bytes and NACKs 16 bytes, matching type, sequence, AB2S, itemId and segment (control sentinel `0xffffffff`). KEY handshake ACKs alone retain three bytes. NACK retries only the exact outstanding frame; no byte-range or cross-session resume. Receiver authentication, final size/SHA-256 verification and Blob creation precede `ITEM_DONE` ACK.
+Protocol **v2 (AB2S)** uses 64-byte frames, 59-byte outer payloads and 51-byte encrypted DATA slices. Chat requests the **AB2W four-frame DATA window** through an explicit HELLO capability exchange. Each DATA frame still receives a contextual ACK and owns its exact retry bytes; all frames in a batch must be acknowledged before the next batch. Ordinary item ACKs are 15 bytes, window HELLO ACKs and NACKs 16 bytes, and KEY handshake ACKs three bytes. Receiver authentication, final size/SHA-256 verification and Blob creation precede `ITEM_DONE` ACK. Refresh both endpoints together; older receivers reject the new window request before payload transmission. See the [wire contract](docs/protocol.md#bounded-data-windows).
 
 The chat protocol is always encrypted end to end in the browsers. USB and BLE exchange a P-256 ECDH handshake, derive AES-GCM keys with HKDF, and unlock only after both users compare and accept the same six-digit SAS. The Flipper never sees plaintext, session keys, decrypted metadata, or decrypted files.
 

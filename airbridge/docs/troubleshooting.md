@@ -1,5 +1,80 @@
 # Pocket AirBridge troubleshooting
 
+## Transfer throughput and HID report ownership: 2026-09-16
+
+Hardware baseline with 32 KiB attachments measured **1.43 KiB/s USB→BLE** and
+**1.49 KiB/s BLE→USB**. Every 51-byte DATA slice waited roughly 30 ms for its
+end-to-end ACK. BLE write-without-response reduced the browser write-call time,
+but throughput stayed at 1.42/1.55 KiB/s; this alone did not remove the round-trip
+bottleneck. These measurements include the file hash pass and protocol setup.
+
+After the USB transmit fix below, the bounded four-frame window measured:
+
+| Same 32 KiB file | One frame | Four frames | Gain |
+| --- | ---: | ---: | ---: |
+| USB→BLE | 1.43 KiB/s | 2.54 KiB/s | 77% |
+| BLE→USB | 1.49 KiB/s | 2.21 KiB/s | 49% |
+
+A 70,000-byte file crossing the 64 KiB encryption-segment boundary completed at
+**2.57 KiB/s USB→BLE** and **2.25 KiB/s BLE→USB**. Both file sizes passed byte
+comparison and SHA-256 in both directions, with zero DATA retries or browser
+write errors. The owner then read the Flipper counters as **5380 / 5380 / 0 / 0**
+(`U→B / B→U / DROP / TXERR`). Two-frame results were 1.98/1.63 KiB/s; four frames
+is the selected bound. These are measurements from this Mac/Flipper connection,
+not guaranteed rates on other hosts or radios. They measure encrypted Bridge
+file transfers; the separate Deploy stream was not made faster by this change.
+
+The AB2W DATA window exposed a second issue in the FAP's USB transmitter. The
+old nonblocking `airbridge_usb_vendor_send_response` released its semaphore
+immediately after `usbd_ep_write`, before the USB transmit-complete callback.
+Back-to-back reports could therefore replace a report the host had not consumed.
+During the initial two-frame test the BLE sender attempted 199 DATA writes,
+while USB received 169; repeated five-second retries made the reverse transfer
+unusable. The test was cancelled rather than counted as a completed benchmark.
+
+The helper now leaves the slot occupied until the interrupt-IN completion.
+Bridge uses the existing completion-based sender with a **10 ms maximum wait**
+for a slot, preserving the exit polling budget. USB Deploy already used this
+sender. The new native regression submits two reports before completion: the
+old helper wrongly accepts the second write, while the fixed helper rejects it
+or waits for the first slot to complete. A successful enqueue is not permission
+to reuse the endpoint before its completion event.
+
+USB remains HID-only with the selected impersonation profile, 64-byte reports,
+and the existing endpoint polling interval. The Flipper queue remains eight
+one-frame events. The window/ACK protocol and retry/reorder buffers live in the
+browsers; see the [window contract](protocol.md#bounded-data-windows). Refresh
+both browser pages together, regenerate both deploy bundles and digest pins,
+then rebuild/upload the FAP to install the USB send fix. A full firmware flash
+is unnecessary for these app-owned changes; API remains **87.15**.
+
+Benchmark each direction separately with the same file and verify the received
+SHA-256. Record elapsed time, ACK latency, retries, and on-device DROP/TXERR;
+do not infer throughput from the duration of a GATT write promise. Local captures
+are under `.omo/evidence/hid-throughput/` (gitignored).
+
+Validation for this change:
+
+- Native/static host checks and **237 JavaScript tests** pass; bundle builder
+  **14/14**, persistent-browser harness **275/275**, FAP SDK/APPCHK pass.
+- Real text works both ways. Sender and receiver cancel clear active items and
+  buffers without exposing a partial download; fresh 1 KiB files then pass
+  SHA-256 both ways. Receiver cancel currently displays `Failed: Peer stream
+  cancel` at the sender; it still settles and permits another transfer.
+- With automatic BLE reconnect disabled for the fault test, a GATT disconnect
+  during DATA produces a visible sender failure after **25.1 seconds** (the
+  existing five attempts at five seconds), with no stuck send or retained item.
+  DROP/TXERR readings above were taken before this intentional disconnect.
+- USB Deploy: owner confirmed keyboard deployment; captured bootstrap logs show
+  all **67,544 gzip bytes**, checksum success and page boot. Stream time from the
+  trigger was **11.489 seconds**. The loaded scripts exactly match the generated
+  USB bundle. The SD container is 67,556 bytes including its 12-byte header.
+- BLE Deploy: owner confirmed keyboard deployment; captured logs show TX
+  subscription, the `0x42` trigger, all **67,591 gzip bytes**, checksum success
+  and page boot. The loaded scripts exactly match the generated BLE bundle.
+  The SD container is 67,603 bytes including its 12-byte header. Both Deploy
+  regressions are complete.
+
 ## BLE Deploy restoration: 2026-09-15
 
 Fix commit: `90a19db1` (`fix(airbridge): restore BLE deploy, correct HID event
