@@ -2,7 +2,8 @@ use anyhow::{Result, bail, ensure};
 
 pub const FRAME_LEN: usize = 64;
 pub const DATA_LEN: usize = 40;
-pub const WINDOW: usize = 2;
+pub const LEGACY_WINDOW: usize = 2;
+pub const WINDOW: usize = 4;
 pub type Report = [u8; FRAME_LEN];
 const MAGIC: &[u8; 4] = b"ABT1";
 
@@ -28,6 +29,16 @@ pub struct Frame {
 }
 
 impl Frame {
+    pub fn handshake(kind: Kind, session: u64, window: usize) -> Self {
+        let mut frame = Self::control(kind, session, 0);
+        frame.payload = vec![window as u8, DATA_LEN as u8];
+        frame
+    }
+
+    pub fn window(&self) -> usize {
+        usize::from(self.payload[0])
+    }
+
     pub fn control(kind: Kind, session: u64, sequence: u32) -> Self {
         let payload = if matches!(kind, Kind::Open | Kind::Accept) {
             vec![WINDOW as u8, DATA_LEN as u8]
@@ -57,7 +68,9 @@ impl Frame {
         match self.kind {
             Kind::Open | Kind::Accept => {
                 ensure!(
-                    self.payload == [WINDOW as u8, DATA_LEN as u8],
+                    self.payload.len() == 2
+                        && matches!(self.window(), LEGACY_WINDOW | WINDOW)
+                        && usize::from(self.payload[1]) == DATA_LEN,
                     "unsupported stream capability"
                 );
             }

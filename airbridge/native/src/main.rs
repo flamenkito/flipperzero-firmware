@@ -22,6 +22,12 @@ struct Cli {
     peer_timeout: u64,
     #[arg(long, global = true, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=3600))]
     stall_timeout: u64,
+    /// Maximum negotiated DATA/FIN window; use 2 to compare the original window.
+    #[arg(long, global = true, default_value_t = 4, value_parser = parse_window)]
+    window: usize,
+    /// Maximum ACK coalescing delay; 0 sends an ACK for each completed frame.
+    #[arg(long, global = true, default_value_t = 4, value_parser = clap::value_parser!(u64).range(0..=20))]
+    ack_delay_ms: u64,
 }
 
 #[derive(Subcommand)]
@@ -73,6 +79,14 @@ struct UsbIdentity {
 
 fn hex_id(value: &str) -> Result<u16, std::num::ParseIntError> {
     u16::from_str_radix(value.trim_start_matches("0x"), 16)
+}
+
+fn parse_window(value: &str) -> Result<usize, String> {
+    match value {
+        "2" => Ok(2),
+        "4" => Ok(4),
+        _ => Err("window must be 2 or 4".into()),
+    }
 }
 
 #[derive(Args)]
@@ -136,6 +150,8 @@ async fn run(cli: Cli) -> Result<()> {
         retry: Duration::from_millis(cli.retry_ms),
         peer_timeout: Duration::from_secs(cli.peer_timeout),
         stall_timeout: Duration::from_secs(cli.stall_timeout),
+        window: cli.window,
+        ack_delay: Duration::from_millis(cli.ack_delay_ms),
         ..Config::default()
     };
     match cli.command {

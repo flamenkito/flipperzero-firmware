@@ -12,9 +12,14 @@ There is no separate product repository, patch bundle, or patch-application step
 
 For native SSH, REST, and WebSocket clients, the optional Rust tool
 [**abt**](native/README.md) forwards TCP over the same USB HID ↔ BLE bridge.
-macOS hardware tests and a user-confirmed interactive [Mac-to-WSL SSH session](native/README.md#mac-client--windows-usb--wsl-server)
-through Windows USB have passed. File-transfer and API/WebSocket tests on the
-Windows/WSL pair remain pending. SSH or TLS supplies native tunnel encryption;
+Use the [Mac/Windows/WSL daily-start guide](native/README.md#daily-start-mac--windowswsl)
+for terminal commands, then [set up passwordless SSH](native/README.md#passwordless-ssh-over-the-wsl-tunnel)
+or [copy files and upgrade](native/README.md#copy-files-and-upgrade-the-windows-endpoint).
+macOS hardware tests and [Mac-to-WSL SSH](native/README.md#mac-client--windows-usb--wsl-server)
+through Windows USB have passed, including file integrity, duplex benchmarks,
+and concurrent HTTP/WebSocket forwarding. The 0.2.0 protocol changes measured
+43–50% faster one-way transfers on that pair; see the [results](native/README.md#protocol-optimization-result--2026-09-16).
+SSH or TLS supplies native tunnel encryption;
 the browser's encrypted chat protocol remains separate.
 
 ## Quickstart

@@ -9,6 +9,65 @@ confirmed by the user on two computers.
 USB remains HID: the default HP identity is `03f0:5341`, using only vendor usage
 `ff00:0001`, with 64-byte reports. `abt` sends no keyboard reports.
 
+## Daily start: Mac → Windows/WSL
+
+After the [one-time SSH setup](#mac-client--windows-usb--wsl-server), keep the
+Flipper on **Bridge** with USB plugged into Windows. Use these four terminals.
+The examples put the Windows package in WSL's `~/projects/abt-0.2.0`; adjust
+that path if you extracted it elsewhere. `WSL_USER` is the result of `whoami`
+inside WSL, not necessarily the Windows account name.
+
+**WSL terminal 1 — SSH server.** If `ss -ltn 'sport = :2222'` already shows the
+intended SSH listener, keep that instance. Otherwise:
+
+```sh
+sudo mkdir -p /run/sshd
+sudo /usr/sbin/sshd -D -e -p 2222 -o ListenAddress=127.0.0.1
+```
+
+**WSL terminal 2 — Windows USB endpoint.** The user runs this locally in WSL;
+Windows executable launches and restarts are not performed by the agent or
+through an agent's SSH command:
+
+```sh
+cd ~/projects/abt-0.2.0
+./abt.exe usb --connect 127.0.0.1:2222
+```
+
+**Mac terminal 1 — BLE endpoint.** First check `lsof -nP -iTCP:2222`. Reuse an
+existing `abt` listener for this tunnel, including one started by the agent.
+When no endpoint is running, start it from the repository root:
+
+```sh
+cd ~/projects/flipperzero-firmware
+airbridge/native/target/release/abt ble --listen 127.0.0.1:2222 --scan-seconds 20
+```
+
+Wait for `BLE subscribed` and `listening on 127.0.0.1:2222`.
+
+**Mac terminal 2 — SSH shell:**
+
+```sh
+ssh -p 2222 -o HostKeyAlias=airbridge-wsl WSL_USER@127.0.0.1
+```
+
+Verify the server host key on first use. [Install your public key](#passwordless-ssh-over-the-wsl-tunnel)
+once for passwordless login; optionally add `-C` for [SSH compression](#ssh-compression).
+Leave the two `abt` endpoints and foreground `sshd` running. On the first SSH
+connection, both updated endpoints should log `connected; window=4`. The faster
+defaults need no extra flags. DROP and TXERR should stay zero.
+
+Run `exit` in the SSH shell before starting a separate SCP/SSH connection, then
+wait for the endpoint's `stream ... closed` log, which follows a closing grace
+period of about one second by default. To stop the tunnel, finish the SSH session and press
+Ctrl-C in each endpoint terminal. Stop the foreground `sshd` separately when
+finished with it. Restarting `abt` alone does not start or stop the SSH server.
+
+Further tasks: [copy files or upgrade](#copy-files-and-upgrade-the-windows-endpoint),
+[forward REST/WebSockets](#rest-and-websockets-inside-ssh),
+[measure throughput](#reproducible-throughput-check),
+and [troubleshoot](#troubleshooting).
+
 ## Build
 
 ### macOS
@@ -39,9 +98,10 @@ CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
 
 Output: `airbridge/native/target/x86_64-pc-windows-gnu/release/abt.exe`.
 This is a Windows console application; run it in PowerShell on Windows 10/11 x64.
-The 2026-09-16 build passed `--version` and `usb --help` checks under Wine 11.0,
+The initial 0.1.0 build passed `--version` and `usb --help` checks under Wine 11.0,
 then a physical Mac-to-WSL interactive SSH test using the Windows USB endpoint.
-File-transfer and API/WebSocket forwarding tests on this pair remain pending.
+The 0.2.0 build subsequently passed file-integrity, throughput, and concurrent
+HTTP/WebSocket forwarding checks on that pair; see the results below.
 
 Local build artifacts (under the ignored `target/` directory):
 
@@ -139,8 +199,17 @@ the WSL side. WSL normally forwards
 its listening ports to Windows localhost; custom networking settings may need
 adjustment. See [Microsoft's WSL networking guide](https://learn.microsoft.com/en-us/windows/wsl/networking#accessing-linux-networking-apps-from-windows-localhost).
 
-Copy `abt.exe` into the Windows Downloads folder. Replace `WINDOWS_USER` with
-the Windows account's directory name (it can differ from `WSL_USER`):
+For the package extracted into WSL's `~/projects`, use:
+
+```sh
+cd ~/projects/abt-0.2.0
+./abt.exe devices usb
+./abt.exe usb --connect 127.0.0.1:2222
+```
+
+Alternatively, copy `abt.exe` into the Windows Downloads folder. Replace
+`WINDOWS_USER` with the Windows account's directory name (it can differ from
+`WSL_USER`) and run the same commands from that directory:
 
 ```sh
 cd "/mnt/c/Users/WINDOWS_USER/Downloads"
@@ -151,6 +220,8 @@ cd "/mnt/c/Users/WINDOWS_USER/Downloads"
 WSL launches it as a Windows process, so USB access still belongs to Windows.
 See [Microsoft's interoperability documentation](https://learn.microsoft.com/en-us/windows/wsl/filesystems#run-windows-tools-from-linux).
 Leave `abt.exe` running in this terminal.
+All Windows `abt.exe` commands, including device and version checks, are run by
+the user in a local WSL or PowerShell terminal.
 
 Alternatively, launch it from Windows PowerShell beside the extracted executable:
 
@@ -180,6 +251,42 @@ the Windows endpoint; this setup needs no USB forwarding into WSL. `abt` does
 not install or start WSL's SSH server. This interactive SSH path passed on
 2026-09-16; see the [hardware result](#mac-to-wsl-hardware-result--2026-09-16).
 
+### Passwordless SSH over the WSL tunnel
+
+Check for an existing key with `ls ~/.ssh/id_ed25519.pub`. If that file is
+absent, generate a key on the Mac with `ssh-keygen -t ed25519` and follow its
+prompts, preserving any existing key files.
+
+With both endpoints and WSL's SSH server running, install an existing Mac public
+key using one SSH connection. This example uses `~/.ssh/id_ed25519.pub`; keep its
+private key on the Mac. Run on the Mac, replacing `WSL_USER`:
+
+```sh
+cat ~/.ssh/id_ed25519.pub | ssh \
+  -p 2222 -o HostKeyAlias=airbridge-wsl WSL_USER@127.0.0.1 \
+  'umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh && { printf "\n"; cat; } >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+```
+
+Enter the WSL password once. After that connection closes, allow about two
+seconds for the tunnel's closing grace period, then verify:
+
+```sh
+ssh -T -p 2222 -o HostKeyAlias=airbridge-wsl -o BatchMode=yes \
+  -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519 WSL_USER@127.0.0.1 \
+  'printf "KEY_LOGIN_OK\n"'
+```
+
+If the private key has a passphrase, unlock it in the Mac's SSH agent first:
+
+```sh
+ssh-add ~/.ssh/id_ed25519
+```
+
+This changes SSH authentication only; host-key verification still applies.
+The macOS `ssh-copy-id` helper opens successive SSH connections for version and
+key checks. Its next connection can be rejected while `abt` is still closing the
+previous stream. The single-connection command above avoids that race.
+
 ### SSH compression
 
 For terminal output, logs, source code, and uncompressed JSON, try SSH's `-C`
@@ -203,6 +310,53 @@ encrypted inside SSH (such as HTTPS/WSS) usually gain little and can incur extra
 overhead. Compression does not increase the physical HID/BLE link rate; results
 depend on the data. Compare with `-o Compression=no` for an explicit disabled
 baseline. Compression gains on the Windows/WSL pair have not yet been measured.
+
+### Copy files and upgrade the Windows endpoint
+
+Keep both endpoints and WSL's SSH server running. Exit any interactive SSH
+shell before starting SCP, and allow the previous tunnel stream to finish
+closing. These commands run on the **Mac**, from the repository root; the
+destination `projects/` is relative to the WSL user's home directory:
+
+```sh
+scp -P 2222 -o HostKeyAlias=airbridge-wsl \
+  -X nrequests=2 -X buffer=4096 \
+  airbridge/native/target/dist/abt-windows-x64.zip \
+  WSL_USER@127.0.0.1:projects/abt-0.2.0.zip
+```
+
+For any other file, replace the source and destination filenames. Create
+`~/projects` in WSL first if needed. SCP uses uppercase `-P` for the SSH port.
+The `-X` options work with the tested Mac OpenSSH 9.9 client; they limit SFTP
+request size and concurrency so progress updates arrive sooner on this link.
+Allow the copy to finish. Avoid opening another SSH session during it.
+
+After the copy completes, use a **local WSL terminal** to extract and verify.
+Choose a fresh destination directory if an endpoint is already running from
+`~/projects/abt-0.2.0`; retain the old executable until the new pair works:
+
+```sh
+python3 -m zipfile -e ~/projects/abt-0.2.0.zip ~/projects/abt-0.2.0
+cd ~/projects/abt-0.2.0
+sha256sum -c SHA256SUMS
+chmod +x abt.exe
+```
+
+Require all checksum lines to say `OK`. In the old Windows endpoint's terminal press Ctrl-C,
+then the user starts the new executable:
+
+```sh
+cd ~/projects/abt-0.2.0
+./abt.exe --version
+./abt.exe usb --connect 127.0.0.1:2222
+```
+
+Expect version `0.2.0`. Restart the Mac endpoint using the matching updated
+macOS build and the [daily-start command](#daily-start-mac--windowswsl).
+The Windows ZIP contains only the Windows executable; build/update the Mac
+binary separately. Reconnect SSH and confirm `window=4` in the stream log.
+Keep WSL's `sshd` running throughout the upgrade. Rebuilding or copying a file
+does not replace an already-running process, or update other copies in Downloads.
 
 ### REST and WebSockets inside SSH
 
@@ -255,10 +409,11 @@ other local processes can still connect to them.
 
 - One active TCP connection per `abt` pair. Extra connections are accepted and
   immediately closed. Use SSH forwarding for concurrent requests/sessions.
-- Two unacknowledged 40-byte DATA/FIN frames per direction; bounded queues and
-  TCP backpressure. The Flipper remains an unchanged eight-event relay.
+- Up to four unacknowledged 40-byte DATA/FIN frames per direction in 0.2.0;
+  negotiation falls back to two with 0.1.0 peers. Queues and TCP backpressure
+  remain bounded. The Flipper remains an unchanged eight-event relay.
 - Default retry interval 500 ms, opening deadline 30 s, target TCP connection
-  deadline 10 s, heartbeat every 2 s, peer timeout 12 s, delivery-stall timeout
+  deadline 10 s, heartbeat after 2 s of peer silence, peer timeout 12 s, delivery-stall timeout
   60 s. CLI overrides: `--retry-ms`, `--peer-timeout`, `--stall-timeout`.
 - TCP half-close works: a request can finish sending and still receive a response.
 - Link failure closes the current TCP session. There is no transparent reconnect
@@ -268,6 +423,109 @@ other local processes can still connect to them.
   2^32 DATA/FIN sequence numbers in either direction (at most about 160 GiB).
 - ABT1 does not interoperate with the browser chat protocol. Run native endpoints
   on both sides; stop them before returning to browser chat or Deploy.
+
+## Protocol speed controls (0.2.0)
+
+The default maximum window is now four frames, allowing 160 payload bytes in
+flight per direction. Cumulative ACKs cover two completed frames at a time,
+with a 4 ms deadline for a single frame. This increases the amount of data that
+can cross each round trip and reduces reverse ACK traffic. USB remains HID;
+the 64-byte report layout, firmware, and browser protocol are unchanged.
+Active DATA/ACK traffic suppresses redundant heartbeats to keep relay slots
+available for the larger window.
+
+Upgrade both endpoints for the larger window. A mixed 0.1.0/0.2.0 pair uses two
+frames; a new listener takes about one extra second to open an old connector
+with default timers. The new endpoint's `connected; window=N` log shows the
+negotiated result. `--window 2 --ack-delay-ms 0` on **both** new endpoints
+reproduces the original window and ACK behavior for comparison. Normal commands
+without these flags select the new defaults. The speed gain requires hardware
+measurement; doubling the window does not promise double throughput.
+
+### Reproducible throughput check
+
+`tools/bench.py` uses Python 3's standard library. It measures upload, download,
+and simultaneous duplex transfers with deterministic, incompressible bytes and
+SHA-256 checks. The client reports JSON lines. For duplex, `combined_kib_s` sums
+both directions; it is not the speed of each direction. Timings exclude tunnel
+setup and include completion feedback. Ping measurements exclude the first
+request, which opens the tunnel. Each mode uses synthetic data; default size is
+32,768 bytes per active direction. For two rounds, one TCP session carries all
+six transfers. The helper exits with an error on a mismatch or a broken stream.
+
+#### Through SSH — the method used for the recorded results
+
+Keep the normal SSH arrangement: Windows `abt.exe usb --connect 127.0.0.1:2222`
+and Mac `abt ble --listen 127.0.0.1:2222`. Close other SSH sessions first. From
+the Mac repository root, copy the helper if it is not already at this WSL path:
+
+```sh
+scp -P 2222 -o HostKeyAlias=airbridge-wsl \
+  -X nrequests=2 -X buffer=4096 \
+  airbridge/native/tools/bench.py WSL_USER@127.0.0.1:projects/abt-bench.py
+```
+
+After SCP's stream closes, run this on the Mac, with public-key login already
+working. It starts the Python server inside WSL and opens a local SSH forward:
+
+```sh
+ssh -T -p 2222 -o HostKeyAlias=airbridge-wsl \
+  -o StrictHostKeyChecking=yes -o BatchMode=yes \
+  -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519 \
+  -o Compression=no -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:28081:127.0.0.1:28080 WSL_USER@127.0.0.1 \
+  'python3 ~/projects/abt-bench.py serve --listen 127.0.0.1:28080 --once'
+```
+
+Wait for `Benchmark server listening on 127.0.0.1:28080`. In another Mac terminal,
+from the repository root:
+
+```sh
+python3 airbridge/native/tools/bench.py client \
+  --connect 127.0.0.1:28081 --label optimized-window4-ssh --rounds 2
+```
+
+The helper and SSH forward finish when this client completes. The two `abt`
+endpoints and WSL `sshd` stay running. Compare JSON `combined_kib_s` by direction,
+the endpoint close logs, and Flipper DROP/TXERR. To compare the original window
+and ACK behavior, restart both endpoints with `--window 2 --ack-delay-ms 0`,
+repeat with a `baseline` label, then restore both endpoints to their default
+commands. The user performs each Windows executable restart. Keep compression
+disabled for these measurements; measure its effect separately with real data.
+
+#### Direct TCP — optional, without SSH overhead
+
+For Mac BLE → Windows USB → WSL, copy `bench.py` beside the Windows executable.
+Stop the USB endpoint before changing its target. In a dedicated WSL terminal,
+from the package directory:
+
+```sh
+python3 bench.py serve
+```
+
+Leave the server running. Use a second WSL terminal to start the USB endpoint:
+
+```sh
+./abt.exe usb --connect 127.0.0.1:18080 --window 2 --ack-delay-ms 0
+```
+
+On the Mac, restart its endpoint with the matching baseline settings:
+
+```sh
+airbridge/native/target/release/abt ble --listen 127.0.0.1:2222 --scan-seconds 20 --window 2 --ack-delay-ms 0
+```
+
+Then run the client from another Mac terminal at the repository root:
+
+```sh
+python3 airbridge/native/tools/bench.py client --label baseline --rounds 2
+```
+
+After the client finishes, restart both endpoints without `--window` and
+`--ack-delay-ms`, keeping their same TCP addresses. Run the client again with
+`--label optimized --rounds 2`. Compare speeds, the `retries`/`peak_pending`/
+`acks_sent` close logs, and Flipper DROP/TXERR. Return the USB endpoint's
+`--connect` to `127.0.0.1:2222` afterwards to use the existing WSL SSH server.
 
 ## Troubleshooting
 
@@ -292,9 +550,11 @@ abt ble --help
 | Connector logs `closed: tx=0 rx=21` and SSH closes before its greeting | The connector received client bytes but read EOF from its target without receiving any bytes. Test that target with Windows `ssh.exe` and inspect the `sshd` log; check for a missing listener before changing the bridge. |
 | Peer refused stream | Read the connector's stderr: its fixed TCP target may not be listening. Check that address from the connector computer. |
 | Extra TCP connection closes | One stream is active or still finishing its retry grace period. Put concurrent requests inside one SSH connection. |
+| `ssh-copy-id` fails with `Connection closed` | Its consecutive probe connections can race the preceding stream's closing grace period. Use the single-connection public-key installation command above. |
+| SCP stays at `0% — stalled` | Default SFTP writes are 32 KiB with up to 64 outstanding requests; the first progress update can take time over this link. Try `scp -X nrequests=2 -X buffer=4096 -P 2222 -o HostKeyAlias=airbridge-wsl FILE WSL_USER@127.0.0.1:DEST`. Avoid a concurrent SSH shell and check `abt` logs before treating the progress display as a transport failure. |
 | Heartbeat timeout / stalled stream | Inspect physical connection and Flipper `DROP`/`TXERR`, stop competing clients. Restore transport and start a new connection; increase stall timeout only for an intentionally slow consumer. |
 
-Session logs go to stderr and include byte counts, retries, and maximum pending
+Session logs go to stderr and include byte counts, retries, ACKs sent, and maximum pending
 frames when a stream closes. They do not print payloads, SSH credentials, or keys.
 
 ## Validation
@@ -308,18 +568,21 @@ cargo fmt --manifest-path airbridge/native/Cargo.toml -- --check
 Tests cover full-duplex byte integrity, lost/corrupt/reordered/duplicate frames,
 handshake/FIN retries, half-close, slow consumers, stale sessions, conflicting
 retransmissions, impossible ACKs, peer timeout, busy rejection, target refusal,
-and sequential reuse. See the [wire protocol](../docs/native-tunnel-protocol.md)
+sequential reuse, window negotiation, old-peer fallback, ACK coalescing, and
+the single-frame ACK deadline, and duplex traffic through a simulated shared
+eight-slot relay. See the [wire protocol](../docs/native-tunnel-protocol.md)
 for the complete ABT1 contract.
 
 | Configuration | Verified | Still pending |
 | --- | --- | --- |
+| 0.2.0 protocol optimization | 29 host tests, Clippy, macOS/Windows builds; real Windows/WSL speed comparison, SHA-256, passwordless SSH, and user-confirmed DROP 0 / TXERR 0 | Separate disconnect/recovery testing |
 | macOS USB + macOS BLE on one Mac | 21 host tests, Clippy, release build, physical SSH/HTTP/WebSocket and SSH forwarding | Separate-computer validation |
 | Windows x64 executable | Release cross-build, PE/import inspection, Wine CLI checks, physical USB endpoint carrying interactive SSH | Windows BLE endpoint and disconnect/recovery testing |
-| Mac BLE → Windows USB → WSL SSH | User-confirmed password login to Ubuntu 22.04.5 LTS on WSL2 and interactive `ls`/`cd` commands | File integrity, API/WebSocket forwarding, throughput and DROP/TXERR measurements on this pair |
+| Mac BLE → Windows USB → WSL SSH | Password and public-key login, SCP checksum, duplex SHA-256 benchmarks, concurrent HTTP/WebSocket forwarding, DROP 0 / TXERR 0 | Separate disconnect/recovery testing |
 
 ### Same-Mac hardware result — 2026-09-16
 
-On one Mac with both native endpoints and the current Pocket AirBridge FAP:
+With `abt` 0.1.0 on one Mac and the current Pocket AirBridge FAP:
 
 - Native OpenSSH command with public-key authentication and strict host-key
   verification passed.
@@ -340,7 +603,7 @@ were needed; this task did not repeat their previously completed regression suit
 
 ### Mac-to-WSL hardware result — 2026-09-16
 
-The user confirmed a successful SSH password login from the Mac through BLE,
+With `abt` 0.1.0, the user confirmed a successful SSH password login from the Mac through BLE,
 the Flipper, Windows USB `abt.exe`, and WSL's SSH server. The remote shell
 reported **Ubuntu 22.04.5 LTS**, kernel
 `6.6.87.1-microsoft-standard-WSL2`, architecture `x86_64`. Interactive `ls`,
@@ -355,6 +618,48 @@ command above resolved the failure. No `abt` or firmware change was required.
 The foreground SSH server must remain running while the tunnel is used.
 
 File-transfer integrity, REST/WebSocket forwarding, throughput, and Flipper
-DROP/TXERR counts were not measured on this Windows/WSL pair. The earlier
+DROP/TXERR counts were not measured in that initial interactive test. The earlier
 same-Mac results remain separate. A sanitized evidence record is stored locally
 at `.omo/evidence/native-tunnel/windows-wsl-ssh.json`.
+
+### Protocol optimization result — 2026-09-16
+
+The real Mac BLE → Windows USB → WSL path passed two rounds of each benchmark
+mode before and after the change. Each round transferred 32,768 bytes per active
+direction with matching SHA-256. Tests ran inside SSH forwarding with compression
+disabled. Rates below are total application bytes divided by total measured time
+across both rounds; duplex sums the two simultaneous directions.
+
+| Payload direction | Original window/ACK behavior | 0.2.0 defaults | Gain |
+| --- | ---: | ---: | ---: |
+| Mac → WSL | 1.759 KiB/s | 2.639 KiB/s | 50.0% |
+| WSL → Mac | 1.776 KiB/s | 2.547 KiB/s | 43.4% |
+| Duplex, combined | 2.510 KiB/s | 2.978 KiB/s | 18.7% |
+
+Median application ping round trip fell from 90.93 to 75.36 ms (20 samples per
+configuration). Both Mac endpoint logs reported zero retries. The optimized
+session negotiated window 4 and peaked at four pending frames; the baseline
+used the old Windows 0.1.0 binary and a Mac endpoint forced to window 2 with
+immediate ACKs. The original eight-slot Flipper relay, USB HID identity, firmware,
+and browser assets were unchanged.
+
+ACK coalescing reduced ACK counts by about half in the unpaced host tests, but
+Mac-side hardware counts only changed from 3,453 to 3,403 in these SSH runs.
+Do not assume the 4 ms ACK deadline batches every pair on this BLE connection.
+These are measurements of this setup, not a guaranteed rate on other hosts.
+
+Passwordless public-key SSH and a 993,435-byte SCP upload also passed. The
+uploaded ZIP and all final package files were SHA-256 verified in WSL. The
+initial copy took 9:17 through the original two-frame transport; a small binary
+patch delivered the final heartbeat fix, with the reconstructed executable
+verified against the local build. The user starts and restarts Windows `abt.exe`;
+the agent runs the Mac endpoint and SSH-based benchmark helpers.
+
+Concurrent HTTP and WebSocket requests shared one SSH connection with the new
+defaults. HTTP echoed 32,771 bytes each way with matching SHA-256 in 24.375 s;
+WebSocket text, 8,193-byte binary data, ping/pong, and close frames all matched.
+The Mac endpoint recorded zero retries and four pending frames at peak.
+
+The user confirmed **DROP 0, TXERR 0** on the Flipper after the optimized tests.
+Evidence: `.omo/evidence/native-throughput/`. A separate physical
+disconnect/recovery test was not run for this version.

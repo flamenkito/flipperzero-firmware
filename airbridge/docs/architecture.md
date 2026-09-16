@@ -20,8 +20,11 @@ SSH server. SSH multiplexes shell, API, and WebSocket traffic inside the stream.
 Native [ABT1](native-tunnel-protocol.md) has no encryption or authentication;
 SSH/TLS provides those properties. Plain TCP payloads would be visible to the
 relay. Browser SAS/AB2S encryption is unchanged. macOS hardware QA passed, and
-the user confirmed an interactive Mac-to-WSL SSH session through Windows USB.
-Windows/WSL file integrity, forwarding, and throughput checks remain pending.
+the Windows/WSL path has passed SSH, file integrity, duplex throughput, and
+concurrent HTTP/WebSocket forwarding checks. ABT1 0.2 negotiates a maximum
+four-frame window with two-frame compatibility and bounded ACK coalescing;
+active traffic suppresses redundant heartbeats. See the native usage guide for
+measurements and remaining hardware checks.
 
 ## Component Diagram
 

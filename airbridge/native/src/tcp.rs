@@ -40,8 +40,12 @@ impl Recent {
 fn report(id: u64, result: &Result<Stats>) {
     match result {
         Ok(stats) => eprintln!(
-            "stream {id:016x} closed: tx={} rx={} retries={} peak_pending={}",
-            stats.sent_bytes, stats.received_bytes, stats.retransmissions, stats.peak_pending
+            "stream {id:016x} closed: tx={} rx={} retries={} peak_pending={} acks_sent={}",
+            stats.sent_bytes,
+            stats.received_bytes,
+            stats.retransmissions,
+            stats.peak_pending,
+            stats.acks_sent
         ),
         Err(error) => eprintln!("stream {id:016x} failed: {error:#}"),
     }
@@ -85,9 +89,13 @@ async fn listen_on(link: &mut Link, listener: TcpListener, cfg: &Config) -> Resu
         eprintln!("stream {id:016x} opening for {peer}");
         let result = {
             let operation = async {
-                session::open(link, id, cfg).await?;
-                eprintln!("stream {id:016x} connected");
-                session::run(stream, link, id, Role::Initiator, cfg).await
+                let window = session::open(link, id, cfg).await?;
+                let negotiated = Config {
+                    window,
+                    ..cfg.clone()
+                };
+                eprintln!("stream {id:016x} connected; window={window}");
+                session::run(stream, link, id, Role::Initiator, &negotiated).await
             };
             tokio::pin!(operation);
             loop {
@@ -136,11 +144,16 @@ pub async fn serve(link: &mut Link, target: &str, cfg: &Config) -> Result<()> {
             continue;
         }
         let id = frame.session;
+        let window = frame.window().min(cfg.window);
+        let negotiated = Config {
+            window,
+            ..cfg.clone()
+        };
         let result = match connect_target(link, target, id).await {
             Ok(stream) => {
                 stream.set_nodelay(true)?;
-                eprintln!("stream {id:016x} connected to {target}");
-                session::run(stream, link, id, Role::Responder, cfg).await
+                eprintln!("stream {id:016x} connected to {target}; window={window}");
+                session::run(stream, link, id, Role::Responder, &negotiated).await
             }
             Err(error) => {
                 let _ = link.send(Frame::control(Kind::Reset, id, 0)).await;
@@ -196,6 +209,51 @@ mod tests {
 
     async fn listener() -> TcpListener {
         TcpListener::bind("127.0.0.1:0").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn connector_negotiates_both_versions_and_latches_the_first_offer() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            for (offered, maximum, expected) in [(2, 4, 2), (4, 2, 2), (4, 4, 4)] {
+                let (mut client, mut server, mut tasks) = pair();
+                let target = listener().await;
+                let destination = target.local_addr().unwrap().to_string();
+                tasks.0.push(tokio::spawn(async move {
+                    let config = Config {
+                        window: maximum,
+                        ..cfg()
+                    };
+                    let _ = serve(&mut server, &destination, &config).await;
+                }));
+                client
+                    .send(Frame::handshake(Kind::Open, 101, offered))
+                    .await
+                    .unwrap();
+                let (mut stream, _) = target.accept().await.unwrap();
+                let accepted = client.receive().await.unwrap();
+                assert_eq!((accepted.kind, accepted.window()), (Kind::Accept, expected));
+                client
+                    .send(Frame::handshake(Kind::Open, 101, 2))
+                    .await
+                    .unwrap();
+                let repeated = client.receive().await.unwrap();
+                assert_eq!(repeated, accepted);
+                client
+                    .send(Frame::data(101, 0, b"still connected"))
+                    .await
+                    .unwrap();
+                let mut data = [0; 15];
+                stream.read_exact(&mut data).await.unwrap();
+                assert_eq!(&data, b"still connected");
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(20), target.accept())
+                        .await
+                        .is_err()
+                );
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

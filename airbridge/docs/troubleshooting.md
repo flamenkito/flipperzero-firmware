@@ -7,14 +7,43 @@ artifacts, commands, and the Mac BLE → Windows USB → WSL SSH setup. Keep the
 Flipper on Bridge, close competing browser/native clients, and run `abt.exe`
 on the Windows host. Confirm Windows can log into WSL's SSH server through
 localhost before starting the bridge connection.
+The [daily-start sequence](../native/README.md#daily-start-mac--windowswsl)
+lists all four terminals, expected startup messages, and how to stop them.
+The [upgrade procedure](../native/README.md#copy-files-and-upgrade-the-windows-endpoint)
+copies the ZIP to WSL's `~/projects`, verifies it, and replaces the endpoints.
 
-The Windows x64 release builds and passes `--version` and `usb --help` under
+The original Windows x64 release builds and passes `--version` and `usb --help` under
 Wine 11.0. The user subsequently confirmed password login and interactive shell
 commands from the Mac through Windows USB to Ubuntu 22.04.5 LTS on WSL2.
-File integrity, forwarding, throughput, and DROP/TXERR measurements on this pair
-remain pending. The same-Mac native pair passed SSH, HTTP, WebSockets, and concurrent SSH
+Subsequent 0.2.0 tests passed public-key SSH, SCP checksums, duplex SHA-256
+transfers, and concurrent HTTP/WebSocket forwarding on this pair. One-way
+throughput improved 43–50% with zero Mac-side retries. Device DROP/TXERR
+confirmation is recorded separately in the native validation guide.
+The same-Mac native pair passed SSH, HTTP, WebSockets, and concurrent SSH
 forwarding with zero retries and owner-confirmed DROP 0 / TXERR 0. ABT1 does not
 encrypt traffic itself; use SSH/TLS.
+
+### A second Mac endpoint cannot discover the connected device
+
+Check `lsof -nP -iTCP:2222` before launching another BLE endpoint. An existing
+`abt` may already own the BLE connection, leaving no advertising device for a
+second instance to find. During agent-driven QA, use the agent's existing Mac
+listener. The user launches and restarts every Windows `abt.exe` command.
+
+### SCP appears stalled, or a follow-up SSH connection is rejected
+
+`abt` permits one TCP stream at a time, including a closing grace period.
+The macOS `ssh-copy-id` helper performs consecutive connections; its next probe
+can be rejected while the first closes. Use the single-connection public-key
+installation command in the native guide.
+
+SCP defaults to 32 KiB SFTP writes and up to 64 requests in flight. On the
+original tunnel the initial progress display can stay at zero before receiving
+a write acknowledgment. `-X nrequests=2 -X buffer=4096` produces more frequent
+progress updates. A 993,435-byte ZIP completed in 9:17 with zero Mac retries and
+a verified remote SHA-256. Inspect endpoint logs before treating `stalled` as a
+transport failure. After cancelling a copy, wait for its stream to close before
+opening another connection; queued bytes can keep the previous stream active.
 
 ### Connection closes before the SSH greeting
 
