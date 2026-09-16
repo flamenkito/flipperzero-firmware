@@ -2,12 +2,25 @@
 
 ## Overview
 
-Pocket AirBridge is a browser-only, offline, end-to-end encrypted chat and attachment exchange system. It uses a **Flipper Zero** as a physical bridge between two computers, with no network infrastructure required.
+Pocket AirBridge's browser apps provide offline, end-to-end encrypted chat and attachment exchange. They use a **Flipper Zero** as a physical bridge between two computers, with no network infrastructure required. The components below describe this browser mode.
 
 - **PC-A** (USB Chat) connects to Flipper Zero over **USB HID** (vendor-defined interface).
 - **PC-B** (BLE Chat) connects to Flipper Zero over **Bluetooth Low Energy** (the AirBridge serial GATT service).
 - Both PCs run **browser-based web apps** using WebHID and Web Bluetooth APIs.
 - The Flipper Zero acts as a **blind stateless byte pipe**: it forwards frames between the two transports and never stores plaintext, session keys, decrypted metadata, or a full message or attachment.
+
+### Native TCP option
+
+The optional Rust executable [abt](../native/README.md) uses the same relay for
+one full-duplex TCP stream. USB remains HID, and either transport can be the
+listener or the connector. In the Mac-to-WSL arrangement, Mac BLE listens,
+Windows `abt.exe` owns the USB HID collection, and its fixed TCP target is WSL's
+SSH server. SSH multiplexes shell, API, and WebSocket traffic inside the stream.
+
+Native [ABT1](native-tunnel-protocol.md) has no encryption or authentication;
+SSH/TLS provides those properties. Plain TCP payloads would be visible to the
+relay. Browser SAS/AB2S encryption is unchanged. macOS hardware QA passed; the
+Windows x64 build and Wine CLI checks passed, with Windows/WSL hardware QA pending.
 
 ## Component Diagram
 

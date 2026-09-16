@@ -1,0 +1,25 @@
+[package]
+name = "abt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Native TCP streams over Pocket AirBridge USB HID and BLE"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+btleplug = "0.13"
+clap = { version = "4", features = ["derive"] }
+crc32fast = "1"
+futures-util = "0.3"
+hidapi = { version = "2.6", features = ["macos-shared-device"] }
+rand = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+uuid = "1"
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[profile.release]
+lto = "thin"
+strip = true

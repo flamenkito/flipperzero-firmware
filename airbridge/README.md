@@ -1,6 +1,6 @@
 # Pocket AirBridge
 
-A browser-only, offline, end-to-end encrypted chat and attachment exchange system using a **Flipper Zero** as a physical bridge between two computers.
+Offline, end-to-end encrypted browser chat and attachment exchange using a **Flipper Zero** as a physical bridge between two computers.
 
 Pocket AirBridge lives in one local custom firmware and apps repository at
 `/Users/asutov/projects/flipperzero-firmware`. Its product assets are under
@@ -9,6 +9,13 @@ Pocket AirBridge lives in one local custom firmware and apps repository at
 There is no separate product repository, patch bundle, or patch-application step.
 
 **Hackathon goal**: Exchange text messages and send small files or images between PC-A and PC-B with no network, no cloud, and nothing to install on either PC.
+
+For native SSH, REST, and WebSocket clients, the optional Rust tool
+[**abt**](native/README.md) forwards TCP over the same USB HID ↔ BLE bridge.
+macOS has passed hardware tests; a Windows x64 build is available for USB access
+from Windows, including the documented [Mac-to-WSL SSH setup](native/README.md#mac-client--windows-usb--wsl-server).
+Windows hardware QA remains pending. SSH or TLS supplies native tunnel encryption;
+the browser's encrypted chat protocol remains separate.
 
 ## Quickstart
 

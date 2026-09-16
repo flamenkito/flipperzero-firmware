@@ -1,5 +1,26 @@
 # Pocket AirBridge troubleshooting
 
+## Native `abt` tunnel: 2026-09-16
+
+See the [native usage and troubleshooting guide](../native/README.md) for build
+artifacts, commands, and the Mac BLE → Windows USB → WSL SSH setup. Keep the
+Flipper on Bridge, close competing browser/native clients, and run `abt.exe`
+on the Windows host. Confirm Windows can log into WSL's SSH server through
+localhost before starting the bridge connection.
+
+The Windows x64 release builds and passes `--version` and `usb --help` under
+Wine 11.0; physical Windows HID access and the complete WSL path remain untested.
+The same-Mac native pair passed SSH, HTTP, WebSockets, and concurrent SSH
+forwarding with zero retries and owner-confirmed DROP 0 / TXERR 0. ABT1 does not
+encrypt traffic itself; use SSH/TLS.
+
+During local QA, a sandboxed temporary `sshd` failed its own macOS sandbox
+initialization (`ssh_sandbox_child: sandbox_init: Operation not permitted`).
+The bridge reported a TCP write failure/reset because that server closed the
+socket. Running the temporary server outside the development sandbox resolved
+it; no system Remote Login change or transport fix was needed. Empty HID scans
+or Bluetooth permission errors can also come from the development sandbox.
+
 ## Transfer throughput and HID report ownership: 2026-09-16
 
 Hardware baseline with 32 KiB attachments measured **1.43 KiB/s USB→BLE** and
