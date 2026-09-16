@@ -9,10 +9,35 @@ on the Windows host. Confirm Windows can log into WSL's SSH server through
 localhost before starting the bridge connection.
 
 The Windows x64 release builds and passes `--version` and `usb --help` under
-Wine 11.0; physical Windows HID access and the complete WSL path remain untested.
-The same-Mac native pair passed SSH, HTTP, WebSockets, and concurrent SSH
+Wine 11.0. The user subsequently confirmed password login and interactive shell
+commands from the Mac through Windows USB to Ubuntu 22.04.5 LTS on WSL2.
+File integrity, forwarding, throughput, and DROP/TXERR measurements on this pair
+remain pending. The same-Mac native pair passed SSH, HTTP, WebSockets, and concurrent SSH
 forwarding with zero retries and owner-confirmed DROP 0 / TXERR 0. ABT1 does not
 encrypt traffic itself; use SSH/TLS.
+
+### Connection closes before the SSH greeting
+
+In the Windows/WSL run, Mac SSH reported `Connection closed by 127.0.0.1 port
+2222` and Windows `abt` reported `closed: tx=0 rx=21 retries=0 peak_pending=1`.
+The connector had received client bytes but no target bytes. Direct Windows
+`ssh.exe -p 2222 deploy@127.0.0.1` then returned `Connection refused`, and WSL's
+`ss -ltn 'sport = :2222'` showed no listener.
+
+WSL's SSH server was not running on the configured target port. Starting it in
+a dedicated WSL terminal fixed the connection:
+
+```sh
+sudo mkdir -p /run/sshd
+sudo /usr/sbin/sshd -D -e -p 2222 -o ListenAddress=127.0.0.1
+```
+
+Leave this foreground process running. `abt.exe` does not start `sshd`. Test
+with Windows `ssh.exe` to exercise the same localhost path as the connector;
+Linux `ssh` alone does not test Windows-to-WSL forwarding. The zero-byte log is
+a diagnostic clue, not proof of this cause in every future failure.
+
+### Development sandbox restrictions
 
 During local QA, a sandboxed temporary `sshd` failed its own macOS sandbox
 initialization (`ssh_sandbox_child: sandbox_init: Operation not permitted`).

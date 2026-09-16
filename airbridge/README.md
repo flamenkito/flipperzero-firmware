@@ -12,9 +12,9 @@ There is no separate product repository, patch bundle, or patch-application step
 
 For native SSH, REST, and WebSocket clients, the optional Rust tool
 [**abt**](native/README.md) forwards TCP over the same USB HID ↔ BLE bridge.
-macOS has passed hardware tests; a Windows x64 build is available for USB access
-from Windows, including the documented [Mac-to-WSL SSH setup](native/README.md#mac-client--windows-usb--wsl-server).
-Windows hardware QA remains pending. SSH or TLS supplies native tunnel encryption;
+macOS hardware tests and a user-confirmed interactive [Mac-to-WSL SSH session](native/README.md#mac-client--windows-usb--wsl-server)
+through Windows USB have passed. File-transfer and API/WebSocket tests on the
+Windows/WSL pair remain pending. SSH or TLS supplies native tunnel encryption;
 the browser's encrypted chat protocol remains separate.
 
 ## Quickstart

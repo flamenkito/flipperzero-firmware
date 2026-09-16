@@ -2,8 +2,9 @@
 
 `abt` carries one full-duplex TCP connection between two computers through the
 Flipper's existing USB HID ↔ BLE serial bridge. It needs no browser or firmware
-change. macOS has passed hardware tests with both endpoints on one Mac. A
-Windows x64 build is available; Windows USB and Mac-to-WSL hardware QA is pending.
+change. macOS has passed hardware tests with both endpoints on one Mac. The
+Mac BLE → Windows USB → WSL2 path has also passed an interactive SSH test,
+confirmed by the user on two computers.
 
 USB remains HID: the default HP identity is `03f0:5341`, using only vendor usage
 `ff00:0001`, with 64-byte reports. `abt` sends no keyboard reports.
@@ -38,8 +39,9 @@ CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
 
 Output: `airbridge/native/target/x86_64-pc-windows-gnu/release/abt.exe`.
 This is a Windows console application; run it in PowerShell on Windows 10/11 x64.
-The 2026-09-16 build passed `--version` and `usb --help` checks under Wine 11.0.
-Physical Windows USB access and the complete WSL path still need verification.
+The 2026-09-16 build passed `--version` and `usb --help` checks under Wine 11.0,
+then a physical Mac-to-WSL interactive SSH test using the Windows USB endpoint.
+File-transfer and API/WebSocket forwarding tests on this pair remain pending.
 
 Local build artifacts (under the ignored `target/` directory):
 
@@ -97,23 +99,67 @@ clients. Run `abt.exe` on the Windows host and an SSH server inside WSL:
 Mac SSH → abt BLE listener → Flipper → abt.exe USB connector → WSL sshd
 ```
 
-Configure WSL's SSH server to use port `2222`, then verify it from Windows
-PowerShell before starting the tunnel:
+#### 1. Start SSH inside WSL
 
-```powershell
-ssh -p 2222 your_wsl_user@127.0.0.1
+Configure WSL's SSH server to use port `2222`. For Ubuntu/Debian, if no SSH server
+is listening there, install it and start a foreground instance in a dedicated
+WSL terminal:
+
+```sh
+sudo apt update
+sudo apt install openssh-server
+sudo mkdir -p /run/sshd
+sudo /usr/sbin/sshd -D -e -p 2222 -o ListenAddress=127.0.0.1
 ```
 
-Check the SSH host-key fingerprint and complete a login. WSL normally forwards
+Leave that terminal open; expect `Server listening on 127.0.0.1 port 2222`.
+This instance stops with Ctrl-C. See the [Ubuntu installation guide](https://ubuntu.com/server/docs/how-to/security/openssh-server/)
+and [OpenSSH command options](https://man.openbsd.org/sshd.8). If startup fails,
+resolve the displayed error before starting the tunnel. In another WSL terminal,
+`ss -ltn 'sport = :2222'` must show a listening socket.
+
+#### 2. Start abt from another WSL terminal
+
+Open another WSL terminal and find the Linux account name:
+
+```sh
+whoami
+```
+
+Use that name wherever `WSL_USER` appears below. First test with the Windows
+SSH client so it exercises the same network path as `abt.exe`:
+
+```sh
+ssh.exe -p 2222 WSL_USER@127.0.0.1
+```
+
+Check the SSH host-key fingerprint and complete a login, then run `exit` to
+return to the original WSL terminal. A plain Linux `ssh` command only checks
+the WSL side. WSL normally forwards
 its listening ports to Windows localhost; custom networking settings may need
 adjustment. See [Microsoft's WSL networking guide](https://learn.microsoft.com/en-us/windows/wsl/networking#accessing-linux-networking-apps-from-windows-localhost).
 
-In Windows PowerShell, beside the extracted executable:
+Copy `abt.exe` into the Windows Downloads folder. Replace `WINDOWS_USER` with
+the Windows account's directory name (it can differ from `WSL_USER`):
+
+```sh
+cd "/mnt/c/Users/WINDOWS_USER/Downloads"
+./abt.exe devices usb
+./abt.exe usb --connect 127.0.0.1:2222
+```
+
+WSL launches it as a Windows process, so USB access still belongs to Windows.
+See [Microsoft's interoperability documentation](https://learn.microsoft.com/en-us/windows/wsl/filesystems#run-windows-tools-from-linux).
+Leave `abt.exe` running in this terminal.
+
+Alternatively, launch it from Windows PowerShell beside the extracted executable:
 
 ```powershell
 .\abt.exe devices usb
 .\abt.exe usb --connect 127.0.0.1:2222
 ```
+
+#### 3. Connect from the Mac
 
 On the Mac, start the BLE listener and wait for `BLE subscribed` and `listening
 on 127.0.0.1:2222`:
@@ -122,15 +168,41 @@ on 127.0.0.1:2222`:
 abt ble --listen 127.0.0.1:2222 --scan-seconds 20
 ```
 
-Then SSH from a second Mac terminal, verifying the same WSL SSH host key:
+Leave the BLE endpoint running. Then SSH from a second Mac terminal, verifying
+the same WSL SSH host key and authenticating with your WSL account:
 
 ```sh
-ssh -p 2222 -o HostKeyAlias=airbridge-wsl your_wsl_user@127.0.0.1
+ssh -p 2222 -o HostKeyAlias=airbridge-wsl WSL_USER@127.0.0.1
 ```
 
 The two `2222` listeners are on different computers. USB remains HID, owned by
 the Windows endpoint; this setup needs no USB forwarding into WSL. `abt` does
-not install or start WSL's SSH server. End-to-end Windows/WSL hardware QA is pending.
+not install or start WSL's SSH server. This interactive SSH path passed on
+2026-09-16; see the [hardware result](#mac-to-wsl-hardware-result--2026-09-16).
+
+### SSH compression
+
+For terminal output, logs, source code, and uncompressed JSON, try SSH's `-C`
+option to reduce the bytes carried by the bridge:
+
+```sh
+ssh -C -p 2222 -o HostKeyAlias=airbridge-wsl WSL_USER@127.0.0.1
+```
+
+Replace `WSL_USER` with your WSL account name (`whoami` inside WSL). If already
+connected, exit the Mac SSH shell first, keeping both `abt` endpoints and WSL's
+`sshd` running, then reconnect with this command.
+
+`-C` requests compression before SSH encryption, including forwarded TCP traffic.
+It keeps SSH encryption and host-key verification enabled. See the
+[OpenSSH compression option](https://man.openbsd.org/ssh.1#C). You can also add
+`-C` to the `ssh -L` and `ssh -D` examples below.
+
+Already-compressed files (such as ZIP, gzip, JPEG, and video) and traffic already
+encrypted inside SSH (such as HTTPS/WSS) usually gain little and can incur extra
+overhead. Compression does not increase the physical HID/BLE link rate; results
+depend on the data. Compare with `-o Compression=no` for an explicit disabled
+baseline. Compression gains on the Windows/WSL pair have not yet been measured.
 
 ### REST and WebSockets inside SSH
 
@@ -216,6 +288,8 @@ abt ble --help
 | macOS USB open denied | Check Input Monitoring/USB permissions and other HID clients. Shared-device mode avoids exclusively claiming the composite keyboard. |
 | Windows reports no matching vendor HID collection | Keep the app in Bridge; inspect `.\abt.exe devices usb` for `usage=ff00:0001` and close competing clients. Use the native Windows executable; no WSL USB attachment or WinUSB driver replacement is part of this setup. |
 | Windows cannot SSH to WSL on `127.0.0.1:2222` | Check WSL's SSH server, configured port, and localhost forwarding first. This local login must work before `abt.exe usb --connect 127.0.0.1:2222` can reach it. |
+| WSL `ss -ltn 'sport = :2222'` shows no listener | Start `sshd` using the commands above and leave its foreground terminal running. Starting `abt.exe` does not start the SSH server. |
+| Connector logs `closed: tx=0 rx=21` and SSH closes before its greeting | The connector received client bytes but read EOF from its target without receiving any bytes. Test that target with Windows `ssh.exe` and inspect the `sshd` log; check for a missing listener before changing the bridge. |
 | Peer refused stream | Read the connector's stderr: its fixed TCP target may not be listening. Check that address from the connector computer. |
 | Extra TCP connection closes | One stream is active or still finishing its retry grace period. Put concurrent requests inside one SSH connection. |
 | Heartbeat timeout / stalled stream | Inspect physical connection and Flipper `DROP`/`TXERR`, stop competing clients. Restore transport and start a new connection; increase stall timeout only for an intentionally slow consumer. |
@@ -240,10 +314,10 @@ for the complete ABT1 contract.
 | Configuration | Verified | Still pending |
 | --- | --- | --- |
 | macOS USB + macOS BLE on one Mac | 21 host tests, Clippy, release build, physical SSH/HTTP/WebSocket and SSH forwarding | Separate-computer validation |
-| Windows x64 executable | Release cross-build, PE/import inspection, `--version` and `usb --help` under Wine 11.0 | Native Windows execution and USB HID access |
-| Mac BLE → Windows USB → WSL SSH | CLI roles implemented and setup documented | Complete physical end-to-end test |
+| Windows x64 executable | Release cross-build, PE/import inspection, Wine CLI checks, physical USB endpoint carrying interactive SSH | Windows BLE endpoint and disconnect/recovery testing |
+| Mac BLE → Windows USB → WSL SSH | User-confirmed password login to Ubuntu 22.04.5 LTS on WSL2 and interactive `ls`/`cd` commands | File integrity, API/WebSocket forwarding, throughput and DROP/TXERR measurements on this pair |
 
-### Hardware result — 2026-09-16
+### Same-Mac hardware result — 2026-09-16
 
 On one Mac with both native endpoints and the current Pocket AirBridge FAP:
 
@@ -263,3 +337,24 @@ These are local same-Mac checks, not a two-computer/platform compatibility claim
 or a guaranteed link rate. Evidence and test helpers are in the local ignored
 `.omo/evidence/native-tunnel/` directory. No firmware/FAP/browser runtime changes
 were needed; this task did not repeat their previously completed regression suite.
+
+### Mac-to-WSL hardware result — 2026-09-16
+
+The user confirmed a successful SSH password login from the Mac through BLE,
+the Flipper, Windows USB `abt.exe`, and WSL's SSH server. The remote shell
+reported **Ubuntu 22.04.5 LTS**, kernel
+`6.6.87.1-microsoft-standard-WSL2`, architecture `x86_64`. Interactive `ls`,
+`cd`, and a subsequent `ls` completed. This verifies real Windows USB transport
+and the two-computer interactive SSH path; it is user-reported terminal evidence.
+
+The initial connection closed before the SSH greeting. Windows `abt` logged
+`closed: tx=0 rx=21 retries=0 peak_pending=1`; direct Windows `ssh.exe` to
+`127.0.0.1:2222` returned `Connection refused`, and WSL's
+`ss -ltn 'sport = :2222'` showed no listener. Starting the foreground `sshd`
+command above resolved the failure. No `abt` or firmware change was required.
+The foreground SSH server must remain running while the tunnel is used.
+
+File-transfer integrity, REST/WebSocket forwarding, throughput, and Flipper
+DROP/TXERR counts were not measured on this Windows/WSL pair. The earlier
+same-Mac results remain separate. A sanitized evidence record is stored locally
+at `.omo/evidence/native-tunnel/windows-wsl-ssh.json`.

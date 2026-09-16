@@ -19,8 +19,9 @@ SSH server. SSH multiplexes shell, API, and WebSocket traffic inside the stream.
 
 Native [ABT1](native-tunnel-protocol.md) has no encryption or authentication;
 SSH/TLS provides those properties. Plain TCP payloads would be visible to the
-relay. Browser SAS/AB2S encryption is unchanged. macOS hardware QA passed; the
-Windows x64 build and Wine CLI checks passed, with Windows/WSL hardware QA pending.
+relay. Browser SAS/AB2S encryption is unchanged. macOS hardware QA passed, and
+the user confirmed an interactive Mac-to-WSL SSH session through Windows USB.
+Windows/WSL file integrity, forwarding, and throughput checks remain pending.
 
 ## Component Diagram
 
