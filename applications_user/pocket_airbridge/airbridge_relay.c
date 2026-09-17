@@ -5,6 +5,7 @@
 
 #include "airbridge_usb.h"
 #include "airbridge_exit_contract.h"
+#include "airbridge_ble_packet.h"
 #include <furi_hal_usb_hid.h>
 #include <furi_hal_usb_spoof.h>
 
@@ -62,11 +63,40 @@ static void usb_event_callback(HidVendorEvent ev, void* context) {
 }
 
 uint16_t airbridge_relay_ble_event(SerialServiceEvent event, void* context) {
+    if(event.event == SerialServiceEventTypesBleResetRequest) {
+        AirbridgeRelay* relay = context;
+        __atomic_store_n(&relay->ble_packet_enabled, 0, __ATOMIC_RELEASE);
+        BridgeEvent reset = {.type = EVENT_TYPE_PACKET_RESET, .tick = furi_get_tick()};
+        if(furi_message_queue_put(relay->event_queue, &reset, 0) != FuriStatusOk)
+            airbridge_relay_count_drop(relay);
+        return 0;
+    }
     /* Confirmation and legacy RPC-reset writes are not bridge data. */
     if(event.event != SerialServiceEventTypeDataReceived) return 0;
     const uint8_t* data = event.data.buffer;
     const uint16_t len = event.data.size;
     AirbridgeRelay* relay = context;
+    if(airbridge_ble_packet_control(data, len)) {
+        BridgeEvent be = {
+            .type = EVENT_TYPE_PACKET_CONTROL,
+            .tick = furi_get_tick(),
+            .len = AIRBRIDGE_BLE_PACKET_HEADER};
+        memcpy(be.data, data, AIRBRIDGE_BLE_PACKET_HEADER);
+        if(furi_message_queue_put(relay->event_queue, &be, 0) != FuriStatusOk)
+            airbridge_relay_count_drop(relay);
+        return HID_VENDOR_PACKET_LEN;
+    }
+    const uint32_t batch_count = __atomic_load_n(&relay->ble_packet_enabled, __ATOMIC_ACQUIRE);
+    if(len > HID_VENDOR_PACKET_LEN && len <= batch_count * HID_VENDOR_PACKET_LEN &&
+       len % HID_VENDOR_PACKET_LEN == 0 && batch_count) {
+        for(uint16_t offset = 0; offset < len; offset += HID_VENDOR_PACKET_LEN) {
+            SerialServiceEvent part = event;
+            part.data.buffer = event.data.buffer + offset;
+            part.data.size = HID_VENDOR_PACKET_LEN;
+            airbridge_relay_ble_event(part, context);
+        }
+        return HID_VENDOR_PACKET_LEN;
+    }
     if(len > 0 && len <= HID_VENDOR_PACKET_LEN) {
         BridgeEvent be = {
             .type = EVENT_TYPE_RELAY,
@@ -228,6 +258,11 @@ void airbridge_relay_wake(AirbridgeRelay* relay) {
 }
 
 FuriStatus airbridge_relay_poll(AirbridgeRelay* relay, BridgeEvent* event, uint32_t timeout) {
+    if(relay->have_lookahead) {
+        *event = relay->lookahead;
+        relay->have_lookahead = false;
+        return FuriStatusOk;
+    }
     return furi_message_queue_get(relay->event_queue, event, timeout);
 }
 
@@ -243,6 +278,39 @@ AirbridgeRelayResult airbridge_relay_handle(
     BridgeEvent* be,
     AirbridgeScreen screen,
     AirbridgeTypingTransport armed_transport) {
+    if(be->type == EVENT_TYPE_PACKET_RESET) {
+        __atomic_store_n(&relay->ble_packet_enabled, 0, __ATOMIC_RELEASE);
+        relay->ble_packet_offered = false;
+        return AirbridgeRelayHandled;
+    }
+    if(ble && relay->ble_packet_generation != ble->link_generation) {
+        relay->ble_packet_generation = ble->link_generation;
+        __atomic_store_n(&relay->ble_packet_enabled, 0, __ATOMIC_RELEASE);
+        relay->ble_packet_offered = false;
+    }
+    if(be->type == EVENT_TYPE_PACKET_CONTROL && !be->to_ble &&
+       be->len == AIRBRIDGE_BLE_PACKET_HEADER && be->data[0] == 0xF0 &&
+       memcmp(be->data + 1, "ABP", 3) == 0) {
+        uint8_t reply[AIRBRIDGE_BLE_PACKET_SIZE];
+        memcpy(reply, be->data, AIRBRIDGE_BLE_PACKET_HEADER);
+        memset(
+            reply + AIRBRIDGE_BLE_PACKET_HEADER,
+            0xA5,
+            sizeof(reply) - AIRBRIDGE_BLE_PACKET_HEADER);
+        if(be->data[5] == 1) {
+            __atomic_store_n(&relay->ble_packet_enabled, 0, __ATOMIC_RELEASE);
+            memcpy(relay->ble_packet_nonce, be->data + 8, 8);
+            relay->ble_packet_count = be->data[6];
+            relay->ble_packet_offered =
+                airbridge_ble_send(ble, reply, be->data[6] * HID_VENDOR_PACKET_LEN);
+        } else if(
+            relay->ble_packet_offered && relay->ble_packet_count == be->data[6] &&
+            memcmp(relay->ble_packet_nonce, be->data + 8, 8) == 0) {
+            if(airbridge_ble_send(ble, reply, HID_VENDOR_PACKET_LEN))
+                __atomic_store_n(&relay->ble_packet_enabled, be->data[6], __ATOMIC_RELEASE);
+        }
+        return AirbridgeRelayHandled;
+    }
     /* Windows delivers the full 64-byte OUT transfer; macOS sends a short 1-byte
        transfer. Match on the first byte only so both arm deploy. Direction
        selects the deploy path: a USB fetch hits the vendor OUT endpoint
@@ -266,8 +334,30 @@ AirbridgeRelayResult airbridge_relay_handle(
         return AirbridgeRelayDeployNotArmed;
     }
     if(be->to_ble) {
-        if(airbridge_ble_send(ble, be->data, be->len)) {
-            airbridge_relay_increment(&relay->metrics.chunks_usb_to_ble);
+        uint8_t packet[AIRBRIDGE_BLE_PACKET_SIZE];
+        uint16_t length = be->len;
+        unsigned frames = 1;
+        memcpy(packet, be->data, length);
+        const uint32_t batch_count = __atomic_load_n(&relay->ble_packet_enabled, __ATOMIC_ACQUIRE);
+        if(length == HID_VENDOR_PACKET_LEN && screen != AirbridgeScreenWaiting && batch_count) {
+            while(frames < batch_count) {
+                if(furi_message_queue_get(
+                       relay->event_queue, &relay->lookahead, furi_ms_to_ticks(4)) != FuriStatusOk)
+                    break;
+                const BridgeEvent* next = &relay->lookahead;
+                if(next->type != EVENT_TYPE_RELAY || !next->to_ble ||
+                   next->len != HID_VENDOR_PACKET_LEN) {
+                    relay->have_lookahead = true;
+                    break;
+                }
+                memcpy(packet + length, next->data, HID_VENDOR_PACKET_LEN);
+                length += HID_VENDOR_PACKET_LEN;
+                frames++;
+            }
+        }
+        if(airbridge_ble_send(ble, packet, length)) {
+            for(unsigned i = 0; i < frames; i++)
+                airbridge_relay_increment(&relay->metrics.chunks_usb_to_ble);
         } else {
             airbridge_relay_increment(&relay->metrics.tx_errors);
         }

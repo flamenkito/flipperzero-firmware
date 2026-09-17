@@ -623,6 +623,39 @@ export function completeOutboundCard(row, receipt, file) {
   updateCardProgress(row, 100, 'Sent', 'complete');
 }
 
+export function createTransferRateMeter({now = () => performance.now(), windowMs = 3000, sampleMs = 250} = {}) {
+  let points, latest, initial, started;
+  function reset(bytes = 0n) {
+    latest = initial = BigInt(bytes);
+    started = now();
+    points = [{time:started, bytes:latest}];
+  }
+  function update(bytes) {
+    bytes = BigInt(bytes);
+    if (bytes < latest) reset(bytes);
+    latest = bytes;
+  }
+  function bps() {
+    const time = Math.max(now(), points.at(-1).time);
+    if (time - points.at(-1).time >= sampleMs) points.push({time, bytes:latest});
+    else if (points.length > 1 && time === points.at(-1).time) points.at(-1).bytes = latest;
+    const boundary = Math.max(started, time - windowMs);
+    while (points.length > 1 && points[1].time <= boundary) points.shift();
+    const first = points[0], second = points[1];
+    // Average byte deltas over elapsed time, never equally weight per-ACK rates.
+    const beforeBoundary = second && first.time < boundary
+      ? Number(second.bytes - first.bytes) * (boundary - first.time) / (second.time - first.time) : 0;
+    if (time - started < 500 || time === boundary) return null;
+    return Math.max(0, Number(latest - first.bytes) - beforeBoundary) * 1000 / (time - boundary);
+  }
+  function averageBps() {
+    const elapsed = now() - started;
+    return elapsed > 0 ? Number(latest - initial) * 1000 / elapsed : null;
+  }
+  reset();
+  return {reset, update, bps, averageBps};
+}
+
 // Throughput meter. EMA over inter-chunk byte rates; ETA from remaining bytes
 // (estimated via average bytes/chunk). "--" until at least 2 rate samples.
 // Inject options.now (ms) for deterministic tests.

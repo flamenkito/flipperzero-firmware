@@ -18,6 +18,8 @@ struct AirbridgeUi {
     Gui* gui;
     FuriMutex* snapshot_mutex;
     AirbridgeUiSnapshot snapshot;
+    uint32_t snapshot_tick;
+    bool snapshot_initialized;
     AirbridgeUiIntentCallback intent_callback;
     void* intent_context;
     bool input_paused;

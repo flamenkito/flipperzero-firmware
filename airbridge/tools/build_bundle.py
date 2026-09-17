@@ -31,7 +31,7 @@ COMMON_SCRIPTS: Final = (
     "airbridge-item-receiver.js", "airbridge-ui.js", "airbridge-file-pass.js",
     "airbridge-outbound.js", "airbridge-chat-outbound.js", "airbridge-chat-receive.js",
     "airbridge-mock-stream-peer.js", "airbridge-chat-mock.js", "airbridge-evidence.js",
-    "airbridge-identity.js", "airbridge-transports.js",
+    "airbridge-identity.js", "airbridge-ble-packets.js", "airbridge-transports.js",
     "airbridge-terminal.js", "airbridge-chat-page.js",
 )
 UI_CSS_LINK = '<link rel="stylesheet" href="./airbridge-ui.css">'

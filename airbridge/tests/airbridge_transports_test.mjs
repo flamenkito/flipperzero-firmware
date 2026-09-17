@@ -17,18 +17,34 @@ function makeMockDevice({
   onDiscovery = null,
   discoveryError = null,
   notifyError = null,
+  packetFrames = 1,
+  loseCommit = false,
 } = {}) {
   const listeners = {};
   let connectCalls = 0;
+  let notification;
   const txChar = {
     uuid: TX_UUID,
     startNotifications: async () => {
       if (notifyError) throw notifyError;
     },
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (_name, callback) => { notification = callback; },
+    removeEventListener: () => { notification = null; },
   };
   const rxChar = { uuid: RX_UUID };
+  // This fixture represents a legacy peripheral that rejects oversized writes.
+  let responseWrite;
+  Object.defineProperty(rxChar, 'writeValueWithResponse', {
+    get: () => responseWrite,
+    set: write => { responseWrite = async bytes => {
+      if (bytes[0] === 0xf0) {
+        if (packetFrames === 1 || bytes.length > packetFrames * 64) throw new RangeError('legacy ATT length');
+        if (!(loseCommit && bytes[5] === 2)) notification?.({target:{value:new DataView(bytes.slice().buffer)}});
+        return;
+      }
+      return write(bytes);
+    }; },
+  });
   const service = {
     uuid: SERVICE_UUID,
     getCharacteristic: async uuid => (uuid === TX_UUID ? txChar : rxChar),
@@ -83,6 +99,30 @@ function installNavigatorBluetooth(device) {
     writable: true,
   });
 }
+
+test('BLE adapter negotiates batching and resets framing on reconnect', async () => {
+  const {device, rxChar} = makeMockDevice({packetFrames:3});
+  installNavigatorBluetooth(device); installDomGlobals();
+  const adapter = new WebBluetoothAdapter();
+  const writes = [];
+  rxChar.properties = {write:true, writeWithoutResponse:true};
+  rxChar.writeValueWithResponse = async () => assert.fail('data used response write');
+  rxChar.writeValueWithoutResponse = async bytes => writes.push(bytes.slice());
+  try {
+    await adapter.connect();
+    assert.equal(adapter.packets.batchSize, 3);
+    await Promise.all([1, 2, 3, 4].map(x => adapter.send(Uint8Array.of(x))));
+    assert.deepEqual(writes.map(x => x.length), [192, 64]);
+    assert.deepEqual([writes[0][0], writes[0][64], writes[0][128], writes[1][0]], [1, 2, 3, 4]);
+    const old = adapter.packets;
+    await adapter.disconnect();
+    assert.equal(old.closed, true);
+    assert.equal(adapter.packets, null);
+    await adapter.connect();
+    assert.notEqual(adapter.packets, old);
+    assert.equal(adapter.packets.batchSize, 3);
+  } finally { adapter.dispose(); }
+});
 
 function installDomGlobals() {
   const listeners = {};

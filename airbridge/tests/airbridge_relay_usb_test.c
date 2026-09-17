@@ -1,5 +1,6 @@
 #include "../../applications_user/pocket_airbridge/airbridge_lifecycle.h"
 #include "../../applications_user/pocket_airbridge/airbridge_relay.h"
+#include "../../applications_user/pocket_airbridge/airbridge_ble_packet.h"
 
 #ifndef AIRBRIDGE_SAFE_TEARDOWN_ENABLED
 #define AIRBRIDGE_SAFE_TEARDOWN_ENABLED 1
@@ -23,6 +24,10 @@ extern bool relay_test_end_resume;
 extern unsigned relay_test_begin_calls;
 extern unsigned relay_test_end_calls;
 extern char relay_test_call_log[256];
+extern unsigned relay_test_ble_calls;
+extern uint16_t relay_test_ble_length;
+extern uint8_t relay_test_ble_data[244];
+extern bool relay_test_ble_result;
 
 void relay_test_reset(void);
 void relay_test_script_set(bool result);
@@ -376,7 +381,98 @@ static void test_deploy_classification_is_direction_aware(void) {
     airbridge_relay_deinit(&relay);
 }
 
+static void handle_next(AirbridgeRelay* relay, AirbridgeBle* ble) {
+    BridgeEvent event;
+    assert(airbridge_relay_poll(relay, &event, 0) == FuriStatusOk);
+    assert(
+        airbridge_relay_handle(
+            relay, ble, &event, AirbridgeScreenBridge, AirbridgeTypingTransportUsb) ==
+        AirbridgeRelayHandled);
+}
+
+static void test_ble_packet_negotiation_and_relay(void) {
+    relay_test_reset();
+    AirbridgeRelay relay;
+    fixture_init(&relay);
+    AirbridgeBle ble = {.link_generation = 1};
+    uint8_t probe[192];
+    memset(probe, 0xA5, sizeof(probe));
+    const uint8_t header[] = {0xF0, 'A', 'B', 'P', 1, 1, 3, 0, 1, 2, 3, 4, 5, 6, 7, 8};
+    memcpy(probe, header, sizeof(header));
+    SerialServiceEvent input = {
+        .event = SerialServiceEventTypeDataReceived,
+        .data = {.buffer = probe, .size = sizeof(probe)}};
+    assert(airbridge_ble_packet_control(probe, sizeof(probe)));
+    assert(airbridge_relay_ble_event(input, &relay) == 64);
+    handle_next(&relay, &ble);
+    assert(relay_test_ble_length == sizeof(probe));
+    assert(memcmp(relay_test_ble_data, probe, sizeof(probe)) == 0);
+    assert(relay.ble_packet_enabled == 0);
+
+    input.data.size = 64;
+    probe[5] = 2;
+    probe[8] ^= 1;
+    airbridge_relay_ble_event(input, &relay);
+    handle_next(&relay, &ble);
+    assert(relay.ble_packet_enabled == 0);
+    assert(relay_test_ble_calls == 1);
+    probe[8] ^= 1;
+    relay_test_ble_result = false;
+    airbridge_relay_ble_event(input, &relay);
+    handle_next(&relay, &ble);
+    assert(relay.ble_packet_enabled == 0);
+    relay_test_ble_result = true;
+    airbridge_relay_ble_event(input, &relay);
+    handle_next(&relay, &ble);
+    assert(relay.ble_packet_enabled == 3);
+    assert(relay_test_ble_length == 64);
+
+    BridgeEvent frame = {.type = EVENT_TYPE_RELAY, .to_ble = true, .len = 64};
+    for(unsigned i = 0; i < 3; i++) {
+        memset(frame.data, i + 1, 64);
+        assert(furi_message_queue_put(relay.event_queue, &frame, 0) == FuriStatusOk);
+    }
+    handle_next(&relay, &ble);
+    assert(relay_test_ble_length == 192);
+    assert(relay.metrics.chunks_usb_to_ble == 3);
+    for(unsigned i = 0; i < 192; i++)
+        assert(relay_test_ble_data[i] == i / 64 + 1);
+
+    input.data.buffer = relay_test_ble_data;
+    input.data.size = 192;
+    assert(airbridge_relay_ble_event(input, &relay) == 64);
+    for(unsigned i = 0; i < 3; i++) {
+        assert(airbridge_relay_poll(&relay, &frame, 0) == FuriStatusOk);
+        assert(frame.type == EVENT_TYPE_RELAY && !frame.to_ble && frame.len == 64);
+        for(unsigned j = 0; j < 64; j++)
+            assert(frame.data[j] == i + 1);
+    }
+
+    frame.to_ble = true;
+    assert(furi_message_queue_put(relay.event_queue, &frame, 0) == FuriStatusOk);
+    BridgeEvent status = {.type = EVENT_TYPE_USB};
+    assert(furi_message_queue_put(relay.event_queue, &status, 0) == FuriStatusOk);
+    assert(furi_message_queue_put(relay.event_queue, &frame, 0) == FuriStatusOk);
+    handle_next(&relay, &ble);
+    assert(relay_test_ble_length == 64);
+    assert(airbridge_relay_poll(&relay, &frame, 0) == FuriStatusOk);
+    assert(frame.type == EVENT_TYPE_USB);
+    handle_next(&relay, &ble);
+
+    input.event = SerialServiceEventTypesBleResetRequest;
+    airbridge_relay_ble_event(input, &relay);
+    assert(relay.ble_packet_enabled == 0);
+    handle_next(&relay, &ble);
+    assert(!relay.ble_packet_offered);
+    input.event = SerialServiceEventTypeDataReceived;
+    assert(airbridge_relay_ble_event(input, &relay) == 0);
+    assert(airbridge_relay_poll(&relay, &frame, 0) != FuriStatusOk);
+    assert(relay.metrics.dropped == 0 && relay.metrics.tx_errors == 0);
+    airbridge_relay_deinit(&relay);
+}
+
 int main(void) {
+    test_ble_packet_negotiation_and_relay();
     test_deploy_classification_is_direction_aware();
 #if AIRBRIDGE_SAFE_TEARDOWN_ENABLED
     test_teardown_success_and_takeover_order();

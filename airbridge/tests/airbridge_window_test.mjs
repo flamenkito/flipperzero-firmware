@@ -32,11 +32,13 @@ test('DATA windows require an explicit bounded HELLO capability receipt', () => 
   assert.equal(wait.capabilityItemId, null);
 });
 
-async function exchange({windowSize = 4, role = 0, fault, size = 70000} = {}) {
+async function exchange({windowSize = 4, sliding = false, role = 0, fault, size = 70000} = {}) {
   const sessions = await pair();
   const source = sessions[role], target = sessions[1-role];
   const input = Uint8Array.from({length:size}, (_, i) => (i * 73 + 19) & 255);
   const dataAttempts = new Map(), ackAttempts = new Map();
+  const deliveredAcks = new Map();
+  let heldAck, refillSeen = false;
   const progress = [], errors = [], writes = [];
   let item, peakFrames = 0, peakRetryBytes = 0, transfer, releaseWindow;
   const firstWindow = new Promise(resolve => { releaseWindow = resolve; });
@@ -48,6 +50,9 @@ async function exchange({windowSize = 4, role = 0, fault, size = 70000} = {}) {
       if (fault === 'drop-ack' && key === '0:0' && attempt === 1) return;
       if (fault === 'drop-final-ack' && msg.segment === 0 && msg.ackedSeq === 1285 && attempt === 1) return;
       if (fault === 'conflicting-retry' && key === '0:0' && attempt === 1) return;
+      if (fault === 'refill' && key === '0:3' && attempt === 1 && !refillSeen) { heldAck = frame; return; }
+      const acked = deliveredAcks.get(msg.segment) ?? new Set();
+      acked.add(msg.ackedSeq); deliveredAcks.set(msg.segment, acked);
     }
     transfer.receive(frame);
   }});
@@ -60,11 +65,21 @@ async function exchange({windowSize = 4, role = 0, fault, size = 70000} = {}) {
       peakRetryBytes = Math.max(peakRetryBytes, snapshot.retrySliceBytes);
     });
   }
-  transfer = new OutboundTransfer({session:source, hashImplementation, windowSize, timeoutMs:40, retries:2,
+  transfer = new OutboundTransfer({session:source, hashImplementation, windowSize, sliding, timeoutMs:40, retries:2,
     onProgress:detail => progress.push(detail), send:async frame => {
       const msg = p.parseV2Frame(frame, transfer.itemId);
       writes.push({type:msg.type, seq:msg.seq, segment:msg.segment});
       if (msg.type === p.MSG.ITEM_DATA) {
+        if (sliding) {
+          const acked = deliveredAcks.get(msg.segment) ?? new Set();
+          let oldest = 0;
+          while (acked.has(oldest)) oldest++;
+          assert(msg.seq < oldest + windowSize, 'sender advanced past an unacknowledged window');
+        }
+        if (fault === 'refill' && msg.segment === 0 && msg.seq === 4) {
+          refillSeen = true;
+          if (heldAck) { deliveredAcks.get(0).add(3); transfer.receive(heldAck); heldAck = null; }
+        }
         const key = `${msg.segment}:${msg.seq}`;
         const attempt = (dataAttempts.get(key) ?? 0) + 1; dataAttempts.set(key, attempt);
         peakFrames = Math.max(peakFrames, [...dataAttempts.keys()].filter(key => !ackAttempts.has(key)).length);
@@ -110,10 +125,14 @@ async function exchange({windowSize = 4, role = 0, fault, size = 70000} = {}) {
       assert.equal(result.payloadSha256, hashImplementation(input));
       assert.equal(item.hash, result.payloadSha256);
       assert.equal(errors.length, 0, errors.join('; '));
+      if (fault === 'refill') {
+        assert(refillSeen);
+        assert.equal(dataAttempts.get('0:3'), 1, 'sender waited for the last ACK instead of refilling');
+      }
       const sending = progress.filter(event => event.phase === 'Sending');
       assert.equal(sending.at(-1).bytes, BigInt(size));
       assert.ok(sending.every((event, i) => !i || event.bytes >= sending[i-1].bytes));
-      assert.ok(peakRetryBytes <= windowSize * 51 + 51, `retained ${peakRetryBytes} retry bytes`);
+      assert.ok(peakRetryBytes <= windowSize * (sliding ? 2 : 1) * 51 + 51, `retained ${peakRetryBytes} retry bytes`);
       assert.ok(peakFrames <= windowSize, `outstanding ${peakFrames}`);
       if (fault?.startsWith('drop-')) assert.ok([...dataAttempts.values()].some(count => count > 1), 'loss did not trigger retransmission');
     }
@@ -134,3 +153,29 @@ for (const fault of ['drop-data', 'drop-ack', 'drop-final-ack', 'reorder', 'conf
   'receiver-cancel', 'tamper-auth', 'out-of-window', 'timeout', 'transport-error']) {
   test(`window ${fault} preserves bounded delivery and cleanup`, () => exchange({fault}));
 }
+
+for (const windowSize of [2, 4]) for (const role of [0, 1]) {
+  test(`sliding window ${windowSize} role ${role} crosses segment boundary`, () => exchange({windowSize, role, sliding:true}));
+}
+for (const fault of ['drop-data', 'drop-ack', 'drop-final-ack', 'reorder', 'conflicting-retry', 'cancel',
+  'receiver-cancel', 'tamper-auth', 'out-of-window', 'timeout', 'transport-error']) {
+  test(`sliding ${fault} preserves bounded delivery and cleanup`, () => exchange({fault, sliding:true}));
+}
+
+test('sliding capability must be offered and explicitly acknowledged', () => {
+  const hello = p.buildV2Frame(p.MSG.HELLO, 0, 9, p.V2_CONTROL_SEGMENT, {windowSize:4, sliding:true});
+  const parsed = p.parseV2Frame(hello);
+  assert.deepEqual([...hello.slice(9)], [65,66,50,80,4]);
+  assert.equal(parsed.sliding, true);
+  const wait = new p.V2StopAndWait();
+  wait.begin(p.buildV2Frame(p.MSG.HELLO, 0, 9, p.V2_CONTROL_SEGMENT, 4));
+  assert.throws(() => wait.receive(p.buildMessage(p.MSG.ACK, 0, p.makeV2AckPayload(parsed))), /unrequested/);
+  wait.abort(); wait.begin(hello);
+  assert.equal(wait.receive(p.buildMessage(p.MSG.ACK, 0, p.makeV2AckPayload(parsed))), 'ack');
+  assert.equal(wait.sliding, true);
+  wait.begin(hello);
+  assert.equal(wait.receive(p.buildMessage(p.MSG.ACK, 0, p.makeV2AckPayload({...parsed, sliding:false}))), 'ack');
+  assert.equal(wait.sliding, false);
+});
+
+test('sliding sender refills before the last ACK of the previous group', () => exchange({sliding:true, fault:'refill'}));

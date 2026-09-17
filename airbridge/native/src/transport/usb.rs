@@ -39,7 +39,7 @@ pub fn open(vid: u16, pid: u16, path: Option<&str>) -> Result<Link> {
         .collect();
     ensure!(
         candidates.len() == 1,
-        "expected one {:04x}:{:04x} vendor HID collection, found {}; run `abt devices usb`, use --device for duplicates, and keep Flipper in Bridge",
+        "expected one {:04x}:{:04x} vendor HID collection, found {}; run `abt devices usb`, use --device for duplicates, and keep AirBridge device in Bridge",
         vid,
         pid,
         candidates.len()

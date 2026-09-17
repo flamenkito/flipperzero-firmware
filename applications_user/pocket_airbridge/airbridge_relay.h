@@ -31,6 +31,13 @@ typedef struct {
     FuriHalUsbInterface* usb_mode_owned;
     CliVcp* cli_vcp;
     AirbridgeRelayMetrics metrics;
+    uint32_t ble_packet_generation;
+    uint32_t ble_packet_enabled;
+    uint8_t ble_packet_nonce[8];
+    uint8_t ble_packet_count;
+    bool ble_packet_offered;
+    bool have_lookahead;
+    BridgeEvent lookahead;
     bool usb_configured;
     bool usb_transition_dirty;
     bool admission_rejected;

@@ -1680,10 +1680,10 @@ this.emitState();
     return stream;
   }
 
-  openSegmentReceiver(meta, {windowSize = 1} = {}) {
+  openSegmentReceiver(meta, {windowSize = 1, sliding = false} = {}) {
     requireV2Window(windowSize);
     const receiver = windowSize === 1 ? new V2SegmentReceiver(this, meta) :
-      new V2WindowSegmentReceiver(this, meta, windowSize);
+      new V2WindowSegmentReceiver(this, meta, windowSize, sliding);
     this.#inboundStream?.abort(); this.#inboundStream = receiver;
     return receiver;
   }
@@ -1696,6 +1696,7 @@ this.emitState();
 
 const v2Magic = new Uint8Array([65, 66, 50, 83]);
 const v2WindowMagic = new Uint8Array([65, 66, 50, 87]);
+const v2SlidingMagic = new Uint8Array([65, 66, 50, 80]);
 
 function requireV2Window(size) {
   if (![1, 2, V2_MAX_DATA_WINDOW].includes(size)) throw new Error('invalid DATA window');
@@ -1751,7 +1752,7 @@ function makeV2AckPayload(context, reason) {
   validateV2Context(context);
   const windowSize = context.type === MSG.HELLO ? requireV2Window(context.windowSize ?? 1) : 1;
   const windowAck = reason === undefined && windowSize > 1;
-  const ack = concatBytes([makeAckPayload(context.type, context.seq), windowAck ? v2WindowMagic : v2Magic,
+  const ack = concatBytes([makeAckPayload(context.type, context.seq), windowAck ? (context.sliding ? v2SlidingMagic : v2WindowMagic) : v2Magic,
     u32Bytes(context.itemId), u32Bytes(context.segment)]);
   if (windowAck) return concatBytes([ack, new Uint8Array([windowSize])]);
   if (reason === undefined) return ack;
@@ -1764,9 +1765,11 @@ function buildV2Frame(type, seq, itemId, segment = V2_CONTROL_SEGMENT, data) {
   let payload;
   switch (type) {
     case MSG.HELLO: {
-      const windowSize = requireV2Window(data ?? 1);
+      const windowSize = requireV2Window(data?.windowSize ?? data ?? 1);
+      const sliding = Boolean(data?.sliding);
+      if (sliding && windowSize === 1) throw new Error('sliding DATA requires a window');
       payload = windowSize === 1 ? concatBytes([u32Bytes(itemId), v2Magic]) :
-        concatBytes([u32Bytes(itemId), v2WindowMagic, new Uint8Array([windowSize])]);
+        concatBytes([u32Bytes(itemId), sliding ? v2SlidingMagic : v2WindowMagic, new Uint8Array([windowSize])]);
       break;
     }
     case MSG.ITEM_META: payload = normalizePayload(data); break;
@@ -1812,11 +1815,15 @@ function parseV2RoutingFrame(raw, activeItemId) {
   let segment = V2_CONTROL_SEGMENT;
   let body = p;
   let windowSize;
+  let sliding = false;
   const magicAt = offset => bytesEqual(p.slice(offset, offset + 4), v2Magic);
   switch (msg.type) {
     case MSG.HELLO:
       if (p.length === 8 && magicAt(4)) windowSize = 1;
-      else if (p.length === 9 && bytesEqual(p.slice(4, 8), v2WindowMagic) && [2, 4].includes(p[8])) windowSize = p[8];
+      else if (p.length === 9 && [2, 4].includes(p[8]) &&
+          (bytesEqual(p.slice(4, 8), v2WindowMagic) || bytesEqual(p.slice(4, 8), v2SlidingMagic))) {
+        windowSize = p[8]; sliding = bytesEqual(p.slice(4, 8), v2SlidingMagic);
+      }
       else throw new Error('Unsupported protocol version');
       itemId = readU32(p, 0);
       break;
@@ -1842,18 +1849,18 @@ function parseV2RoutingFrame(raw, activeItemId) {
     case MSG.ACK:
     case MSG.NACK: {
       const windowAck = msg.type === MSG.ACK && p[0] === MSG.HELLO && p.length === 16 &&
-        bytesEqual(p.slice(3, 7), v2WindowMagic) && [2, 4].includes(p[15]);
+        (bytesEqual(p.slice(3, 7), v2WindowMagic) || bytesEqual(p.slice(3, 7), v2SlidingMagic)) && [2, 4].includes(p[15]);
       if ((!windowAck && (p.length !== (msg.type === MSG.ACK ? 15 : 16) || !magicAt(3))) || msg.seq !== 0) throw new Error('invalid v2 ACK/NACK');
       const context = {type:p[0], seq:(p[1]<<8)|p[2], itemId:readU32(p,7), segment:readU32(p,11)};
       validateV2Context(context);
       if (msg.type === MSG.NACK && !Object.values(NACK_REASON).includes(p[15])) throw new Error('invalid NACK reason');
       return {...msg, ...context, type:msg.type, ackedType:context.type, ackedSeq:context.seq, seq:msg.seq,
-        reason:msg.type === MSG.NACK ? p[15] : undefined, windowSize:windowAck ? p[15] : 1};
+        reason:msg.type === MSG.NACK ? p[15] : undefined, windowSize:windowAck ? p[15] : 1, sliding:windowAck && bytesEqual(p.slice(3, 7), v2SlidingMagic)};
     }
     default: throw new Error('Unsupported protocol version');
   }
   if (v2ItemTypes.includes(msg.type)) validateV2Context({...msg, itemId, segment});
-  return {...msg, itemId, segment, body, ...(windowSize === undefined ? {} : {windowSize})};
+  return {...msg, itemId, segment, body, ...(windowSize === undefined ? {} : {windowSize, sliding})};
 }
 
 function compareV2Offers(leftId, leftRole, rightId, rightRole) {
@@ -1950,7 +1957,7 @@ function verifyV2Completion(meta, proof) {
 }
 
 class V2StopAndWait {
-  constructor() { this.pending = null; this.capabilityItemId = null; this.windowSize = 1; }
+  constructor() { this.pending = null; this.capabilityItemId = null; this.windowSize = 1; this.sliding = false; }
 
   begin(frame, itemId = this.capabilityItemId) {
     if (this.pending) throw new Error('one outstanding frame allowed');
@@ -1958,7 +1965,7 @@ class V2StopAndWait {
     const msg = parseV2Frame(ownedFrame,itemId);
     validateV2Context(msg);
     if (msg.type !== MSG.HELLO && msg.itemId !== this.capabilityItemId) throw new Error('AB2S capability proof required');
-    this.pending = {type:msg.type, seq:msg.seq, itemId:msg.itemId, segment:msg.segment, frame:ownedFrame, windowSize:msg.windowSize ?? 1};
+    this.pending = {type:msg.type, seq:msg.seq, itemId:msg.itemId, segment:msg.segment, frame:ownedFrame, windowSize:msg.windowSize ?? 1, sliding:msg.sliding ?? false};
   }
 
   receive(frame) {
@@ -1970,7 +1977,7 @@ class V2StopAndWait {
       if (raw.type === MSG.ACK && raw.payload.length === 3 &&
           [MSG.KEY_OFFER, MSG.KEY_REPLY, MSG.KEY_CONFIRM].includes(raw.payload[0])) return 'ignored';
       const standardProof = raw.payload.length === 15 && bytesEqual(raw.payload.slice(3, 7), v2Magic);
-      const windowProof = raw.payload.length === 16 && bytesEqual(raw.payload.slice(3, 7), v2WindowMagic);
+      const windowProof = raw.payload.length === 16 && (bytesEqual(raw.payload.slice(3, 7), v2WindowMagic) || bytesEqual(raw.payload.slice(3, 7), v2SlidingMagic));
       const missingProof = raw.type === MSG.ACK && raw.seq === 0 && !standardProof && !windowProof;
       const unsupported = raw.type === MSG.ERROR && raw.seq === 0 &&
         bytesEqual(raw.payload, ascii('Unsupported protocol version'));
@@ -1992,16 +1999,17 @@ class V2StopAndWait {
     if (![MSG.ACK,MSG.NACK].includes(msg.type) || msg.ackedType !== p.type || msg.ackedSeq !== p.seq || msg.segment !== p.segment) return 'ignored';
     if (msg.type === MSG.NACK) return 'retry';
     if (p.type === MSG.HELLO) {
-      if (msg.windowSize > p.windowSize) throw new Error('unrequested DATA window');
+      if (msg.windowSize > p.windowSize || (msg.sliding && !p.sliding)) throw new Error('unrequested DATA window');
       this.capabilityItemId = p.itemId;
       this.windowSize = msg.windowSize;
+      this.sliding = msg.sliding;
     }
     if ([MSG.CANCEL,MSG.ITEM_DONE].includes(p.type)) this.capabilityItemId = null;
     this.pending = null;
     return 'ack';
   }
 
-  abort() { this.pending = null; this.capabilityItemId = null; this.windowSize = 1; }
+  abort() { this.pending = null; this.capabilityItemId = null; this.windowSize = 1; this.sliding = false; }
 }
 
 // Parser/order state only: no ciphertext accumulation or decryption. Task 4/6
@@ -2318,9 +2326,10 @@ class V2HeaderParser {
 }
 
 class V2WindowSegmentReceiver {
-  #inner; #meta; #window; #entries = new Map(); #batch = null;
+  #inner; #meta; #window; #sliding; #entries = new Map(); #batch = null;
   #segment = 0; #next = 0; #draining = false; #closed = false;
-  constructor(session, meta, windowSize) {
+  constructor(session, meta, windowSize, sliding = false) {
+    this.#sliding = sliding;
     this.#meta = validateV2Meta(meta, meta);
     this.#window = requireV2Window(windowSize);
     this.#inner = new V2SegmentReceiver(session, meta);
@@ -2353,14 +2362,19 @@ class V2WindowSegmentReceiver {
         this.#inner.assertActive();
         return {action:'duplicate'};
       }
-      const base = Math.floor(this.#next / this.#window) * this.#window;
+      const base = this.#sliding ? this.#next : Math.floor(this.#next / this.#window) * this.#window;
       if (context.segmentIndex !== this.#segment || context.chunkInSegment < this.#next ||
           context.chunkInSegment >= base + this.#window || this.#segment >= this.#meta.segmentCount ||
           context.chunkInSegment >= Math.ceil(v2SegmentLength(this.#meta, this.#segment) / V2_DATA_SLICE_LEN)) {
         throw new Error('DATA outside receive window');
       }
       const batch = `${this.#segment}:${base}`;
-      if (batch !== this.#batch) {
+      if (this.#sliding) {
+        for (const [id, entry] of this.#entries) {
+          if (entry.done && (entry.context.segmentIndex !== this.#segment ||
+              entry.context.chunkInSegment < this.#next - this.#window)) this.#entries.delete(id);
+        }
+      } else if (batch !== this.#batch) {
         if ([...this.#entries.values()].some(entry => !entry.done)) throw new Error('incomplete DATA window');
         this.#entries.clear(); this.#batch = batch;
       }
@@ -2547,7 +2561,7 @@ class ItemSender {
     this.#stream = stream; this.#streamWait = new V2StopAndWait();
     const itemId = stream.meta.itemId;
     try {
-      await this.#sendStreamFrame(buildV2Frame(MSG.HELLO, 0, itemId, V2_CONTROL_SEGMENT, this.windowSize));
+      await this.#sendStreamFrame(buildV2Frame(MSG.HELLO, 0, itemId, V2_CONTROL_SEGMENT, {windowSize:this.windowSize, sliding:this.sliding}));
       stream.assertActive();
       options.onProgress?.(0n);
       stream.assertActive();
@@ -2557,6 +2571,27 @@ class ItemSender {
       }
       for await (const segment of stream) {
         const windowSize = this.#streamWait.windowSize;
+        if (this.#streamWait.sliding) {
+          const pending = [];
+          const acknowledge = async () => {
+            const next = pending.shift();
+            await next.sent;
+            stream.assertActive();
+            options.onProgress?.(BigInt(segment.index) * 65536n + BigInt(Math.min(next.end, segment.bytes.length - 16)));
+            stream.assertActive();
+          };
+          for (let offset = 0; offset < segment.bytes.length; offset += V2_DATA_SLICE_LEN) {
+            if (pending.length === windowSize) await acknowledge();
+            const wait = new V2StopAndWait();
+            wait.capabilityItemId = itemId;
+            const sent = this.#sendStreamFrame(buildV2Frame(MSG.ITEM_DATA, offset / V2_DATA_SLICE_LEN, itemId,
+              segment.index, segment.bytes.subarray(offset, offset + V2_DATA_SLICE_LEN)), wait);
+            sent.catch(error => this.abortEncryptedStream(error));
+            pending.push({sent, end:offset + V2_DATA_SLICE_LEN});
+          }
+          while (pending.length) await acknowledge();
+          continue;
+        }
         for (let offset = 0; offset < segment.bytes.length; offset += V2_DATA_SLICE_LEN * windowSize) {
           const batch = [];
           for (let index = 0; index < windowSize && offset + index * V2_DATA_SLICE_LEN < segment.bytes.length; index++) {
@@ -2591,6 +2626,7 @@ class ItemSender {
     this.timeoutMs = options.timeoutMs ?? 2000;
     this.retries = options.retries ?? 3;
     this.windowSize = requireV2Window(options.windowSize ?? 1);
+    this.sliding = Boolean(options.sliding);
     this.ackCallbacks = new Set();
     this.nackCallbacks = new Set();
     this.pendingAcks = new Map();
@@ -3076,7 +3112,7 @@ class ItemReceiver {
   async #hello(msg, owner) {
     if (!this.#session.isUnlocked()) throw new Error('crypto session locked');
     if (this.#active?.id === msg.itemId && this.state === 'hello') {
-      if (this.#active.windowSize !== msg.windowSize) throw new Error('conflicting HELLO window');
+      if (this.#active.windowSize !== msg.windowSize || this.#active.sliding !== msg.sliding) throw new Error('conflicting HELLO window');
       return this.#ack(msg);
     }
     if (msg.itemId <= this.#highWater) return this.#send(buildV2Frame(MSG.ERROR, 0, msg.itemId, undefined, 'Inactive item'));
@@ -3086,7 +3122,7 @@ class ItemReceiver {
     }
     owner.generation = ++this.#generation; owner.itemId = msg.itemId;
     this.#receipt = null; this.#highWater = msg.itemId;
-    this.#active = {id:msg.itemId, windowSize:msg.windowSize, fragments:[], meta:null, segment:null, accumulator:null, pendingDone:null, receivedCiphertextBytes:0n};
+    this.#active = {id:msg.itemId, windowSize:msg.windowSize, sliding:msg.sliding, fragments:[], meta:null, segment:null, accumulator:null, pendingDone:null, receivedCiphertextBytes:0n};
     this.state = 'hello'; this.#arm();
     const generation = this.#generation;
     await this.#emit('hello', {itemId:msg.itemId});
@@ -3108,7 +3144,7 @@ class ItemReceiver {
       const meta = decodeMeta(active.fragments);
       active.meta = validateV2Meta(meta, {keyId:this.#session.keyId,
         direction:this.#session.role === 1 ? 'ble-to-usb' : 'usb-to-ble', itemId:active.id});
-      active.segment = this.#session.openSegmentReceiver(meta, {windowSize:active.windowSize});
+      active.segment = this.#session.openSegmentReceiver(meta, {windowSize:active.windowSize, sliding:active.sliding});
       active.accumulator = createReceiveAccumulator(this.#hash);
       this.state = 'data';
       await this.#emit('meta', Object.freeze({...meta}));
@@ -3793,6 +3829,39 @@ function completeOutboundCard(row, receipt, file) {
   updateCardProgress(row, 100, 'Sent', 'complete');
 }
 
+function createTransferRateMeter({now = () => performance.now(), windowMs = 3000, sampleMs = 250} = {}) {
+  let points, latest, initial, started;
+  function reset(bytes = 0n) {
+    latest = initial = BigInt(bytes);
+    started = now();
+    points = [{time:started, bytes:latest}];
+  }
+  function update(bytes) {
+    bytes = BigInt(bytes);
+    if (bytes < latest) reset(bytes);
+    latest = bytes;
+  }
+  function bps() {
+    const time = Math.max(now(), points.at(-1).time);
+    if (time - points.at(-1).time >= sampleMs) points.push({time, bytes:latest});
+    else if (points.length > 1 && time === points.at(-1).time) points.at(-1).bytes = latest;
+    const boundary = Math.max(started, time - windowMs);
+    while (points.length > 1 && points[1].time <= boundary) points.shift();
+    const first = points[0], second = points[1];
+    // Average byte deltas over elapsed time, never equally weight per-ACK rates.
+    const beforeBoundary = second && first.time < boundary
+      ? Number(second.bytes - first.bytes) * (boundary - first.time) / (second.time - first.time) : 0;
+    if (time - started < 500 || time === boundary) return null;
+    return Math.max(0, Number(latest - first.bytes) - beforeBoundary) * 1000 / (time - boundary);
+  }
+  function averageBps() {
+    const elapsed = now() - started;
+    return elapsed > 0 ? Number(latest - initial) * 1000 / elapsed : null;
+  }
+  reset();
+  return {reset, update, bps, averageBps};
+}
+
 // Throughput meter. EMA over inter-chunk byte rates; ETA from remaining bytes
 // (estimated via average bytes/chunk). "--" until at least 2 rate samples.
 // Inject options.now (ms) for deterministic tests.
@@ -3838,7 +3907,7 @@ function createThroughputMeter(options = {}) {
   return { tick, text };
 }
 
-return { formatBytes, shortHash, attachmentDisplayName, attachmentDownloadName, fillAsciiProgress, setTransferPhase, discardTranscriptDownloads, timeLabel, escapeHtml, createLogger, clearTranscript, addMessage, addSystemMessage, renderAttachmentCard, renderVerifiedAttachmentCard, removeAttachmentCard, replaceAttachmentCard, createAttachmentLifecycle, updateCardProgress, completeOutboundCard, createThroughputMeter };
+return { formatBytes, shortHash, attachmentDisplayName, attachmentDownloadName, fillAsciiProgress, setTransferPhase, discardTranscriptDownloads, timeLabel, escapeHtml, createLogger, clearTranscript, addMessage, addSystemMessage, renderAttachmentCard, renderVerifiedAttachmentCard, removeAttachmentCard, replaceAttachmentCard, createAttachmentLifecycle, updateCardProgress, completeOutboundCard, createTransferRateMeter, createThroughputMeter };
 })();
 /* bundled: airbridge-file-pass.js */
 __airbridgeModules['airbridge-file-pass.js'] = (() => {
@@ -4084,7 +4153,7 @@ function createChatOutbound({session, transport, setBusy, log}) {
       rejectedOfferId:null, collisionSeen:false, capabilityProven:false};
     active = item;
     item.owner = new OutboundTransfer({session, send:write, isCurrent:() => active === item,
-      timeoutMs:5000, retries:4, windowSize:4, onProgress:event => {
+      timeoutMs:5000, retries:4, windowSize:4, sliding:true, onProgress:event => {
         if (active !== item) return;
         if (event.phase === 'Sending') {
           item.capabilityProven = true;
@@ -4541,10 +4610,143 @@ const identity = Object.freeze({
 
 return { identity };
 })();
+/* bundled: airbridge-ble-packets.js */
+__airbridgeModules['airbridge-ble-packets.js'] = (() => {
+'use strict';
+function blePacketControl(kind, nonce, count = 3) {
+  const packet = new Uint8Array(kind === 1 ? count * 64 : 64).fill(0xa5);
+  packet.set([0xf0, 65, 66, 80, 1, kind, count, 0]);
+  packet.set(nonce, 8);
+  return packet;
+}
+
+class BlePackets {
+  constructor(write, receive, {timeoutMs = 750, onError = () => {}} = {}) {
+    this.write = write;
+    this.receive = receive;
+    this.timeoutMs = timeoutMs;
+    this.onError = onError;
+    this.batchSize = 1;
+    this.queue = [];
+    this.pending = 0;
+    this.running = false;
+    this.closed = false;
+    this.waiter = null;
+  }
+
+  async exchange(packet) {
+    let timer;
+    let writeSettled = false;
+    const response = new Promise((resolve, reject) => {
+      this.waiter = {packet, resolve, reject};
+      timer = setTimeout(() => reject(new Error('BLE packet negotiation timed out')), this.timeoutMs);
+    });
+    try {
+      await Promise.all([response, Promise.resolve().then(() => this.write(packet, true)).finally(() => { writeSettled = true; })]);
+    } catch (error) {
+      error.packetWriteSettled = writeSettled;
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      this.waiter = null;
+    }
+  }
+
+  async negotiate() {
+    const nonce = crypto.getRandomValues(new Uint8Array(8));
+    for (const count of [3, 2]) {
+      try {
+        await this.exchange(blePacketControl(1, nonce, count));
+      } catch (error) {
+        if (this.closed || !error.packetWriteSettled) throw error;
+        continue;
+      }
+      if (this.closed) throw new Error('BLE packet transport closed');
+      // A lost commit reply must disconnect: the peripheral may already be
+      // emitting aggregated notifications, so falling back would corrupt framing.
+      await this.exchange(blePacketControl(2, nonce, count));
+      if (this.closed) throw new Error('BLE packet transport closed');
+      this.batchSize = count;
+      return;
+    }
+  }
+
+  accept(bytes) {
+    if (this.closed) return;
+    if (bytes.length >= 8 && bytes[0] === 0xf0 && bytes[1] === 65 && bytes[2] === 66 && bytes[3] === 80) {
+      const waiter = this.waiter;
+      if (waiter && bytes.length === waiter.packet.length && bytes.every((v, i) => v === waiter.packet[i])) {
+        if (bytes[5] === 2) this.batchSize = bytes[6];
+        waiter.resolve();
+      }
+      return;
+    }
+    if (bytes.length <= 64) {
+      this.receive(bytes.slice());
+    } else if (this.batchSize > 1 && bytes.length <= this.batchSize * 64 && bytes.length % 64 === 0) {
+      for (let offset = 0; offset < bytes.length; offset += 64)
+        this.receive(bytes.slice(offset, offset + 64));
+    } else {
+      const error = new Error('Invalid BLE packet length');
+      this.close(error);
+      this.onError(error);
+    }
+  }
+
+  send(bytes) {
+    if (this.closed) return Promise.reject(new Error('BLE packet transport closed'));
+    if (bytes.length > 64) return Promise.reject(new RangeError('BLE frame must be 64 bytes or less'));
+    if (this.pending >= 32) return Promise.reject(new Error('BLE write queue full'));
+    const owned = this.batchSize > 1 ? new Uint8Array(64) : new Uint8Array(bytes.length);
+    owned.set(bytes);
+    this.pending++;
+    const result = new Promise((resolve, reject) => this.queue.push({bytes:owned, resolve, reject}));
+    if (!this.running) {
+      this.running = true;
+      this.timer = setTimeout(() => { this.timer = null; void this.pump(); }, 0);
+    }
+    return result;
+  }
+
+  async pump() {
+    try {
+      while (!this.closed && this.queue.length) {
+        const batch = this.queue.splice(0, this.batchSize);
+        this.active = batch;
+        const packet = new Uint8Array(batch.reduce((n, entry) => n + entry.bytes.length, 0));
+        let offset = 0;
+        for (const entry of batch) { packet.set(entry.bytes, offset); offset += entry.bytes.length; }
+        await this.write(packet, false);
+        if (this.closed) break;
+        for (const entry of batch) { this.pending--; entry.resolve(); }
+        this.active = null;
+      }
+    } catch (error) {
+      this.close(error);
+      this.onError(error);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  close(error = new Error('BLE packet transport closed')) {
+    this.closed = true;
+    clearTimeout(this.timer);
+    this.waiter?.reject(error);
+    for (const entry of [...(this.active ?? []), ...this.queue]) entry.reject(error);
+    this.active = null;
+    this.queue = [];
+    this.pending = 0;
+  }
+}
+
+return { blePacketControl, BlePackets };
+})();
 /* bundled: airbridge-transports.js */
 __airbridgeModules['airbridge-transports.js'] = (() => {
 'use strict';
 const { identity } = __airbridgeModules['airbridge-identity.js'];
+const { BlePackets } = __airbridgeModules['airbridge-ble-packets.js'];
 
 const HID_FILTERS = [
   { vendorId: 0x046D, productId: 0xC31C, usagePage: 0xFF00 },
@@ -4934,6 +5136,19 @@ class WebBluetoothAdapter {
         this.txChar = txChar;
         this.rxChar = rxChar;
         this.txChar.addEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
+        const packets = new BlePackets(async (bytes, control) => {
+          throwIfStale();
+          if (control || !rxChar.properties?.writeWithoutResponse || typeof rxChar.writeValueWithoutResponse !== 'function')
+            await rxChar.writeValueWithResponse(bytes);
+          else
+            await rxChar.writeValueWithoutResponse(bytes);
+          throwIfStale();
+        }, bytes => this.receiveCallback?.(bytes), {onError: () => {
+          if (!staleSession()) device.gatt.disconnect();
+        }});
+        this.packets = packets;
+        if (typeof rxChar.writeValueWithResponse === 'function') await packets.negotiate();
+        throwIfStale();
       });
       throwIfStale();
     } catch (error) {
@@ -5077,6 +5292,7 @@ class WebBluetoothAdapter {
   async send(frame) {
     const rxChar = this.rxChar;
     if (!rxChar) throw new Error('Web Bluetooth transport is not connected');
+    if (this.packets?.batchSize > 1) return this.packets.send(normalizeFrame(frame));
     const writes = this.#writes;
     if (writes.pending >= 8) throw new Error('BLE write queue full');
     const view = normalizeFrame(frame);
@@ -5150,9 +5366,10 @@ class WebBluetoothAdapter {
   }
 
   handleCharacteristicValueChanged(event) {
-    if (!this.receiveCallback) return;
     const value = event.target.value;
-    this.receiveCallback(new Uint8Array(value.buffer, value.byteOffset ?? 0, value.byteLength));
+    const bytes = new Uint8Array(value.buffer, value.byteOffset ?? 0, value.byteLength);
+    if (this.packets) this.packets.accept(bytes);
+    else this.receiveCallback?.(bytes);
   }
 
   handleDisconnected(event) {
@@ -5221,6 +5438,8 @@ class WebBluetoothAdapter {
   }
 
   clearGattState() {
+    this.packets?.close();
+    this.packets = null;
     this.#writes = {tail:Promise.resolve(), pending:0};
     if (this.txChar) {
       this.txChar.removeEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
@@ -5624,7 +5843,7 @@ const { installMockStreamPeer } = __airbridgeModules['airbridge-mock-stream-peer
 const { createPairedChatMock } = __airbridgeModules['airbridge-chat-mock.js'];
 const { createTimingRecorder, recordCancel, recordFlipperCounters } = __airbridgeModules['airbridge-evidence.js'];
 const { AirBridgeCryptoSession, buildMessage, CRYPTO_STATE, ItemReceiver, MSG, parseMessage } = __airbridgeModules['airbridge-protocol.js'];
-const { addMessage, clearTranscript, discardTranscriptDownloads, formatBytes, setTransferPhase, shortHash, updateCardProgress } = __airbridgeModules['airbridge-ui.js'];
+const { addMessage, clearTranscript, createTransferRateMeter, discardTranscriptDownloads, formatBytes, setTransferPhase, shortHash, updateCardProgress } = __airbridgeModules['airbridge-ui.js'];
 
 const textEncoder = new TextEncoder();
 
@@ -5693,9 +5912,9 @@ function createChatPage(ctx, config) {
   }
 
   let transferLabel = null;
-  let rateEmaBps = 0;
-  let rateLastBytes = 0n;
-  let rateLastTime = 0;
+  const rateMeter = createTransferRateMeter();
+  let ratePhase = null, rateTimer = null, ratePaintTime = -Infinity;
+  let rateText = '-- KiB/s';
 
   function renderTransferDetail() {
     const detail = ctx.$('transferDetail');
@@ -5707,23 +5926,37 @@ function createChatPage(ctx, config) {
       detail.hidden = true;
       detail.textContent = '';
       transferLabel = null;
-      rateEmaBps = 0;
-      rateLastBytes = 0n;
-      rateLastTime = 0;
+      clearInterval(rateTimer); rateTimer = null;
+      ratePhase = null;
       return;
     }
     const bytes = BigInt(ctx.$('throughput').dataset.bytes || '0');
-    const now = Date.now();
-    if (rateLastTime && now > rateLastTime && bytes > rateLastBytes) {
-      const sample = Number(bytes - rateLastBytes) / ((now - rateLastTime) / 1000);
-      rateEmaBps = rateEmaBps ? 0.35 * sample + 0.65 * rateEmaBps : sample;
+    const now = performance.now();
+    const transferring = phase === 'Sending' || phase === 'Receiving';
+    const formatRate = rate => rate == null ? '-- KiB/s' : `${(rate / 1024).toFixed(1)} KiB/s`;
+    if (phase !== ratePhase) {
+      clearInterval(rateTimer); rateTimer = null;
+      if (transferring) {
+        rateMeter.reset();
+        rateText = '-- KiB/s';
+        ratePaintTime = -Infinity;
+        rateTimer = setInterval(renderTransferDetail, 500);
+      } else if (phase === 'Verifying' && (ratePhase === 'Sending' || ratePhase === 'Receiving')) {
+        rateMeter.update(bytes);
+        rateText = `${formatRate(rateMeter.averageBps())} avg`;
+      } else rateText = '-- KiB/s';
+      ratePhase = phase;
     }
-    rateLastBytes = bytes;
-    rateLastTime = now;
+    if (transferring) {
+      rateMeter.update(bytes);
+      if (now - ratePaintTime >= 500) {
+        rateText = formatRate(rateMeter.bps());
+        ratePaintTime = now;
+      }
+    }
     const direction = phase === 'Receiving' ? 'receiving' : phase === 'Verifying' ? 'verifying' : phase === 'Hashing' ? 'hashing' : 'sending';
-    const rate = rateEmaBps > 0 ? `${(rateEmaBps / 1024).toFixed(1)} KB/s` : '-- KB/s';
     detail.hidden = false;
-    detail.textContent = `${direction}${transferLabel ? ` · ${transferLabel}` : ''} · ${rate}`;
+    detail.textContent = `${direction}${transferLabel ? ` · ${transferLabel}` : ''} · ${rateText}`;
   }
 
   function setPageTransferPhase(phase, progress = {}) {
@@ -6375,7 +6608,7 @@ function createChatPage(ctx, config) {
   updateControls();
   updateCryptoPanel();
   log(ctx.isMockMode ? 'Mock mode ready. Use :c to connect.' : config.readyLog);
-  window.addEventListener('pagehide', () => { terminal.dispose(); ctx.transcriptController.dispose(); displayStateObserver.disconnect(); ctx.receiver?.dispose(); ctx.outbound?.cancel(); discardTranscriptDownloads(ctx.$('transcript')); });
+  window.addEventListener('pagehide', () => { clearInterval(rateTimer); terminal.dispose(); ctx.transcriptController.dispose(); displayStateObserver.disconnect(); ctx.receiver?.dispose(); ctx.outbound?.cancel(); discardTranscriptDownloads(ctx.$('transcript')); });
 
   return {
     connect,

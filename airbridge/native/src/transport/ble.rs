@@ -1,18 +1,90 @@
-use crate::{frame::FRAME_LEN, link::Link};
+use super::packets;
+use crate::{
+    frame::{FRAME_LEN, Report},
+    link::Link,
+};
 use anyhow::{Context, Result, bail, ensure};
 use btleplug::{
     api::{
-        Central, CentralEvent, CharPropFlags, Manager as _, Peripheral as _, ScanFilter, WriteType,
+        Central, CentralEvent, CharPropFlags, Characteristic, Manager as _, Peripheral as _,
+        ScanFilter, ValueNotification, WriteType,
     },
     platform::{Adapter, Manager, Peripheral},
 };
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use std::time::Duration;
 use uuid::Uuid;
 
 pub const SERVICE: Uuid = Uuid::from_u128(0x7b871228_baf0_c5b4_5f46_9c2613d627a3);
 pub const TX: Uuid = Uuid::from_u128(0x87825ec0_7398_8cb7_3242_b083eaa34f27);
 pub const RX: Uuid = Uuid::from_u128(0x152f7eeb_e3b7_5898_ba41_7ff66121c98d);
+
+async fn echo<S: Stream<Item = ValueNotification> + Unpin>(
+    notifications: &mut S,
+    expected: &[u8],
+    buffered: &mut Vec<Report>,
+) -> Result<bool> {
+    let result = tokio::time::timeout(Duration::from_millis(750), async {
+        loop {
+            let notification = notifications
+                .next()
+                .await
+                .context("BLE disconnected during packet negotiation")?;
+            if notification.uuid != TX {
+                continue;
+            }
+            if notification.value == expected {
+                return Ok(true);
+            }
+            if packets::is_control(&notification.value) {
+                continue;
+            }
+            ensure!(buffered.len() < 8, "BLE startup receive queue full");
+            buffered.extend(packets::split(&notification.value, 1)?);
+        }
+    })
+    .await;
+    result.unwrap_or(Ok(false))
+}
+
+async fn negotiate<S: Stream<Item = ValueNotification> + Unpin>(
+    peer: &Peripheral,
+    rx: &Characteristic,
+    notifications: &mut S,
+) -> Result<(usize, Vec<Report>)> {
+    let nonce = rand::random::<[u8; 8]>();
+    let mut buffered = Vec::new();
+    if !rx.properties.contains(CharPropFlags::WRITE) {
+        return Ok((1, buffered));
+    }
+    for count in [3, 2] {
+        let probe = packets::control(count, false, &nonce);
+        // A timed-out write may still be live in the OS. Disconnect instead
+        // of starting overlapping writes on an uncertain connection.
+        let written = tokio::time::timeout(
+            Duration::from_secs(3),
+            peer.write(rx, &probe, WriteType::WithResponse),
+        )
+        .await
+        .context("BLE packet probe write timed out")?;
+        if written.is_err() || !echo(notifications, &probe, &mut buffered).await? {
+            continue;
+        }
+        let commit = packets::control(count, true, &nonce);
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            peer.write(rx, &commit, WriteType::WithResponse),
+        )
+        .await
+        .context("BLE packet commit write timed out")??;
+        ensure!(
+            echo(notifications, &commit, &mut buffered).await?,
+            "BLE packet commit timed out; reconnect required"
+        );
+        return Ok((count, buffered));
+    }
+    Ok((1, buffered))
+}
 
 async fn scan(seconds: u64) -> Result<(Adapter, Vec<Peripheral>)> {
     let manager = Manager::new()
@@ -77,7 +149,7 @@ pub async fn open(selector: Option<&str>, seconds: u64) -> Result<Link> {
     );
     let peer = matches.remove(0);
     eprintln!(
-        "connecting BLE {} (confirm OS/Flipper pairing if prompted)",
+        "connecting BLE {} (confirm OS/device pairing if prompted)",
         peer.id()
     );
     let setup = async {
@@ -112,38 +184,58 @@ pub async fn open(selector: Option<&str>, seconds: u64) -> Result<Link> {
             );
             WriteType::WithResponse
         };
-        let notifications = peer.notifications().await?;
+        let mut notifications = peer.notifications().await?;
         peer.subscribe(&tx).await?;
-        Ok::<_, anyhow::Error>((tx, rx, write_type, notifications))
+        let (packet_count, buffered) = negotiate(&peer, &rx, &mut notifications).await?;
+        Ok::<_, anyhow::Error>((tx, rx, write_type, notifications, packet_count, buffered))
     };
     let setup = tokio::time::timeout(Duration::from_secs(30), setup)
         .await
         .context("BLE discovery timed out")
         .and_then(|result| result);
-    let (tx_char, rx_char, write_type, mut notifications) = match setup {
+    let (tx_char, rx_char, write_type, mut notifications, packet_count, buffered) = match setup {
         Ok(ready) => ready,
         Err(error) => {
             let _ = peer.disconnect().await;
             return Err(error);
         }
     };
-    eprintln!("BLE subscribed, MTU={}, write={write_type:?}", peer.mtu());
+    eprintln!(
+        "BLE subscribed, MTU={}, write={write_type:?}, packet_frames={packet_count}",
+        peer.mtu()
+    );
     let mut events = adapter.events().await?;
     let (link, mut driver) = Link::channel();
     tokio::spawn(async move {
         let run = async {
+            for frame in buffered {
+                if driver.tx.send(Ok(frame)).await.is_err() { return Ok(()); }
+            }
             loop {
                 tokio::select! {
                     _ = driver.stop.changed() => return Ok(()),
                     frame = driver.rx.recv() => {
                         let Some(frame) = frame else { return Ok(()) };
-                        tokio::time::timeout(Duration::from_secs(3), peer.write(&rx_char, &frame, write_type)).await.context("BLE write timed out")??;
+                        let mut packet = Vec::from(frame);
+                        if packet_count > 1 {
+                            tokio::time::sleep(Duration::from_millis(1)).await;
+                            if *driver.stop.borrow() { return Ok(()); }
+                            while packet.len() < packet_count * FRAME_LEN {
+                                match driver.rx.try_recv() {
+                                    Ok(next) => packet.extend_from_slice(&next),
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                        tokio::time::timeout(Duration::from_secs(3), peer.write(&rx_char, &packet, write_type)).await.context("BLE write timed out")??;
                     }
                     notification = notifications.next() => {
                         let notification = notification.context("BLE notification stream ended")?;
                         if notification.uuid != TX { continue; }
-                        ensure!(notification.value.len() == FRAME_LEN, "unexpected BLE frame length {}", notification.value.len());
-                        if driver.tx.send(Ok(notification.value.as_slice().try_into()?)).await.is_err() { return Ok(()) }
+                        if packets::is_control(&notification.value) { continue; }
+                        for frame in packets::split(&notification.value, packet_count)? {
+                            if driver.tx.send(Ok(frame)).await.is_err() { return Ok(()) }
+                        }
                     }
                     event = events.next() => {
                         match event {

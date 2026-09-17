@@ -1,4 +1,5 @@
 #include "airbridge_ui_i.h"
+#include "airbridge_ui_refresh.h"
 
 #include <stdlib.h>
 
@@ -52,10 +53,22 @@ void airbridge_ui_add_view(AirbridgeUi* ui) {
 }
 
 void airbridge_ui_update(AirbridgeUi* ui, const AirbridgeUiSnapshot* snapshot) {
+    const uint32_t now = furi_get_tick();
     furi_check(furi_mutex_acquire(ui->snapshot_mutex, FuriWaitForever) == FuriStatusOk);
-    ui->snapshot = *snapshot;
+    /* State transitions bypass the rate limit, including the password frame
+     * that must reach the display before the first keyboard report. */
+    const bool refresh = airbridge_ui_refresh_needed(
+        &ui->snapshot,
+        snapshot,
+        ui->snapshot_initialized,
+        now - ui->snapshot_tick >= furi_ms_to_ticks(200));
+    if(refresh) {
+        ui->snapshot = *snapshot;
+        ui->snapshot_tick = now;
+        ui->snapshot_initialized = true;
+    }
     furi_mutex_release(ui->snapshot_mutex);
-    view_port_update(ui->view_port);
+    if(refresh) view_port_update(ui->view_port);
 }
 
 void airbridge_ui_snapshot_copy(AirbridgeUi* ui, AirbridgeUiSnapshot* snapshot) {

@@ -78,8 +78,7 @@ Valid requested/granted windows are **2 or 4**. The granted window must not exce
 the request. An ordinary 15-byte AB2S HELLO ACK grants a one-frame window. All
 other item frames, ACKs and NACKs retain the layouts above; `AB2W` never replaces
 the private header, META protocol version, AEAD inputs or crypto handshake.
-Current chat pages request four; `ItemSender` defaults to one for callers that
-do not request this capability.
+`ItemSender` defaults to one for callers that do not request this capability.
 
 Within each segment, send batches of at most the granted number of DATA frames.
 Every frame retains its own item/segment/type/sequence ACK and exact retry copy.
@@ -97,9 +96,56 @@ require refreshed pages and a fresh confirmed session. There is no speculative
 window or automatic downgrade after an incompatibility error. See
 [ADR 0004](../../docs/adr/0004-hid-data-windows.md).
 
+### Sliding DATA windows
+
+Current chat pages request `AB2P` with window four. Its HELLO and HELLO ACK have
+the same layouts as AB2W above, with ASCII `AB2P` replacing `AB2W`. Valid windows
+remain two or four. The sender only enables sliding after an explicit AB2P ACK;
+an AB2W ACK grants batch mode, and an AB2S ACK grants stop-and-wait. A receiver
+cannot grant sliding to a sender that did not offer it. Old receivers reject
+AB2P before META/DATA; refresh both pages and confirm a fresh SAS session.
+
+Within a segment, the sender may refill as soon as the oldest outstanding DATA
+is acknowledged. The sequence span from the oldest unacknowledged frame to the
+next frame stays within the granted window, even if newer ACKs arrive first.
+This prevents a lost old ACK from advancing the sender beyond the receiver's
+bounded duplicate history. Each frame still owns its exact retry bytes and ACK.
+All DATA must be acknowledged before the next segment or DONE.
+
+The receiver admits up to `windowSize` frames starting at its next contiguous
+sequence, drains in order, and retains the last window of completed slices for
+duplicate checks. Pending slices plus history are bounded by twice the window.
+Authentication, final SHA-256, cancellation and conflicting-duplicate failures
+have the same meaning as AB2W. See [ADR 0007](../../docs/adr/0007-ble-packets-and-sliding-windows.md).
+
+### BLE packet aggregation (ABP1)
+
+USB reports and individual application frames remain 64 bytes. A current BLE
+client can negotiate packing two or three reports into one 128/192-byte serial
+write or notification. The FAP splits ingress into bounded single-frame events
+and combines consecutive USB-origin frames on egress. It never decrypts them.
+This transport negotiation is independent of AB2S/AB2W/AB2P and also serves ABT1.
+
+Control bytes are `f0 41 42 50 01 kind count 00 nonce[8]`, followed by `a5`
+padding. `kind=1` probes a packet of `count*64` bytes, with count three then two;
+the FAP echoes all bytes. A matching echo in both directions is required before
+`kind=2` commits in a 64-byte packet, again echoed exactly. Neither control is
+forwarded to USB. A client enables batching only after the commit echo. A lost
+commit echo requires disconnect, because the FAP may already have switched.
+Probe rejection or a settled probe without an echo falls back to smaller packets;
+an unsettled write cannot fall back on the same connection. Legacy FAPs ignore
+oversized probes and continue using single reports.
+
+After negotiation, reports are padded to 64 bytes and concatenated without an
+extra header. Notifications must be one report or a negotiated multiple; malformed
+lengths fail the client connection. The FAP clears negotiation on disconnect,
+CCCD subscription changes, and serial reset. Legacy Deploy bootstraps continue
+using single frames. This is packet aggregation, not additional flow-control
+credit: application windows remain four and the relay queue remains eight events.
+
 ### Explicit incompatibility
 
-The extended HELLO ACK proves `AB2S` or the requested `AB2W` capability before
+The extended HELLO ACK proves `AB2S`, `AB2W`, or the requested `AB2P` capability before
 the sender emits any META or DATA.
 A v1 four-byte HELLO, absent/malformed HELLO magic, plain/legacy ACK, absent or
 malformed ACK capability proof, or a peer explicitly rejecting streaming fails
@@ -254,8 +300,9 @@ Receiver states: idle → hello → meta → data → done → terminal. Monoton
 item/segment/seq, exact lengths and order are checked. Authenticate each complete
 ciphertext segment before releasing any of its plaintext to the private receive
 accumulator. Retain at most one 65,552-byte ciphertext segment plus a 51-byte
-retry slice; window mode additionally retains at most `windowSize * 51` bytes
-for the current batch. Sender retains one plaintext segment, one ciphertext
+retry slice; batch mode additionally retains at most `windowSize * 51` bytes,
+and sliding mode at most `2 * windowSize * 51` bytes for reordering and history.
+Sender retains one plaintext segment, one ciphertext
 segment and at most `windowSize` exact outstanding 64-byte frames, plus bounded
 source/residual storage. These are
 protocol working-set bounds, not total JS/native/browser heap bounds.

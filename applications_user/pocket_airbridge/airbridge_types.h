@@ -6,10 +6,12 @@
 #include "airbridge_usb.h"
 #include <input/input.h>
 
-#define EVENT_TYPE_INPUT (1 << 0)
-#define EVENT_TYPE_USB   (1 << 1)
-#define EVENT_TYPE_RELAY (1 << 2)
-#define EVENT_TYPE_WAKE  (1 << 3)
+#define EVENT_TYPE_INPUT          (1 << 0)
+#define EVENT_TYPE_USB            (1 << 1)
+#define EVENT_TYPE_RELAY          (1 << 2)
+#define EVENT_TYPE_WAKE           (1 << 3)
+#define EVENT_TYPE_PACKET_CONTROL (1 << 4)
+#define EVENT_TYPE_PACKET_RESET   (1 << 5)
 
 #define TYPE_PRESS_DELAY_MS   12
 #define TYPE_RELEASE_DELAY_MS 18

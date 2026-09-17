@@ -32,6 +32,10 @@ unsigned relay_test_begin_calls;
 unsigned relay_test_end_calls;
 char relay_test_call_log[256];
 size_t relay_test_call_log_length;
+unsigned relay_test_ble_calls;
+uint16_t relay_test_ble_length;
+uint8_t relay_test_ble_data[244];
+bool relay_test_ble_result;
 
 static struct CliVcp cli_vcp_fixture;
 
@@ -42,6 +46,9 @@ static void log_call(char call) {
 }
 
 void relay_test_reset(void) {
+    relay_test_ble_calls = 0;
+    relay_test_ble_length = 0;
+    relay_test_ble_result = true;
     relay_test_current = &relay_test_spoof_logitech;
     relay_test_begin_current = NULL;
     memset(relay_test_set_targets, 0, sizeof(relay_test_set_targets));
@@ -147,9 +154,11 @@ bool airbridge_usb_vendor_send_response_blocking(uint8_t* data, uint8_t length, 
 
 bool airbridge_ble_send(AirbridgeBle* ble, uint8_t* data, uint16_t length) {
     UNUSED(ble);
-    UNUSED(data);
-    UNUSED(length);
-    return true;
+    assert(length <= sizeof(relay_test_ble_data));
+    relay_test_ble_calls++;
+    relay_test_ble_length = length;
+    memcpy(relay_test_ble_data, data, length);
+    return relay_test_ble_result;
 }
 
 FuriHalUsbInterface* furi_hal_usb_spoof_get_active_interface(void) {
@@ -158,7 +167,7 @@ FuriHalUsbInterface* furi_hal_usb_spoof_get_active_interface(void) {
 
 FuriHalUsbInterface* furi_hal_usb_spoof_get_interface(FuriHalUsbSpoofProfile profile) {
     return profile == FuriHalUsbSpoofProfileDell ? &relay_test_spoof_dell :
-                                                  &relay_test_spoof_logitech;
+                                                   &relay_test_spoof_logitech;
 }
 
 bool cli_vcp_usb_takeover_begin(CliVcp* cli_vcp) {

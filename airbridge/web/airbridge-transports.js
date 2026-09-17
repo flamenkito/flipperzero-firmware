@@ -1,4 +1,5 @@
 import { identity } from './airbridge-identity.js';
+import { BlePackets } from './airbridge-ble-packets.js';
 
 const HID_FILTERS = [
   { vendorId: 0x046D, productId: 0xC31C, usagePage: 0xFF00 },
@@ -388,6 +389,19 @@ export class WebBluetoothAdapter {
         this.txChar = txChar;
         this.rxChar = rxChar;
         this.txChar.addEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);
+        const packets = new BlePackets(async (bytes, control) => {
+          throwIfStale();
+          if (control || !rxChar.properties?.writeWithoutResponse || typeof rxChar.writeValueWithoutResponse !== 'function')
+            await rxChar.writeValueWithResponse(bytes);
+          else
+            await rxChar.writeValueWithoutResponse(bytes);
+          throwIfStale();
+        }, bytes => this.receiveCallback?.(bytes), {onError: () => {
+          if (!staleSession()) device.gatt.disconnect();
+        }});
+        this.packets = packets;
+        if (typeof rxChar.writeValueWithResponse === 'function') await packets.negotiate();
+        throwIfStale();
       });
       throwIfStale();
     } catch (error) {
@@ -531,6 +545,7 @@ export class WebBluetoothAdapter {
   async send(frame) {
     const rxChar = this.rxChar;
     if (!rxChar) throw new Error('Web Bluetooth transport is not connected');
+    if (this.packets?.batchSize > 1) return this.packets.send(normalizeFrame(frame));
     const writes = this.#writes;
     if (writes.pending >= 8) throw new Error('BLE write queue full');
     const view = normalizeFrame(frame);
@@ -604,9 +619,10 @@ export class WebBluetoothAdapter {
   }
 
   handleCharacteristicValueChanged(event) {
-    if (!this.receiveCallback) return;
     const value = event.target.value;
-    this.receiveCallback(new Uint8Array(value.buffer, value.byteOffset ?? 0, value.byteLength));
+    const bytes = new Uint8Array(value.buffer, value.byteOffset ?? 0, value.byteLength);
+    if (this.packets) this.packets.accept(bytes);
+    else this.receiveCallback?.(bytes);
   }
 
   handleDisconnected(event) {
@@ -675,6 +691,8 @@ export class WebBluetoothAdapter {
   }
 
   clearGattState() {
+    this.packets?.close();
+    this.packets = null;
     this.#writes = {tail:Promise.resolve(), pending:0};
     if (this.txChar) {
       this.txChar.removeEventListener('characteristicvaluechanged', this.handleCharacteristicValueChanged);

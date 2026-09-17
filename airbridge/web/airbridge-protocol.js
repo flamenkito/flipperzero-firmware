@@ -831,10 +831,10 @@ export class AirBridgeCryptoSession {
     return stream;
   }
 
-  openSegmentReceiver(meta, {windowSize = 1} = {}) {
+  openSegmentReceiver(meta, {windowSize = 1, sliding = false} = {}) {
     requireV2Window(windowSize);
     const receiver = windowSize === 1 ? new V2SegmentReceiver(this, meta) :
-      new V2WindowSegmentReceiver(this, meta, windowSize);
+      new V2WindowSegmentReceiver(this, meta, windowSize, sliding);
     this.#inboundStream?.abort(); this.#inboundStream = receiver;
     return receiver;
   }
@@ -906,6 +906,7 @@ export class AirBridgeCryptoSession {
 
 const v2Magic = new Uint8Array([65, 66, 50, 83]);
 const v2WindowMagic = new Uint8Array([65, 66, 50, 87]);
+const v2SlidingMagic = new Uint8Array([65, 66, 50, 80]);
 
 function requireV2Window(size) {
   if (![1, 2, V2_MAX_DATA_WINDOW].includes(size)) throw new Error('invalid DATA window');
@@ -961,7 +962,7 @@ export function makeV2AckPayload(context, reason) {
   validateV2Context(context);
   const windowSize = context.type === MSG.HELLO ? requireV2Window(context.windowSize ?? 1) : 1;
   const windowAck = reason === undefined && windowSize > 1;
-  const ack = concatBytes([makeAckPayload(context.type, context.seq), windowAck ? v2WindowMagic : v2Magic,
+  const ack = concatBytes([makeAckPayload(context.type, context.seq), windowAck ? (context.sliding ? v2SlidingMagic : v2WindowMagic) : v2Magic,
     u32Bytes(context.itemId), u32Bytes(context.segment)]);
   if (windowAck) return concatBytes([ack, new Uint8Array([windowSize])]);
   if (reason === undefined) return ack;
@@ -974,9 +975,11 @@ export function buildV2Frame(type, seq, itemId, segment = V2_CONTROL_SEGMENT, da
   let payload;
   switch (type) {
     case MSG.HELLO: {
-      const windowSize = requireV2Window(data ?? 1);
+      const windowSize = requireV2Window(data?.windowSize ?? data ?? 1);
+      const sliding = Boolean(data?.sliding);
+      if (sliding && windowSize === 1) throw new Error('sliding DATA requires a window');
       payload = windowSize === 1 ? concatBytes([u32Bytes(itemId), v2Magic]) :
-        concatBytes([u32Bytes(itemId), v2WindowMagic, new Uint8Array([windowSize])]);
+        concatBytes([u32Bytes(itemId), sliding ? v2SlidingMagic : v2WindowMagic, new Uint8Array([windowSize])]);
       break;
     }
     case MSG.ITEM_META: payload = normalizePayload(data); break;
@@ -1022,11 +1025,15 @@ export function parseV2RoutingFrame(raw, activeItemId) {
   let segment = V2_CONTROL_SEGMENT;
   let body = p;
   let windowSize;
+  let sliding = false;
   const magicAt = offset => bytesEqual(p.slice(offset, offset + 4), v2Magic);
   switch (msg.type) {
     case MSG.HELLO:
       if (p.length === 8 && magicAt(4)) windowSize = 1;
-      else if (p.length === 9 && bytesEqual(p.slice(4, 8), v2WindowMagic) && [2, 4].includes(p[8])) windowSize = p[8];
+      else if (p.length === 9 && [2, 4].includes(p[8]) &&
+          (bytesEqual(p.slice(4, 8), v2WindowMagic) || bytesEqual(p.slice(4, 8), v2SlidingMagic))) {
+        windowSize = p[8]; sliding = bytesEqual(p.slice(4, 8), v2SlidingMagic);
+      }
       else throw new Error('Unsupported protocol version');
       itemId = readU32(p, 0);
       break;
@@ -1052,18 +1059,18 @@ export function parseV2RoutingFrame(raw, activeItemId) {
     case MSG.ACK:
     case MSG.NACK: {
       const windowAck = msg.type === MSG.ACK && p[0] === MSG.HELLO && p.length === 16 &&
-        bytesEqual(p.slice(3, 7), v2WindowMagic) && [2, 4].includes(p[15]);
+        (bytesEqual(p.slice(3, 7), v2WindowMagic) || bytesEqual(p.slice(3, 7), v2SlidingMagic)) && [2, 4].includes(p[15]);
       if ((!windowAck && (p.length !== (msg.type === MSG.ACK ? 15 : 16) || !magicAt(3))) || msg.seq !== 0) throw new Error('invalid v2 ACK/NACK');
       const context = {type:p[0], seq:(p[1]<<8)|p[2], itemId:readU32(p,7), segment:readU32(p,11)};
       validateV2Context(context);
       if (msg.type === MSG.NACK && !Object.values(NACK_REASON).includes(p[15])) throw new Error('invalid NACK reason');
       return {...msg, ...context, type:msg.type, ackedType:context.type, ackedSeq:context.seq, seq:msg.seq,
-        reason:msg.type === MSG.NACK ? p[15] : undefined, windowSize:windowAck ? p[15] : 1};
+        reason:msg.type === MSG.NACK ? p[15] : undefined, windowSize:windowAck ? p[15] : 1, sliding:windowAck && bytesEqual(p.slice(3, 7), v2SlidingMagic)};
     }
     default: throw new Error('Unsupported protocol version');
   }
   if (v2ItemTypes.includes(msg.type)) validateV2Context({...msg, itemId, segment});
-  return {...msg, itemId, segment, body, ...(windowSize === undefined ? {} : {windowSize})};
+  return {...msg, itemId, segment, body, ...(windowSize === undefined ? {} : {windowSize, sliding})};
 }
 
 export function compareV2Offers(leftId, leftRole, rightId, rightRole) {
@@ -1160,7 +1167,7 @@ export function verifyV2Completion(meta, proof) {
 }
 
 export class V2StopAndWait {
-  constructor() { this.pending = null; this.capabilityItemId = null; this.windowSize = 1; }
+  constructor() { this.pending = null; this.capabilityItemId = null; this.windowSize = 1; this.sliding = false; }
 
   begin(frame, itemId = this.capabilityItemId) {
     if (this.pending) throw new Error('one outstanding frame allowed');
@@ -1168,7 +1175,7 @@ export class V2StopAndWait {
     const msg = parseV2Frame(ownedFrame,itemId);
     validateV2Context(msg);
     if (msg.type !== MSG.HELLO && msg.itemId !== this.capabilityItemId) throw new Error('AB2S capability proof required');
-    this.pending = {type:msg.type, seq:msg.seq, itemId:msg.itemId, segment:msg.segment, frame:ownedFrame, windowSize:msg.windowSize ?? 1};
+    this.pending = {type:msg.type, seq:msg.seq, itemId:msg.itemId, segment:msg.segment, frame:ownedFrame, windowSize:msg.windowSize ?? 1, sliding:msg.sliding ?? false};
   }
 
   receive(frame) {
@@ -1180,7 +1187,7 @@ export class V2StopAndWait {
       if (raw.type === MSG.ACK && raw.payload.length === 3 &&
           [MSG.KEY_OFFER, MSG.KEY_REPLY, MSG.KEY_CONFIRM].includes(raw.payload[0])) return 'ignored';
       const standardProof = raw.payload.length === 15 && bytesEqual(raw.payload.slice(3, 7), v2Magic);
-      const windowProof = raw.payload.length === 16 && bytesEqual(raw.payload.slice(3, 7), v2WindowMagic);
+      const windowProof = raw.payload.length === 16 && (bytesEqual(raw.payload.slice(3, 7), v2WindowMagic) || bytesEqual(raw.payload.slice(3, 7), v2SlidingMagic));
       const missingProof = raw.type === MSG.ACK && raw.seq === 0 && !standardProof && !windowProof;
       const unsupported = raw.type === MSG.ERROR && raw.seq === 0 &&
         bytesEqual(raw.payload, ascii('Unsupported protocol version'));
@@ -1202,16 +1209,17 @@ export class V2StopAndWait {
     if (![MSG.ACK,MSG.NACK].includes(msg.type) || msg.ackedType !== p.type || msg.ackedSeq !== p.seq || msg.segment !== p.segment) return 'ignored';
     if (msg.type === MSG.NACK) return 'retry';
     if (p.type === MSG.HELLO) {
-      if (msg.windowSize > p.windowSize) throw new Error('unrequested DATA window');
+      if (msg.windowSize > p.windowSize || (msg.sliding && !p.sliding)) throw new Error('unrequested DATA window');
       this.capabilityItemId = p.itemId;
       this.windowSize = msg.windowSize;
+      this.sliding = msg.sliding;
     }
     if ([MSG.CANCEL,MSG.ITEM_DONE].includes(p.type)) this.capabilityItemId = null;
     this.pending = null;
     return 'ack';
   }
 
-  abort() { this.pending = null; this.capabilityItemId = null; this.windowSize = 1; }
+  abort() { this.pending = null; this.capabilityItemId = null; this.windowSize = 1; this.sliding = false; }
 }
 
 // Parser/order state only: no ciphertext accumulation or decryption. Task 4/6
@@ -1528,9 +1536,10 @@ export class V2HeaderParser {
 }
 
 class V2WindowSegmentReceiver {
-  #inner; #meta; #window; #entries = new Map(); #batch = null;
+  #inner; #meta; #window; #sliding; #entries = new Map(); #batch = null;
   #segment = 0; #next = 0; #draining = false; #closed = false;
-  constructor(session, meta, windowSize) {
+  constructor(session, meta, windowSize, sliding = false) {
+    this.#sliding = sliding;
     this.#meta = validateV2Meta(meta, meta);
     this.#window = requireV2Window(windowSize);
     this.#inner = new V2SegmentReceiver(session, meta);
@@ -1563,14 +1572,19 @@ class V2WindowSegmentReceiver {
         this.#inner.assertActive();
         return {action:'duplicate'};
       }
-      const base = Math.floor(this.#next / this.#window) * this.#window;
+      const base = this.#sliding ? this.#next : Math.floor(this.#next / this.#window) * this.#window;
       if (context.segmentIndex !== this.#segment || context.chunkInSegment < this.#next ||
           context.chunkInSegment >= base + this.#window || this.#segment >= this.#meta.segmentCount ||
           context.chunkInSegment >= Math.ceil(v2SegmentLength(this.#meta, this.#segment) / V2_DATA_SLICE_LEN)) {
         throw new Error('DATA outside receive window');
       }
       const batch = `${this.#segment}:${base}`;
-      if (batch !== this.#batch) {
+      if (this.#sliding) {
+        for (const [id, entry] of this.#entries) {
+          if (entry.done && (entry.context.segmentIndex !== this.#segment ||
+              entry.context.chunkInSegment < this.#next - this.#window)) this.#entries.delete(id);
+        }
+      } else if (batch !== this.#batch) {
         if ([...this.#entries.values()].some(entry => !entry.done)) throw new Error('incomplete DATA window');
         this.#entries.clear(); this.#batch = batch;
       }
@@ -1757,7 +1771,7 @@ export class ItemSender {
     this.#stream = stream; this.#streamWait = new V2StopAndWait();
     const itemId = stream.meta.itemId;
     try {
-      await this.#sendStreamFrame(buildV2Frame(MSG.HELLO, 0, itemId, V2_CONTROL_SEGMENT, this.windowSize));
+      await this.#sendStreamFrame(buildV2Frame(MSG.HELLO, 0, itemId, V2_CONTROL_SEGMENT, {windowSize:this.windowSize, sliding:this.sliding}));
       stream.assertActive();
       options.onProgress?.(0n);
       stream.assertActive();
@@ -1767,6 +1781,27 @@ export class ItemSender {
       }
       for await (const segment of stream) {
         const windowSize = this.#streamWait.windowSize;
+        if (this.#streamWait.sliding) {
+          const pending = [];
+          const acknowledge = async () => {
+            const next = pending.shift();
+            await next.sent;
+            stream.assertActive();
+            options.onProgress?.(BigInt(segment.index) * 65536n + BigInt(Math.min(next.end, segment.bytes.length - 16)));
+            stream.assertActive();
+          };
+          for (let offset = 0; offset < segment.bytes.length; offset += V2_DATA_SLICE_LEN) {
+            if (pending.length === windowSize) await acknowledge();
+            const wait = new V2StopAndWait();
+            wait.capabilityItemId = itemId;
+            const sent = this.#sendStreamFrame(buildV2Frame(MSG.ITEM_DATA, offset / V2_DATA_SLICE_LEN, itemId,
+              segment.index, segment.bytes.subarray(offset, offset + V2_DATA_SLICE_LEN)), wait);
+            sent.catch(error => this.abortEncryptedStream(error));
+            pending.push({sent, end:offset + V2_DATA_SLICE_LEN});
+          }
+          while (pending.length) await acknowledge();
+          continue;
+        }
         for (let offset = 0; offset < segment.bytes.length; offset += V2_DATA_SLICE_LEN * windowSize) {
           const batch = [];
           for (let index = 0; index < windowSize && offset + index * V2_DATA_SLICE_LEN < segment.bytes.length; index++) {
@@ -1801,6 +1836,7 @@ export class ItemSender {
     this.timeoutMs = options.timeoutMs ?? 2000;
     this.retries = options.retries ?? 3;
     this.windowSize = requireV2Window(options.windowSize ?? 1);
+    this.sliding = Boolean(options.sliding);
     this.ackCallbacks = new Set();
     this.nackCallbacks = new Set();
     this.pendingAcks = new Map();

@@ -100,6 +100,10 @@ static BleEventAckStatus ble_svc_airbridge_serial_event_handler(void* event, voi
     if(event_pckt->evt == HCI_DISCONNECTION_COMPLETE_EVT_CODE) {
         serial_svc->client_subscribed = false;
         serial_svc->bytes_ready_to_receive = serial_svc->buff_size;
+        if(serial_svc->callback) {
+            SerialServiceEvent reset = {.event = SerialServiceEventTypesBleResetRequest};
+            serial_svc->callback(reset, serial_svc->context);
+        }
     } else if(event_pckt->evt == HCI_VENDOR_SPECIFIC_DEBUG_EVT_CODE) {
         if(blecore_evt->ecode == ACI_GATT_ATTRIBUTE_MODIFIED_VSEVT_CODE) {
             attribute_modified = (aci_gatt_attribute_modified_event_rp0*)blecore_evt->data;
@@ -108,6 +112,10 @@ static BleEventAckStatus ble_svc_airbridge_serial_event_handler(void* event, voi
                 serial_svc->client_subscribed =
                     (attribute_modified->Attr_Data_Length >= 1 &&
                      (attribute_modified->Attr_Data[0] & 0x01));
+                if(serial_svc->callback) {
+                    SerialServiceEvent reset = {.event = SerialServiceEventTypesBleResetRequest};
+                    serial_svc->callback(reset, serial_svc->context);
+                }
                 FURI_LOG_D(TAG, "TX subscription: %d", serial_svc->client_subscribed);
                 ret = BleEventAckFlowEnable;
             } else if(
@@ -304,7 +312,8 @@ bool ble_svc_airbridge_serial_update_tx(
     BleServiceAirbridgeSerial* serial_svc,
     uint8_t* data,
     uint16_t data_len) {
-    if(data_len == 0 || data_len > 64 || !serial_svc->client_subscribed) {
+    if(data_len == 0 || data_len > BLE_SVC_AIRBRIDGE_SERIAL_DATA_LEN_MAX ||
+       !serial_svc->client_subscribed) {
         return false;
     }
     const AirbridgeSerialValue value = {.data = data, .len = data_len};

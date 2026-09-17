@@ -117,7 +117,8 @@ static void airbridge_runtime_apply_startup(AirbridgeApp* app, AirbridgeExitLatc
 }
 
 static void airbridge_runtime_handle_relay(AirbridgeApp* app, BridgeEvent* event) {
-    if(event->type == EVENT_TYPE_RELAY) {
+    if(event->type == EVENT_TYPE_RELAY || event->type == EVENT_TYPE_PACKET_CONTROL ||
+       event->type == EVENT_TYPE_PACKET_RESET) {
         airbridge_operation_start(
             &app->operation,
             event->to_ble ? AirbridgeOperationBleSend : AirbridgeOperationUsbSend,

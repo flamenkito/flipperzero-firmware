@@ -134,6 +134,17 @@ def main() -> None:
                     "-Itargets/f7/ble_glue",
                     "-Ilib/libusb_stm32/inc",
                 ]
+            if source.stem == "airbridge_ui_refresh_test":
+                extra = [
+                    "-DSTM32WB55xx",
+                    "-Iairbridge/tests/platform",
+                    "-I.",
+                    "-Ifuri",
+                    "-Iapplications/services",
+                    "-Itargets/furi_hal_include",
+                    "-Itargets/f7/ble_glue",
+                    "-Ilib/libusb_stm32/inc",
+                ]
             if source.stem == "airbridge_utilities_test":
                 extra = [
                     FAP / "airbridge_utilities.c",

@@ -25,6 +25,7 @@ import {
 import {
   addMessage,
   clearTranscript,
+  createTransferRateMeter,
   discardTranscriptDownloads,
   formatBytes,
   setTransferPhase,
@@ -99,9 +100,9 @@ export function createChatPage(ctx, config) {
   }
 
   let transferLabel = null;
-  let rateEmaBps = 0;
-  let rateLastBytes = 0n;
-  let rateLastTime = 0;
+  const rateMeter = createTransferRateMeter();
+  let ratePhase = null, rateTimer = null, ratePaintTime = -Infinity;
+  let rateText = '-- KiB/s';
 
   function renderTransferDetail() {
     const detail = ctx.$('transferDetail');
@@ -113,23 +114,37 @@ export function createChatPage(ctx, config) {
       detail.hidden = true;
       detail.textContent = '';
       transferLabel = null;
-      rateEmaBps = 0;
-      rateLastBytes = 0n;
-      rateLastTime = 0;
+      clearInterval(rateTimer); rateTimer = null;
+      ratePhase = null;
       return;
     }
     const bytes = BigInt(ctx.$('throughput').dataset.bytes || '0');
-    const now = Date.now();
-    if (rateLastTime && now > rateLastTime && bytes > rateLastBytes) {
-      const sample = Number(bytes - rateLastBytes) / ((now - rateLastTime) / 1000);
-      rateEmaBps = rateEmaBps ? 0.35 * sample + 0.65 * rateEmaBps : sample;
+    const now = performance.now();
+    const transferring = phase === 'Sending' || phase === 'Receiving';
+    const formatRate = rate => rate == null ? '-- KiB/s' : `${(rate / 1024).toFixed(1)} KiB/s`;
+    if (phase !== ratePhase) {
+      clearInterval(rateTimer); rateTimer = null;
+      if (transferring) {
+        rateMeter.reset();
+        rateText = '-- KiB/s';
+        ratePaintTime = -Infinity;
+        rateTimer = setInterval(renderTransferDetail, 500);
+      } else if (phase === 'Verifying' && (ratePhase === 'Sending' || ratePhase === 'Receiving')) {
+        rateMeter.update(bytes);
+        rateText = `${formatRate(rateMeter.averageBps())} avg`;
+      } else rateText = '-- KiB/s';
+      ratePhase = phase;
     }
-    rateLastBytes = bytes;
-    rateLastTime = now;
+    if (transferring) {
+      rateMeter.update(bytes);
+      if (now - ratePaintTime >= 500) {
+        rateText = formatRate(rateMeter.bps());
+        ratePaintTime = now;
+      }
+    }
     const direction = phase === 'Receiving' ? 'receiving' : phase === 'Verifying' ? 'verifying' : phase === 'Hashing' ? 'hashing' : 'sending';
-    const rate = rateEmaBps > 0 ? `${(rateEmaBps / 1024).toFixed(1)} KB/s` : '-- KB/s';
     detail.hidden = false;
-    detail.textContent = `${direction}${transferLabel ? ` · ${transferLabel}` : ''} · ${rate}`;
+    detail.textContent = `${direction}${transferLabel ? ` · ${transferLabel}` : ''} · ${rateText}`;
   }
 
   function setPageTransferPhase(phase, progress = {}) {
@@ -781,7 +796,7 @@ export function createChatPage(ctx, config) {
   updateControls();
   updateCryptoPanel();
   log(ctx.isMockMode ? 'Mock mode ready. Use :c to connect.' : config.readyLog);
-  window.addEventListener('pagehide', () => { terminal.dispose(); ctx.transcriptController.dispose(); displayStateObserver.disconnect(); ctx.receiver?.dispose(); ctx.outbound?.cancel(); discardTranscriptDownloads(ctx.$('transcript')); });
+  window.addEventListener('pagehide', () => { clearInterval(rateTimer); terminal.dispose(); ctx.transcriptController.dispose(); displayStateObserver.disconnect(); ctx.receiver?.dispose(); ctx.outbound?.cancel(); discardTranscriptDownloads(ctx.$('transcript')); });
 
   return {
     connect,

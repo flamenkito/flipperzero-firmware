@@ -37,6 +37,9 @@ typedef struct FuriPubSub FuriPubSub;
 typedef struct FuriMessageQueue FuriMessageQueue;
 
 uint32_t furi_get_tick(void);
+static inline uint32_t furi_ms_to_ticks(uint32_t milliseconds) {
+    return milliseconds;
+}
 void furi_delay_ms(uint32_t milliseconds);
 void* furi_record_open(const char* name);
 void furi_record_close(const char* name);

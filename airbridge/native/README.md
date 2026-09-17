@@ -1,7 +1,7 @@
 # abt — native Pocket AirBridge tunnel
 
 `abt` carries one full-duplex TCP connection between two computers through the
-Flipper's existing USB HID ↔ BLE serial bridge. It needs no browser or firmware
+AirBridge device’s existing USB HID ↔ BLE serial bridge. It needs no browser or firmware
 change. macOS has passed hardware tests with both endpoints on one Mac. The
 Mac BLE → Windows USB → WSL2 path has also passed an interactive SSH test,
 confirmed by the user on two computers.
@@ -12,8 +12,8 @@ USB remains HID: the default HP identity is `03f0:5341`, using only vendor usage
 ## Daily start: Mac → Windows/WSL
 
 After the [one-time SSH setup](#mac-client--windows-usb--wsl-server), keep the
-Flipper on **Bridge** with USB plugged into Windows. Use these four terminals.
-The examples put the Windows package in WSL's `~/projects/abt-0.2.0`; adjust
+AirBridge device on **Bridge** with USB plugged into Windows. Use these four terminals.
+The examples put the Windows package in WSL's `~/projects/abt-0.3.0`; adjust
 that path if you extracted it elsewhere. `WSL_USER` is the result of `whoami`
 inside WSL, not necessarily the Windows account name.
 
@@ -30,7 +30,7 @@ Windows executable launches and restarts are not performed by the agent or
 through an agent's SSH command:
 
 ```sh
-cd ~/projects/abt-0.2.0
+cd ~/projects/abt-0.3.0
 ./abt.exe usb --connect 127.0.0.1:2222
 ```
 
@@ -39,7 +39,7 @@ existing `abt` listener for this tunnel, including one started by the agent.
 When no endpoint is running, start it from the repository root:
 
 ```sh
-cd ~/projects/flipperzero-firmware
+cd /path/to/airbridge-repository
 airbridge/native/target/release/abt ble --listen 127.0.0.1:2222 --scan-seconds 20
 ```
 
@@ -76,7 +76,7 @@ Install Rust 1.90 or newer and Apple's command-line developer tools, then run
 from the repository root:
 
 ```sh
-cargo build --release --locked --manifest-path airbridge/native/Cargo.toml
+python3 airbridge/native/tools/build_release.py macos
 ```
 
 The executable is `airbridge/native/target/release/abt`. Copy it to a directory
@@ -91,9 +91,7 @@ target and MinGW-w64. On this Mac, with MinGW-w64 installed:
 
 ```sh
 rustup target add x86_64-pc-windows-gnu
-CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
-  cargo build --release --locked --target x86_64-pc-windows-gnu \
-  --manifest-path airbridge/native/Cargo.toml
+python3 airbridge/native/tools/build_release.py windows
 ```
 
 Output: `airbridge/native/target/x86_64-pc-windows-gnu/release/abt.exe`.
@@ -110,8 +108,8 @@ Local build artifacts (under the ignored `target/` directory):
 - Unpacked executable: `airbridge/native/target/dist/abt-windows-x64/abt.exe`
 
 After extracting the ZIP, compare `Get-FileHash .\abt.exe -Algorithm SHA256` in
-PowerShell with its `SHA256SUMS` file. The build command above produces the raw
-executable; the ZIP is a separately prepared local artifact.
+PowerShell with its `SHA256SUMS` file. The build command above produces the executable and ZIP together, remaps local
+repository paths in executable diagnostics, and regenerates package checksums.
 
 ## SSH
 
@@ -127,7 +125,7 @@ executable; the ZIP is a separately prepared local artifact.
    ```
 
    Allow Bluetooth access if macOS prompts; confirm any pairing prompt on the
-   Flipper. Wait for `BLE subscribed` and `waiting for stream`.
+   AirBridge device. Wait for `BLE subscribed` and `waiting for stream`.
 3. On the USB computer:
 
    ```sh
@@ -152,11 +150,11 @@ retry grace period by default), another TCP connection can use the same running
 
 ### Mac client → Windows USB → WSL server
 
-Keep the Flipper on its **Bridge** screen and disconnect competing AirBridge
+Keep the AirBridge device on its **Bridge** screen and disconnect competing AirBridge
 clients. Run `abt.exe` on the Windows host and an SSH server inside WSL:
 
 ```text
-Mac SSH → abt BLE listener → Flipper → abt.exe USB connector → WSL sshd
+Mac SSH → abt BLE listener → AirBridge device → abt.exe USB connector → WSL sshd
 ```
 
 #### 1. Start SSH inside WSL
@@ -202,7 +200,7 @@ adjustment. See [Microsoft's WSL networking guide](https://learn.microsoft.com/e
 For the package extracted into WSL's `~/projects`, use:
 
 ```sh
-cd ~/projects/abt-0.2.0
+cd ~/projects/abt-0.3.0
 ./abt.exe devices usb
 ./abt.exe usb --connect 127.0.0.1:2222
 ```
@@ -322,7 +320,7 @@ destination `projects/` is relative to the WSL user's home directory:
 scp -P 2222 -o HostKeyAlias=airbridge-wsl \
   -X nrequests=2 -X buffer=4096 \
   airbridge/native/target/dist/abt-windows-x64.zip \
-  WSL_USER@127.0.0.1:projects/abt-0.2.0.zip
+  WSL_USER@127.0.0.1:projects/abt-0.3.0.zip
 ```
 
 For any other file, replace the source and destination filenames. Create
@@ -333,11 +331,11 @@ Allow the copy to finish. Avoid opening another SSH session during it.
 
 After the copy completes, use a **local WSL terminal** to extract and verify.
 Choose a fresh destination directory if an endpoint is already running from
-`~/projects/abt-0.2.0`; retain the old executable until the new pair works:
+`~/projects/abt-0.3.0`; retain the old executable until the new pair works:
 
 ```sh
-python3 -m zipfile -e ~/projects/abt-0.2.0.zip ~/projects/abt-0.2.0
-cd ~/projects/abt-0.2.0
+python3 -m zipfile -e ~/projects/abt-0.3.0.zip ~/projects/abt-0.3.0
+cd ~/projects/abt-0.3.0
 sha256sum -c SHA256SUMS
 chmod +x abt.exe
 ```
@@ -346,12 +344,12 @@ Require all checksum lines to say `OK`. In the old Windows endpoint's terminal p
 then the user starts the new executable:
 
 ```sh
-cd ~/projects/abt-0.2.0
+cd ~/projects/abt-0.3.0
 ./abt.exe --version
 ./abt.exe usb --connect 127.0.0.1:2222
 ```
 
-Expect version `0.2.0`. Restart the Mac endpoint using the matching updated
+Expect version `0.3.0`. Restart the Mac endpoint using the matching updated
 macOS build and the [daily-start command](#daily-start-mac--windowswsl).
 The Windows ZIP contains only the Windows executable; build/update the Mac
 binary separately. Reconnect SSH and confirm `window=4` in the stream log.
@@ -411,7 +409,7 @@ other local processes can still connect to them.
   immediately closed. Use SSH forwarding for concurrent requests/sessions.
 - Up to four unacknowledged 40-byte DATA/FIN frames per direction in 0.2.0;
   negotiation falls back to two with 0.1.0 peers. Queues and TCP backpressure
-  remain bounded. The Flipper remains an unchanged eight-event relay.
+  remain bounded. The AirBridge device remains an unchanged eight-event relay.
 - Default retry interval 500 ms, opening deadline 30 s, target TCP connection
   deadline 10 s, heartbeat after 2 s of peer silence, peer timeout 12 s, delivery-stall timeout
   60 s. CLI overrides: `--retry-ms`, `--peer-timeout`, `--stall-timeout`.
@@ -441,6 +439,26 @@ negotiated result. `--window 2 --ack-delay-ms 0` on **both** new endpoints
 reproduces the original window and ACK behavior for comparison. Normal commands
 without these flags select the new defaults. The speed gain requires hardware
 measurement; doubling the window does not promise double throughput.
+
+### BLE packet aggregation (0.3.0)
+
+Current BLE builds also negotiate packing up to three 64-byte reports into one
+BLE operation with the updated FAP. The connection log reports `packet_frames=3`,
+`2`, or legacy `1`. Run commands stay the same. USB remains HID and ABT1 framing
+is unchanged, so an existing Windows USB endpoint can communicate with the new
+Mac BLE endpoint. Refresh the FAP and rebuild the Mac executable to test this
+mode. It falls back to single reports with older FAPs; a failed commit requires
+reconnecting. This does not increase the four-frame send window. Hardware speed
+results and remaining checks are recorded in [ADR 0007](../../docs/adr/0007-ble-packets-and-sliding-windows.md).
+
+Version 0.3.0 passed a same-Mac 32 KiB SHA-256 benchmark with three-report BLE
+packets: 3.44 KiB/s BLE→USB, 2.96 KiB/s USB→BLE, and 3.48 KiB/s combined duplex.
+Both endpoint logs reported zero retries and peak pending four. This is not a
+Windows/WSL speed comparison. The Windows 0.3.0 executable is cross-built and
+packaged; its physical Windows regression is still to be run by the user.
+Release packages include setup instructions, benchmark helper, license and
+SHA-256 checksums. CLI text and packaged files use AirBridge device naming;
+release builds remap repository paths out of executable diagnostics.
 
 ### Reproducible throughput check
 
@@ -487,7 +505,7 @@ python3 airbridge/native/tools/bench.py client \
 
 The helper and SSH forward finish when this client completes. The two `abt`
 endpoints and WSL `sshd` stay running. Compare JSON `combined_kib_s` by direction,
-the endpoint close logs, and Flipper DROP/TXERR. To compare the original window
+the endpoint close logs, and AirBridge device DROP/TXERR. To compare the original window
 and ACK behavior, restart both endpoints with `--window 2 --ack-delay-ms 0`,
 repeat with a `baseline` label, then restore both endpoints to their default
 commands. The user performs each Windows executable restart. Keep compression
@@ -524,7 +542,7 @@ python3 airbridge/native/tools/bench.py client --label baseline --rounds 2
 After the client finishes, restart both endpoints without `--window` and
 `--ack-delay-ms`, keeping their same TCP addresses. Run the client again with
 `--label optimized --rounds 2`. Compare speeds, the `retries`/`peak_pending`/
-`acks_sent` close logs, and Flipper DROP/TXERR. Return the USB endpoint's
+`acks_sent` close logs, and AirBridge device DROP/TXERR. Return the USB endpoint's
 `--connect` to `127.0.0.1:2222` afterwards to use the existing WSL SSH server.
 
 ## Troubleshooting
@@ -539,7 +557,7 @@ abt ble --help
 | Symptom | Check |
 | --- | --- |
 | No USB device | App running, cable attached, Bridge screen; match configured VID/PID. `--vid` and `--pid` accept hex. |
-| Multiple USB entries | Composite keyboard entries are normal. `abt` opens only `ff00:0001`; use its exact `path=` value with `--device` if several matching Flippers exist. |
+| Multiple USB entries | Composite keyboard entries are normal. `abt` opens only `ff00:0001`; use its exact `path=` value with `--device` if several matching AirBridge devices exist. |
 | No BLE peer | Return to Bridge, close other BLE clients, scan for 20 seconds. macOS can occupy the HID connection until the app's 15-second watchdog releases it. |
 | More than one BLE peer | Use `--device` with an exact ID or name from `abt devices ble`. |
 | BLE permission denied | Allow Bluetooth for the terminal/application launching `abt` in macOS Privacy & Security. The executable includes a Bluetooth usage description. A development sandbox can deny hardware access even when macOS permissions are already granted. |
@@ -552,7 +570,7 @@ abt ble --help
 | Extra TCP connection closes | One stream is active or still finishing its retry grace period. Put concurrent requests inside one SSH connection. |
 | `ssh-copy-id` fails with `Connection closed` | Its consecutive probe connections can race the preceding stream's closing grace period. Use the single-connection public-key installation command above. |
 | SCP stays at `0% — stalled` | Default SFTP writes are 32 KiB with up to 64 outstanding requests; the first progress update can take time over this link. Try `scp -X nrequests=2 -X buffer=4096 -P 2222 -o HostKeyAlias=airbridge-wsl FILE WSL_USER@127.0.0.1:DEST`. Avoid a concurrent SSH shell and check `abt` logs before treating the progress display as a transport failure. |
-| Heartbeat timeout / stalled stream | Inspect physical connection and Flipper `DROP`/`TXERR`, stop competing clients. Restore transport and start a new connection; increase stall timeout only for an intentionally slow consumer. |
+| Heartbeat timeout / stalled stream | Inspect physical connection and AirBridge device `DROP`/`TXERR`, stop competing clients. Restore transport and start a new connection; increase stall timeout only for an intentionally slow consumer. |
 
 Session logs go to stderr and include byte counts, retries, ACKs sent, and maximum pending
 frames when a stream closes. They do not print payloads, SSH credentials, or keys.
@@ -593,7 +611,7 @@ With `abt` 0.1.0 on one Mac and the current Pocket AirBridge FAP:
   health request, and a second SSH command. The 32,771-byte HTTP echo took
   29.874 seconds while those other channels shared the link.
 - All successful streams reported zero retries and at most two pending frames.
-  User confirmed Flipper **DROP 0, TXERR 0** afterwards.
+  User confirmed AirBridge device **DROP 0, TXERR 0** afterwards.
 - 21 automated tests, Clippy with warnings denied, and the release build passed.
 
 These are local same-Mac checks, not a two-computer/platform compatibility claim
@@ -604,7 +622,7 @@ were needed; this task did not repeat their previously completed regression suit
 ### Mac-to-WSL hardware result — 2026-09-16
 
 With `abt` 0.1.0, the user confirmed a successful SSH password login from the Mac through BLE,
-the Flipper, Windows USB `abt.exe`, and WSL's SSH server. The remote shell
+the AirBridge device, Windows USB `abt.exe`, and WSL's SSH server. The remote shell
 reported **Ubuntu 22.04.5 LTS**, kernel
 `6.6.87.1-microsoft-standard-WSL2`, architecture `x86_64`. Interactive `ls`,
 `cd`, and a subsequent `ls` completed. This verifies real Windows USB transport
@@ -617,7 +635,7 @@ The initial connection closed before the SSH greeting. Windows `abt` logged
 command above resolved the failure. No `abt` or firmware change was required.
 The foreground SSH server must remain running while the tunnel is used.
 
-File-transfer integrity, REST/WebSocket forwarding, throughput, and Flipper
+File-transfer integrity, REST/WebSocket forwarding, throughput, and AirBridge device
 DROP/TXERR counts were not measured in that initial interactive test. The earlier
 same-Mac results remain separate. A sanitized evidence record is stored locally
 at `.omo/evidence/native-tunnel/windows-wsl-ssh.json`.
@@ -640,7 +658,7 @@ Median application ping round trip fell from 90.93 to 75.36 ms (20 samples per
 configuration). Both Mac endpoint logs reported zero retries. The optimized
 session negotiated window 4 and peaked at four pending frames; the baseline
 used the old Windows 0.1.0 binary and a Mac endpoint forced to window 2 with
-immediate ACKs. The original eight-slot Flipper relay, USB HID identity, firmware,
+immediate ACKs. The original eight-slot AirBridge device relay, USB HID identity, firmware,
 and browser assets were unchanged.
 
 ACK coalescing reduced ACK counts by about half in the unpaced host tests, but
@@ -660,6 +678,6 @@ defaults. HTTP echoed 32,771 bytes each way with matching SHA-256 in 24.375 s;
 WebSocket text, 8,193-byte binary data, ping/pong, and close frames all matched.
 The Mac endpoint recorded zero retries and four pending frames at peak.
 
-The user confirmed **DROP 0, TXERR 0** on the Flipper after the optimized tests.
+The user confirmed **DROP 0, TXERR 0** on the AirBridge device after the optimized tests.
 Evidence: `.omo/evidence/native-throughput/`. A separate physical
 disconnect/recovery test was not run for this version.

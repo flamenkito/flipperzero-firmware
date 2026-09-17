@@ -67,9 +67,10 @@ static struct {
 static size_t service_count;
 static unsigned unclaimed;
 static unsigned received;
-static uint8_t received_data[64];
+static uint8_t received_data[244];
 static uint16_t received_len;
 static unsigned updates;
+static unsigned resets;
 
 bool ble_gatt_service_add(
     uint8_t uuid_type,
@@ -142,6 +143,7 @@ BleEventFlowStatus ble_event_app_notification(void* packet) {
 
 static uint16_t on_serial(SerialServiceEvent event, void* context) {
     assert(context == &received);
+    if(event.event == SerialServiceEventTypesBleResetRequest) resets++;
     if(event.event == SerialServiceEventTypeDataReceived) {
         assert(event.data.size <= sizeof(received_data));
         received++;
@@ -169,7 +171,7 @@ static void write_attribute(uint16_t handle, const uint8_t* data, uint16_t lengt
 
 static void test_composite(bool hid_first) {
     memset(services, 0, sizeof(services));
-    service_count = unclaimed = received = updates = 0;
+    service_count = unclaimed = received = updates = resets = 0;
     BleServiceHid* hid = hid_first ? ble_svc_hid_start() : NULL;
     BleServiceAirbridgeSerial* serial = ble_svc_airbridge_serial_start();
     assert(serial);
@@ -183,6 +185,7 @@ static void test_composite(bool hid_first) {
     const uint8_t enable[] = {1, 0};
     write_attribute(cccd, enable, sizeof(enable));
     assert(ble_svc_airbridge_serial_client_subscribed(serial));
+    assert(resets == 1);
     unsigned before = updates;
     assert(ble_svc_airbridge_serial_update_tx(serial, frame, sizeof(frame)));
     assert(updates == before + 1);
@@ -201,13 +204,22 @@ static void test_composite(bool hid_first) {
     write_attribute(hid->input_report_chars[0].handle + 2, enable, sizeof(enable));
     assert(received == 2 && unclaimed == 0);
 
+    uint8_t packet[192];
+    memset(packet, 0x5A, sizeof(packet));
+    assert(ble_svc_airbridge_serial_update_tx(serial, packet, sizeof(packet)));
+    write_attribute(rx, packet, sizeof(packet));
+    assert(received == 3 && received_len == sizeof(packet));
+    assert(memcmp(received_data, packet, sizeof(packet)) == 0);
+
     write_attribute(cccd, zero, sizeof(zero));
     assert(!ble_svc_airbridge_serial_client_subscribed(serial));
+    assert(resets == 2);
     write_attribute(cccd, enable, sizeof(enable));
     uint8_t disconnect[] = {
         TL_BLEEVT_PKT_TYPE, HCI_DISCONNECTION_COMPLETE_EVT_CODE, 4, 0, 1, 0, 0x13};
     assert(ble_event_dispatcher_process_event(disconnect) == BleEventFlowEnable);
     assert(!ble_svc_airbridge_serial_client_subscribed(serial));
+    assert(resets == 4);
     assert(!ble_svc_airbridge_serial_update_tx(serial, frame, sizeof(frame)));
 
     ble_svc_airbridge_serial_stop(serial);
