@@ -13,7 +13,7 @@ USB remains HID: the default HP identity is `03f0:5341`, using only vendor usage
 
 After the [one-time SSH setup](#mac-client--windows-usb--wsl-server), keep the
 AirBridge device on **Bridge** with USB plugged into Windows. Use these four terminals.
-The examples put the Windows package in WSL's `~/projects/abt-0.3.0`; adjust
+The examples put the Windows package in WSL's `~/projects/abt-0.3.1`; adjust
 that path if you extracted it elsewhere. `WSL_USER` is the result of `whoami`
 inside WSL, not necessarily the Windows account name.
 
@@ -30,7 +30,7 @@ Windows executable launches and restarts are not performed by the agent or
 through an agent's SSH command:
 
 ```sh
-cd ~/projects/abt-0.3.0
+cd ~/projects/abt-0.3.1
 ./abt.exe usb --connect 127.0.0.1:2222
 ```
 
@@ -200,7 +200,7 @@ adjustment. See [Microsoft's WSL networking guide](https://learn.microsoft.com/e
 For the package extracted into WSL's `~/projects`, use:
 
 ```sh
-cd ~/projects/abt-0.3.0
+cd ~/projects/abt-0.3.1
 ./abt.exe devices usb
 ./abt.exe usb --connect 127.0.0.1:2222
 ```
@@ -282,8 +282,10 @@ ssh-add ~/.ssh/id_ed25519
 
 This changes SSH authentication only; host-key verification still applies.
 The macOS `ssh-copy-id` helper opens successive SSH connections for version and
-key checks. Its next connection can be rejected while `abt` is still closing the
-previous stream. The single-connection command above avoids that race.
+key checks. Subsequent connections wait in the local TCP backlog until `abt`
+finishes closing the previous stream. Only one stream uses the bridge at a time.
+Update both endpoints: a completed responder must hand the next OPEN to its
+server loop instead of refusing it during the FIN grace period.
 
 ### SSH compression
 
@@ -320,7 +322,7 @@ destination `projects/` is relative to the WSL user's home directory:
 scp -P 2222 -o HostKeyAlias=airbridge-wsl \
   -X nrequests=2 -X buffer=4096 \
   airbridge/native/target/dist/abt-windows-x64.zip \
-  WSL_USER@127.0.0.1:projects/abt-0.3.0.zip
+  WSL_USER@127.0.0.1:projects/abt-0.3.1.zip
 ```
 
 For any other file, replace the source and destination filenames. Create
@@ -331,11 +333,11 @@ Allow the copy to finish. Avoid opening another SSH session during it.
 
 After the copy completes, use a **local WSL terminal** to extract and verify.
 Choose a fresh destination directory if an endpoint is already running from
-`~/projects/abt-0.3.0`; retain the old executable until the new pair works:
+`~/projects/abt-0.3.1`; retain the old executable until the new pair works:
 
 ```sh
-python3 -m zipfile -e ~/projects/abt-0.3.0.zip ~/projects/abt-0.3.0
-cd ~/projects/abt-0.3.0
+python3 -m zipfile -e ~/projects/abt-0.3.1.zip ~/projects/abt-0.3.1
+cd ~/projects/abt-0.3.1
 sha256sum -c SHA256SUMS
 chmod +x abt.exe
 ```
@@ -344,12 +346,12 @@ Require all checksum lines to say `OK`. In the old Windows endpoint's terminal p
 then the user starts the new executable:
 
 ```sh
-cd ~/projects/abt-0.3.0
+cd ~/projects/abt-0.3.1
 ./abt.exe --version
 ./abt.exe usb --connect 127.0.0.1:2222
 ```
 
-Expect version `0.3.0`. Restart the Mac endpoint using the matching updated
+Expect version `0.3.1`. Restart the Mac endpoint using the matching updated
 macOS build and the [daily-start command](#daily-start-mac--windowswsl).
 The Windows ZIP contains only the Windows executable; build/update the Mac
 binary separately. Reconnect SSH and confirm `window=4` in the stream log.
@@ -585,8 +587,8 @@ cargo fmt --manifest-path airbridge/native/Cargo.toml -- --check
 
 Tests cover full-duplex byte integrity, lost/corrupt/reordered/duplicate frames,
 handshake/FIN retries, half-close, slow consumers, stale sessions, conflicting
-retransmissions, impossible ACKs, peer timeout, busy rejection, target refusal,
-sequential reuse, window negotiation, old-peer fallback, ACK coalescing, and
+retransmissions, impossible ACKs, peer timeout, queued TCP connections, target refusal,
+sequential reuse without client delays, window negotiation, old-peer fallback, ACK coalescing, and
 the single-frame ACK deadline, and duplex traffic through a simulated shared
 eight-slot relay. See the [wire protocol](../docs/native-tunnel-protocol.md)
 for the complete ABT1 contract.

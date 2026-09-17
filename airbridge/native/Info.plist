@@ -5,7 +5,7 @@
     <key>CFBundleIdentifier</key><string>local.pocket-airbridge.abt</string>
     <key>CFBundleName</key><string>abt</string>
     <key>CFBundleExecutable</key><string>abt</string>
-    <key>CFBundleVersion</key><string>0.3.0</string>
+    <key>CFBundleVersion</key><string>0.3.1</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>Connect to your Pocket AirBridge to carry the TCP stream you requested.</string>
 </dict>

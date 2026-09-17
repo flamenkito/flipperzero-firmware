@@ -9,6 +9,7 @@ pub struct Link {
     tx: mpsc::Sender<Report>,
     rx: mpsc::Receiver<Result<Report>>,
     stop: watch::Sender<bool>,
+    buffered: Option<Frame>,
     pub invalid_frames: u64,
 }
 
@@ -29,6 +30,7 @@ impl Link {
                 rx: in_rx,
                 stop,
                 invalid_frames: 0,
+                buffered: None,
             },
             Driver {
                 tx: in_tx,
@@ -46,6 +48,9 @@ impl Link {
     }
 
     pub async fn receive(&mut self) -> Result<Frame> {
+        if let Some(frame) = self.buffered.take() {
+            return Ok(frame);
+        }
         loop {
             let raw = self.rx.recv().await.context("transport disconnected")??;
             match Frame::decode(&raw) {
@@ -53,6 +58,12 @@ impl Link {
                 Err(_) => self.invalid_frames += 1,
             }
         }
+    }
+
+    pub(crate) fn put_back(&mut self, frame: Frame) -> Result<()> {
+        anyhow::ensure!(self.buffered.is_none(), "link already has a buffered frame");
+        self.buffered = Some(frame);
+        Ok(())
     }
 
     pub fn is_closed(&self) -> bool {

@@ -1,6 +1,6 @@
 [package]
 name = "abt"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.90"
 description = "Native TCP streams over Pocket AirBridge USB HID and BLE"

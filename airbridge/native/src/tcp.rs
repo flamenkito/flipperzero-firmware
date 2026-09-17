@@ -87,28 +87,18 @@ async fn listen_on(link: &mut Link, listener: TcpListener, cfg: &Config) -> Resu
             }
         };
         eprintln!("stream {id:016x} opening for {peer}");
-        let result = {
-            let operation = async {
-                let window = session::open(link, id, cfg).await?;
-                let negotiated = Config {
-                    window,
-                    ..cfg.clone()
-                };
-                eprintln!("stream {id:016x} connected; window={window}");
-                session::run(stream, link, id, Role::Initiator, &negotiated).await
+        // Leave subsequent connections in the TCP backlog until this stream closes.
+        // TCP EOF can reach the client before the link finishes its FIN/ACK exchange.
+        let result = async {
+            let window = session::open(link, id, cfg).await?;
+            let negotiated = Config {
+                window,
+                ..cfg.clone()
             };
-            tokio::pin!(operation);
-            loop {
-                tokio::select! {
-                    result = &mut operation => break result,
-                    extra = listener.accept() => {
-                        let (stream, peer) = extra?;
-                        drop(stream);
-                        eprintln!("rejected {peer}: bridge already has an active TCP connection");
-                    }
-                }
-            }
-        };
+            eprintln!("stream {id:016x} connected; window={window}");
+            session::run(stream, link, id, Role::Initiator, &negotiated).await
+        }
+        .await;
         if result.is_err() {
             let _ = link.send(Frame::control(Kind::Reset, id, 0)).await;
         }
@@ -257,7 +247,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tcp_busy_rejection_and_sequential_reuse() {
+    async fn tcp_queues_connections_and_reuses_without_client_delay() {
         tokio::time::timeout(Duration::from_secs(3), async {
             let (mut a, mut b, mut tasks) = pair();
             let local = listener().await;
@@ -268,10 +258,14 @@ mod tests {
                 let _ = listen_on(&mut a, local, &cfg()).await;
             }));
             tasks.0.push(tokio::spawn(async move {
-                let _ = serve(&mut b, &destination, &cfg()).await;
+                let config = Config {
+                    retry: Duration::from_millis(100),
+                    ..cfg()
+                };
+                let _ = serve(&mut b, &destination, &config).await;
             }));
+            let mut client = TcpStream::connect(address).await.unwrap();
             for number in 0..3u8 {
-                let mut client = TcpStream::connect(address).await.unwrap();
                 let (mut server, _) = target.accept().await.unwrap();
                 client.write_all(&[number; 121]).await.unwrap();
                 let mut request = [0; 121];
@@ -279,7 +273,16 @@ mod tests {
                 assert_eq!(request, [number; 121]);
                 let mut extra = TcpStream::connect(address).await.unwrap();
                 let mut byte = [0];
-                assert_eq!(extra.read(&mut byte).await.unwrap(), 0);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(20), extra.read(&mut byte))
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(20), target.accept())
+                        .await
+                        .is_err()
+                );
                 client.shutdown().await.unwrap();
                 assert_eq!(server.read(&mut byte).await.unwrap(), 0);
                 server.write_all(b"response after EOF").await.unwrap();
@@ -287,7 +290,7 @@ mod tests {
                 let mut response = Vec::new();
                 client.read_to_end(&mut response).await.unwrap();
                 assert_eq!(response, b"response after EOF");
-                tokio::time::sleep(Duration::from_millis(70)).await;
+                client = extra;
             }
         })
         .await

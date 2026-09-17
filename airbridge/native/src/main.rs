@@ -146,6 +146,7 @@ async fn operate(mut link: Link, endpoint: Endpoint, cfg: &Config) -> Result<()>
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    eprintln!("abt {}", env!("CARGO_PKG_VERSION"));
     let cfg = Config {
         retry: Duration::from_millis(cli.retry_ms),
         peer_timeout: Duration::from_secs(cli.peer_timeout),

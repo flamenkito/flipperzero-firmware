@@ -228,6 +228,11 @@ where
                     Err(error) => return Err(error),
                 };
                 if frame.session != id {
+                    if frame.kind == Kind::Open && finished.is_some() {
+                        // Both FINs are acknowledged; let the server accept the next stream.
+                        link.put_back(frame)?;
+                        return Ok(stats);
+                    }
                     if frame.kind == Kind::Open {
                         emit(link, &mut stats, Frame::control(Kind::Reset, frame.session, 0)).await?;
                     }
