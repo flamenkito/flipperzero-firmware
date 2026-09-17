@@ -33,6 +33,8 @@ def main() -> None:
                     "-Itargets/furi_hal_include",
                     "-Ilib/libusb_stm32/inc",
                 ]
+            if source.stem == "airbridge_passwords_test":
+                extra = [FAP / "airbridge_passwords.c"]
             if source.stem == "usb_spoof_descriptor_test":
                 extra = [
                     ROOT / "targets/f7/furi_hal/furi_hal_usb_spoof.c",
@@ -123,6 +125,19 @@ def main() -> None:
                     FAP / "airbridge_typing.c",
                     FAP / "airbridge_assets.c",
                     FAP / "airbridge_screens.c",
+                    "-DSTM32WB55xx",
+                    "-Iairbridge/tests/platform",
+                    "-I.",
+                    "-Ifuri",
+                    "-Iapplications/services",
+                    "-Itargets/furi_hal_include",
+                    "-Itargets/f7/ble_glue",
+                    "-Ilib/libusb_stm32/inc",
+                ]
+            if source.stem == "airbridge_utilities_test":
+                extra = [
+                    FAP / "airbridge_utilities.c",
+                    FAP / "airbridge_passwords.c",
                     "-DSTM32WB55xx",
                     "-Iairbridge/tests/platform",
                     "-I.",

@@ -137,17 +137,89 @@ handshake remains `cryptoVersion:1`. See root
 
 ## Locked-down PC bootstrap (Deploy app)
 
+The Flipper carousel is now **Bridge → USB Deploy → BLE Deploy → Settings →
+Passwords → Bridge**, navigated with LEFT/RIGHT. Short BACK returns to Bridge;
+long BACK exits. The relay continues on the utility screens.
+
+### Settings and passwords
+
+Settings uses an inverted selected row. UP/DOWN select list items; there is
+currently one setting, **Mouse mover**, toggled with OK. It defaults to OFF and
+persists in `/ext/apps_data/pocket_airbridge/mouse_mover` (one byte, `0` or `1`).
+When enabled and USB is connected, it sends two relative mouse HID units every
+60 seconds, cycling right, down, left, up. Movement runs on Bridge and Settings,
+pauses on other screens, and restarts its timer on resume or reconnection.
+This moved the pointer one pixel on the test Mac; host pointer scaling determines
+the actual pixel distance on other computers. Settings shows completed movement
+reports and failed send attempts as `Moves` and `Err`.
+
+The USB profile includes a mouse HID interface even when movement is OFF.
+Toggling the setting sends no USB reconfiguration. The existing keyboard and
+vendor data endpoints retain their report formats and the configured identity.
+
+### Edit passwords
+
+The app reads `/ext/apps_data/pocket_airbridge/passwords.txt` from the SD card.
+To add, change, or remove entries:
+
+1. Exit Pocket AirBridge on the Flipper so its USB serial storage connection is available.
+2. Open a local `passwords.txt` in a text editor and edit the complete list, one entry per line:
+
+   ```text
+   work=example-password
+   personal=another=password
+   ```
+
+3. From the repository root, replace the SD-card file:
+
+   ```bash
+   python3 scripts/storage.py send passwords.txt /ext/apps_data/pocket_airbridge/passwords.txt
+   ```
+
+4. Launch Pocket AirBridge again and open Passwords. The list reloads each
+   time you enter that screen.
+
+You can use qFlipper to replace the same SD-card file instead of the storage
+command. The app does not edit entries itself.
+
+LEFT from Bridge opens Passwords. UP/DOWN select an entry, with inverted colors
+and three visible rows per page. Put the cursor in the intended password field
+on the USB computer, then press OK on the Flipper. It types only the selected
+value, **without Enter**, and returns to the list. The display shows
+`TYPING via USB...` during emission; BACK aborts. Mouse movement stays paused
+throughout Passwords and typing. USB must be connected with a keyboard-capable
+profile, and the target must use a US keyboard layout.
+
+The file is plaintext. Only entry names appear in the list; values are not
+logged or copied into UI snapshots. The file reloads when entering Passwords.
+Its format is deliberately small:
+
+- Split each nonempty line at the first `=`; later equals signs are part of the value.
+- Preserve spaces in names and values; do not add quotes or escape sequences.
+- Accept LF or CRLF line endings and ignore empty lines.
+- Require unique, nonempty names and nonempty printable ASCII values.
+- Limit the file to 8 KiB, 32 entries, 24 bytes per name, and 128 bytes per value.
+- Reject the entire file on invalid input; never type a truncated password.
+
+These features have host regression coverage. Hardware QA confirmed mouse
+enumeration and one-pixel movement on macOS, saved ON state across app restart,
+exact demo-password typing without Enter, bidirectional chat, attachment hash
+verification, and the protocol harness. Both Deploy paths were checked: USB
+and BLE streams completed with valid checksums,
+their deployed scripts matched the built bundles, and both pages established
+the same verified SAS. On-device password abort remains to be checked.
+
 Some corporate PCs are locked down by device-control policy: no mass storage, no network transfer, no local files. HID is the only USB class that survives. The Deploy flow turns that policy to our advantage. For a locked-down USB host, the Flipper impersonates an HP "Wireless Keyboard and Mouse" dongle (VID `0x03F0`, PID `0x5341`), a composite device with a real keyboard collection and a vendor-defined collection on usage page `0xFF00`. It types a small bootstrap into the browser as if it were a keyboard, the bootstrap opens WebHID on the vendor collection, and the Flipper streams the complete chat app to the PC over the existing vendor HID channel. For a Bluetooth-paired target, the BLE Deploy prompt instead types [`bootstrap-ble.js`](web/bootstrap-ble.js) over BLE HIDS keyboard reports, and the Flipper streams the matching chat app over the AirBridge BLE serial notify characteristic. The two prompts share identical guardrails; only the transport and asset pair differ.
 
 ### Honest framing
 
 This is BadUSB-shaped by design. Keyboard emulation is the whole point: it is the only delivery channel a HID-only policy cannot block. BLE typing is equally explicit: physical possession of the Flipper plus on-device OK plus a paired target. The guardrails are deliberate, and identical for both Deploy paths:
 
-- Keystrokes are emitted only from an explicit deploy prompt on the Flipper (LEFT/RIGHT cycle Bridge → USB Deploy → BLE Deploy → Bridge from the Bridge screen), and only after you place the cursor and press OK to confirm.
+- Deploy keystrokes are emitted only from an explicit deploy prompt on the Flipper, after you place the cursor and press OK to confirm.
 - The Flipper screen shows `TYPING…` for the entire emission; pressing BACK aborts instantly.
-- No keyboard report is ever sent in Bridge mode or on any data path. Typing exists only inside the Deploy prompts.
+- No keyboard report is triggered by Bridge traffic. Keyboard typing requires an explicit Deploy confirmation or OK on a selected Passwords entry.
 - The typed payloads are fixed, reviewable, ASCII-only artifacts: [`bootstrap.js`](web/bootstrap.js) for USB Deploy, [`bootstrap-ble.js`](web/bootstrap-ble.js) for BLE Deploy. The FAP verifies each build-time-pinned SHA-256 before typing. Each fetches a gzip-compressed app bundle whose versioned SD container is also SHA-256 pinned (`app-usb.html.gz` for USB, `app-ble.html.gz` for BLE); unsupported browsers show `Transfer unsupported - retry` before transport selection.
-- The whole thing requires physical possession of the Flipper plus explicit on-device actions. Task 8 adds small bounded typing jitter, but typing still exists only inside the explicit Deploy flow.
+- Both Deploy and Passwords require physical possession of the Flipper plus explicit on-device actions. Typing includes small bounded jitter.
 
 ### Steps
 
@@ -160,7 +232,7 @@ Run these commands from the monorepo root,
    ```
     This inlines the shared JS modules into the self-contained USB and BLE deploy pages, writes the authenticated `airbridge/dist/app-usb.html.gz` and `airbridge/dist/app-ble.html.gz` containers, and regenerates `applications_user/pocket_airbridge/airbridge_assets_digest.h`. Both bundles are generated deploy outputs; v2 source verification does not prove generated bundle freshness. The no-limit-transfer Todo 9 integration gate owns the rebuild after runtime changes.
 2. **Deploy the bootstraps and the bundles to the Flipper SD card** (exact commands in [docs/firmware-guide.md](docs/firmware-guide.md)).
-3. **Launch Pocket AirBridge** on the Flipper. The app opens on the Bridge relay screen; press **RIGHT** to reach the USB Deploy prompt, **RIGHT** again for the BLE Deploy prompt. (LEFT/RIGHT cycle Bridge → USB Deploy → BLE Deploy → Bridge; a short BACK returns to Bridge, a long BACK exits the app. The relay keeps running in the background on every screen.) Each prompt asks you to place the cursor, then press OK.
+3. **Launch Pocket AirBridge** on the Flipper. The app opens on the Bridge relay screen; press **RIGHT** to reach the USB Deploy prompt, **RIGHT** again for the BLE Deploy prompt. Settings and Passwords follow in the carousel. A short BACK returns to Bridge; a long BACK exits the app. The relay keeps running in the background on every screen. Each Deploy prompt asks you to place the cursor, then press OK.
 4. **On the target PC**, open a browser tab at `https://blank.org`, open DevTools (F12), and click into the console. Any `https://` page works; `about:blank` is possible but verify first — on some Chrome builds `window.isSecureContext === false` there, which blocks WebHID. Run `console.log(window.isSecureContext)` to confirm before proceeding. (For BLE Deploy, pair the target to the Flipper BLE identity first, then place the cursor in the console of the paired machine.)
 5. **Press OK on the Flipper.** The matching bootstrap types itself into the console while the screen shows `TYPING…` (BACK aborts). Once executed, it paints a minimal landing page with a Connect button.
 6. **Click Connect.** Your real click supplies the user activation the browser needs; pick the device in the browser prompt (WebHID for USB Deploy, Web Bluetooth for BLE Deploy). The Flipper streams the compressed app from its SD card — over the vendor HID channel for USB, over the BLE serial notify characteristic for BLE — the bootstrap inflates it with `DecompressionStream("gzip")`, and the page replaces itself with the full app. Unsupported browsers show `Transfer unsupported - retry` before a picker opens.

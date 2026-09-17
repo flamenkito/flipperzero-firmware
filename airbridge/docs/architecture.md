@@ -72,9 +72,9 @@ The AirBridge profile includes HIDS alongside Battery, DIS, and the AirBridge
 serial service. In the normal active state, the Bridge watchdog re-arms serial
 plus HIDS every 2.5 seconds and restarts advertising only when GAP is idle,
 without disconnecting an active link. Advertising HIDS is distinct from keyboard
-emission: no keyboard reports are emitted while bridging chat traffic or on any
-bridge data path. Keyboard reports exist only in the explicit, user-confirmed
-Deploy typing prompts (USB Deploy over USB HID, BLE Deploy over BLE HIDS). The
+emission: bridge data never triggers keyboard reports. Keyboard reports require
+an explicit Deploy confirmation (USB HID or BLE HIDS), or OK on an SD-card
+Password entry (USB HID only, without Enter). The
 profile uses numeric-comparison pairing with persistent bonding, so first
 pairing needs a code check and later reconnects can be silent.
 
@@ -145,7 +145,7 @@ also pins the decompressed HTML size and carries explicit `ABND` magic/version.
 
 | Decision | Rationale |
 |----------|-----------|
-| **Vendor HID Bridge data path** | The selected composite USB personality exposes keyboard and vendor collections to the host. Bridge frames use only the vendor HID collection on usage page `0xFF00`; no keyboard reports are emitted in Bridge mode or on bridge data paths. Keyboard reports are limited to the explicit, user-confirmed Deploy flow; see the "Honest framing" section in README.md. |
+| **Vendor HID Bridge data path** | The selected composite USB personality adds a mouse interface at startup; keyboard-capable profiles retain their keyboard collection. Bridge frames use only the vendor HID collection on usage page `0xFF00`. Keyboard output requires explicit Deploy or Passwords confirmation. The saved mouse setting gates only mouse reports and never reconfigures USB. |
 | **AirBridge BLE notifications** | The custom serial TX characteristic uses GATT notify, which Chromium exposes through `characteristicvaluechanged`; low overhead suits small data. |
 | **51-byte encrypted DATA slices** | Eight payload bytes bind item and segment; the five-byte header and 59-byte outer payload still fit one 64-byte report. |
 | **Bounded DATA windows** | Up to four outstanding DATA frames, with an ACK and exact retry copy per frame, reduce round-trip stalls while preserving the eight-slot Flipper queue. Control frames remain stop-and-wait. |

@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <furi.h>
 #include <furi_hal_usb_hid.h>
@@ -11,8 +12,22 @@
 #include "airbridge_assets.h"
 #include "airbridge_assets_digest.h"
 #include "airbridge_time.h"
+#include "airbridge_passwords.h"
 
 #define TAG "AirBridge"
+
+static void airbridge_typing_clear_password(AirbridgeTyping* typing) {
+    if(!typing->password) return;
+    if(typing->bootstrap) {
+        volatile char* bytes = typing->bootstrap;
+        for(size_t i = 0; i < typing->bootstrap_len; i++)
+            bytes[i] = 0;
+        free(typing->bootstrap);
+    }
+    typing->bootstrap = NULL;
+    typing->bootstrap_len = 0;
+    typing->password = false;
+}
 
 void airbridge_typing_init(
     AirbridgeTyping* typing,
@@ -32,6 +47,7 @@ void airbridge_typing_release_file(AirbridgeTyping* typing) {
 }
 
 void airbridge_typing_deinit(AirbridgeTyping* typing) {
+    airbridge_typing_clear_password(typing);
     free(typing->bootstrap);
 }
 
@@ -80,6 +96,7 @@ bool airbridge_typing_abort(AirbridgeTyping* typing) {
             FURI_LOG_E(TAG, "release-all FAILED - tap a key on target");
         }
     }
+    airbridge_typing_clear_password(typing);
     return release_ok;
 }
 
@@ -166,8 +183,8 @@ static bool airbridge_typing_load_bootstrap(AirbridgeTyping* typing) {
     airbridge_sha256_init(&sha256);
     airbridge_sha256_update(&sha256, (const uint8_t*)typing->bootstrap, typing->bootstrap_len);
     airbridge_sha256_final(&sha256, digest);
-    const uint8_t* expected =
-        use_ble ? AIRBRIDGE_BOOTSTRAP_BLE_SHA256 : AIRBRIDGE_BOOTSTRAP_SHA256;
+    const uint8_t* expected = use_ble ? AIRBRIDGE_BOOTSTRAP_BLE_SHA256 :
+                                        AIRBRIDGE_BOOTSTRAP_SHA256;
     if(!airbridge_digest_matches(digest, expected)) {
         free(typing->bootstrap);
         typing->bootstrap = NULL;
@@ -198,6 +215,7 @@ static bool airbridge_typing_load_bootstrap(AirbridgeTyping* typing) {
 }
 
 bool airbridge_typing_start(AirbridgeTyping* typing, AirbridgeTypingTransport transport) {
+    airbridge_typing_clear_password(typing);
     typing->generation++;
     typing->transport = transport;
     typing->release_all_pending = false;
@@ -216,6 +234,33 @@ bool airbridge_typing_start(AirbridgeTyping* typing, AirbridgeTypingTransport tr
     typing->next_tick = furi_get_tick();
     typing->link_ready_tick = 0;
     typing->disconnected_since = 0;
+    return true;
+}
+
+bool airbridge_typing_password_start(AirbridgeTyping* typing, const char* value) {
+    const size_t length = strlen(value);
+    if(!length || length > AIRBRIDGE_PASSWORD_SIZE || typing->key_down ||
+       typing->release_all_pending || !airbridge_usb_vendor_is_connected())
+        return false;
+    for(size_t i = 0; i < length; i++)
+        if((uint8_t)value[i] < 0x20 || (uint8_t)value[i] > 0x7e) return false;
+    char* copy = malloc(length + 1);
+    if(!copy) return false;
+    memcpy(copy, value, length + 1);
+    airbridge_typing_clear_password(typing);
+    free(typing->bootstrap);
+    typing->bootstrap = copy;
+    typing->bootstrap_len = length;
+    typing->password = true;
+    typing->generation++;
+    typing->transport = AirbridgeTypingTransportUsb;
+    typing->position = 0;
+    typing->key = HID_KEYBOARD_NONE;
+    typing->key_down = false;
+    typing->enter_pending = false;
+    typing->enter_done = true;
+    typing->jitter_state = furi_get_tick();
+    typing->next_tick = furi_get_tick();
     return true;
 }
 
@@ -324,5 +369,6 @@ bool airbridge_typing_step(AirbridgeTyping* typing) {
         return false;
     }
 
+    airbridge_typing_clear_password(typing);
     return true;
 }

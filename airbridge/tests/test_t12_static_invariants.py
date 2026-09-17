@@ -83,7 +83,7 @@ class T12StaticInvariantTest(unittest.TestCase):
         screen_policy = AIRBRIDGE_SCREENS_SOURCE.read_text(encoding="utf-8")
 
         self.assertNotIn("AirbridgeScreen*", other_sources)
-        self.assertNotIn("->screen =", other_sources)
+        self.assertNotRegex(other_sources, r"->screen\s*=(?!=)")
         self.assertNotIn("screens->current =", other_sources)
         self.assertIn("screens->current =", screen_policy)
 

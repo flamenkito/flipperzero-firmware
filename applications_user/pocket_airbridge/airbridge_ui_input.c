@@ -47,6 +47,7 @@ static AirbridgeUiIntent airbridge_ui_intent_for_key(InputKey key) {
     case InputKeyOk:
         return AirbridgeUiIntentConfirm;
     case InputKeyUp:
+        return AirbridgeUiIntentUp;
     case InputKeyMAX:
         return AirbridgeUiIntentOther;
     }

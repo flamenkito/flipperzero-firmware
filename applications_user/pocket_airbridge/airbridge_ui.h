@@ -17,6 +17,7 @@ typedef enum {
     AirbridgeUiIntentNext,
     AirbridgeUiIntentConfirm,
     AirbridgeUiIntentResetBle,
+    AirbridgeUiIntentUp,
     AirbridgeUiIntentOther,
     AirbridgeUiIntentInputDropped,
 } AirbridgeUiIntent;
@@ -33,11 +34,19 @@ typedef struct {
     char ble_name[AIRBRIDGE_BLE_DEVICE_NAME_MAX_LEN + 1U];
     uint64_t typing_position;
     uint64_t typing_total;
+    uint32_t typing_generation;
     uint64_t stream_sent;
     uint64_t stream_total;
     AirbridgeError error;
     bool closing;
     AirbridgeOperationStatus operation;
+    bool mouse_enabled;
+    uint32_t mouse_sent;
+    uint32_t mouse_failed;
+    uint8_t password_selected;
+    uint8_t password_count;
+    char password_names[3][25];
+    char menu_status[32];
 } AirbridgeUiSnapshot;
 
 AirbridgeUi* airbridge_ui_alloc(AirbridgeUiIntentCallback intent_callback, void* context);
@@ -45,6 +54,7 @@ void airbridge_ui_init_view(AirbridgeUi* ui);
 void airbridge_ui_open_gui(AirbridgeUi* ui);
 void airbridge_ui_add_view(AirbridgeUi* ui);
 void airbridge_ui_update(AirbridgeUi* ui, const AirbridgeUiSnapshot* snapshot);
+bool airbridge_ui_password_ready(AirbridgeUi* ui, uint32_t generation);
 void airbridge_ui_resume_input(AirbridgeUi* ui);
 void airbridge_ui_service_input(AirbridgeUi* ui);
 void airbridge_ui_show_closing(AirbridgeUi* ui);

@@ -18,11 +18,12 @@ typedef struct {
     bool (*deploy_supported)(void* context, AirbridgeTypingTransport transport);
     void (*exit)(void* context);
     void (*input_dropped)(void* context);
+    void (*menu_enter)(void* context, AirbridgeScreen screen);
+    void (*menu_move)(void* context, int direction);
+    bool (*menu_confirm)(void* context, AirbridgeScreen screen);
 } AirbridgeScreenActions;
 
-AirbridgeScreens* airbridge_screens_alloc(
-    const AirbridgeScreenActions* actions,
-    void* context);
+AirbridgeScreens* airbridge_screens_alloc(const AirbridgeScreenActions* actions, void* context);
 void airbridge_screens_free(AirbridgeScreens* screens);
 AirbridgeScreen airbridge_screens_current(const AirbridgeScreens* screens);
 const AirbridgeError* airbridge_screens_error(const AirbridgeScreens* screens);

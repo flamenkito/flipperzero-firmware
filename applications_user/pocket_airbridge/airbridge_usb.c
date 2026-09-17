@@ -15,6 +15,66 @@ enum {
     UsbDevProduct = 2
 };
 
+#define HID_MOUSE_EP_IN      0x84
+#define HID_MOUSE_PACKET_LEN 3
+
+static const uint8_t mouse_report_descriptor[] = {
+    0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09, 0x19,
+    0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02,
+    0x95, 0x01, 0x75, 0x05, 0x81, 0x03, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15,
+    0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x02, 0x81, 0x06, 0xC0, 0xC0,
+};
+
+static const struct usb_hid_descriptor mouse_hid_descriptor = {
+    .bLength = sizeof(struct usb_hid_descriptor),
+    .bDescriptorType = USB_DTYPE_HID,
+    .bcdHID = 0x0111,
+    .bNumDescriptors = 1,
+    .bDescriptorType0 = USB_DTYPE_HID_REPORT,
+    .wDescriptorLength0 = sizeof(mouse_report_descriptor),
+};
+
+static struct {
+    uint8_t bytes[128];
+} mouse_configs[5];
+
+static void airbridge_usb_append_mouse(FuriHalUsbInterface* interface, size_t index) {
+    const struct usb_config_descriptor* original = interface->cfg_descr;
+    const size_t length = original->wTotalLength;
+    const struct usb_interface_descriptor mouse_interface = {
+        .bLength = sizeof(struct usb_interface_descriptor),
+        .bDescriptorType = USB_DTYPE_INTERFACE,
+        .bInterfaceNumber = original->bNumInterfaces,
+        .bNumEndpoints = 1,
+        .bInterfaceClass = USB_CLASS_HID,
+        .bInterfaceSubClass = USB_HID_SUBCLASS_BOOT,
+        .bInterfaceProtocol = USB_HID_PROTO_MOUSE,
+    };
+    const struct usb_endpoint_descriptor mouse_endpoint = {
+        .bLength = sizeof(struct usb_endpoint_descriptor),
+        .bDescriptorType = USB_DTYPE_ENDPOINT,
+        .bEndpointAddress = HID_MOUSE_EP_IN,
+        .bmAttributes = USB_EPTYPE_INTERRUPT,
+        .wMaxPacketSize = HID_MOUSE_PACKET_LEN,
+        .bInterval = 10,
+    };
+    size_t total =
+        length + sizeof(mouse_interface) + sizeof(mouse_hid_descriptor) + sizeof(mouse_endpoint);
+    furi_check(total <= sizeof(mouse_configs[index].bytes));
+    uint8_t* bytes = mouse_configs[index].bytes;
+    memcpy(bytes, original, length);
+    memcpy(bytes + length, &mouse_interface, sizeof(mouse_interface));
+    memcpy(
+        bytes + length + sizeof(mouse_interface),
+        &mouse_hid_descriptor,
+        sizeof(mouse_hid_descriptor));
+    memcpy(bytes + total - sizeof(mouse_endpoint), &mouse_endpoint, sizeof(mouse_endpoint));
+    struct usb_config_descriptor* config = (void*)bytes;
+    config->wTotalLength = total;
+    config->bNumInterfaces++;
+    interface->cfg_descr = (void*)bytes;
+}
+
 struct HidCompositeNoIadConfigDescriptor {
     struct usb_config_descriptor config;
     HidKeyboardDescriptor keyboard;
@@ -316,6 +376,11 @@ static void airbridge_usb_resolve_descriptors(void) {
     usb_airbridge_dell.cfg_descr = (void*)dell->composite_config_desc;
 
     usb_airbridge_msft_kbd.cfg_descr = (void*)logitech->composite_config_desc;
+    airbridge_usb_append_mouse(&usb_airbridge, 0);
+    airbridge_usb_append_mouse(&usb_airbridge_dell, 1);
+    airbridge_usb_append_mouse(&usb_airbridge_msft_kbd, 2);
+    airbridge_usb_append_mouse(&usb_airbridge_msft_vendor, 3);
+    airbridge_usb_append_mouse(&usb_airbridge_hp, 4);
     resolved = true;
 }
 
@@ -379,6 +444,9 @@ static const AirbridgeProfile airbridge_profiles[] = {
 static usbd_device* usb_dev;
 static FuriSemaphore* hid_vendor_semaphore;
 static FuriSemaphore* hid_keyboard_semaphore;
+static FuriSemaphore* hid_mouse_semaphore;
+static uint8_t hid_mouse_protocol = 1;
+static uint8_t hid_mouse_idle;
 static bool hid_vendor_connected;
 static bool hid_keyboard_available;
 static uint8_t hid_vendor_ep_in = HID_VENDOR_ONLY_EP_IN;
@@ -451,27 +519,34 @@ static void hid_vendor_init(usbd_device* dev, FuriHalUsbInterface* intf, void* c
     if(hid_keyboard_semaphore == NULL) {
         hid_keyboard_semaphore = furi_semaphore_alloc(1, 1);
     }
+    if(hid_mouse_semaphore == NULL) {
+        hid_mouse_semaphore = furi_semaphore_alloc(1, 1);
+    }
 
     usb_dev = dev;
+    hid_mouse_protocol = 1;
+    hid_mouse_idle = 0;
     hid_keyboard_available = intf != &usb_airbridge_msft_vendor;
     hid_vendor_ep_in = hid_keyboard_available ? HID_VENDOR_EP_IN : HID_VENDOR_ONLY_EP_IN;
     hid_vendor_ep_out = hid_keyboard_available ? HID_VENDOR_EP_OUT : HID_VENDOR_ONLY_EP_OUT;
     if(intf == &usb_airbridge_msft_vendor) {
         active_keyboard_hid_desc = NULL;
         active_keyboard_hid_desc_len = 0;
-        active_vendor_hid_desc = &hid_vendor_cfg_desc.vendor.hid_desc;
+        active_vendor_hid_desc =
+            &((const HidVendorConfigDescriptor*)intf->cfg_descr)->vendor.hid_desc;
         active_vendor_hid_desc_len = sizeof(hid_vendor_cfg_desc.vendor.hid_desc);
     } else if(intf == &usb_airbridge_hp) {
-        active_keyboard_hid_desc = &hid_composite_noiad_cfg_desc.keyboard.hid_desc;
+        active_keyboard_hid_desc =
+            &((const struct HidCompositeNoIadConfigDescriptor*)intf->cfg_descr)->keyboard.hid_desc;
         active_keyboard_hid_desc_len = sizeof(hid_composite_noiad_cfg_desc.keyboard.hid_desc);
-        active_vendor_hid_desc = &hid_composite_noiad_cfg_desc.vendor_hid_desc;
+        active_vendor_hid_desc =
+            &((const struct HidCompositeNoIadConfigDescriptor*)intf->cfg_descr)->vendor_hid_desc;
         active_vendor_hid_desc_len = sizeof(hid_composite_noiad_cfg_desc.vendor_hid_desc);
     } else {
         const FuriHalUsbSpoofProfile spoof_profile = intf == &usb_airbridge_dell ?
                                                          FuriHalUsbSpoofProfileDell :
                                                          FuriHalUsbSpoofProfileLogitech;
-        const FuriHalUsbSpoofIdentity* identity =
-            furi_hal_usb_spoof_get_identity(spoof_profile);
+        const FuriHalUsbSpoofIdentity* identity = furi_hal_usb_spoof_get_identity(spoof_profile);
         active_keyboard_hid_desc = identity->keyboard_hid_desc;
         active_keyboard_hid_desc_len = identity->keyboard_hid_desc_len;
         active_vendor_hid_desc = identity->vendor_hid_desc;
@@ -500,8 +575,10 @@ void airbridge_usb_free(void) {
     furi_check(usb_dev == NULL);
     if(hid_vendor_semaphore) furi_semaphore_free(hid_vendor_semaphore);
     if(hid_keyboard_semaphore) furi_semaphore_free(hid_keyboard_semaphore);
+    if(hid_mouse_semaphore) furi_semaphore_free(hid_mouse_semaphore);
     hid_vendor_semaphore = NULL;
     hid_keyboard_semaphore = NULL;
+    hid_mouse_semaphore = NULL;
 }
 
 static void hid_vendor_on_wakeup(usbd_device* dev) {
@@ -521,6 +598,7 @@ static void hid_vendor_on_suspend(usbd_device* dev) {
         hid_vendor_connected = false;
         furi_semaphore_release(hid_vendor_semaphore);
         furi_semaphore_release(hid_keyboard_semaphore);
+        furi_semaphore_release(hid_mouse_semaphore);
         if(callback != NULL) {
             callback(HidVendorDisconnected, cb_ctx);
         }
@@ -550,6 +628,18 @@ uint32_t airbridge_usb_vendor_get_request(uint8_t* data) {
     if(usb_dev == NULL) return 0;
     int32_t len = usbd_ep_read(usb_dev, hid_vendor_ep_out, data, HID_VENDOR_PACKET_LEN);
     return (len < 0) ? 0 : len;
+}
+
+bool airbridge_usb_mouse_move(int8_t x, int8_t y) {
+    if(!hid_mouse_semaphore || !usb_dev || !hid_vendor_connected) return false;
+    if(furi_semaphore_acquire(hid_mouse_semaphore, 0) != FuriStatusOk) return false;
+    const uint8_t report[HID_MOUSE_PACKET_LEN] = {0, (uint8_t)x, (uint8_t)y};
+    if(!usb_dev || !hid_vendor_connected ||
+       usbd_ep_write(usb_dev, HID_MOUSE_EP_IN, report, sizeof(report)) < 0) {
+        furi_semaphore_release(hid_mouse_semaphore);
+        return false;
+    }
+    return true;
 }
 
 bool airbridge_usb_kb_press(uint16_t button) {
@@ -621,6 +711,8 @@ static void hid_vendor_txrx_ep_callback(usbd_device* dev, uint8_t event, uint8_t
         furi_semaphore_release(hid_vendor_semaphore);
     } else if((event == usbd_evt_eptx) && hid_keyboard_available && (ep == HID_KBD_EP_IN)) {
         furi_semaphore_release(hid_keyboard_semaphore);
+    } else if((event == usbd_evt_eptx) && (ep == HID_MOUSE_EP_IN)) {
+        furi_semaphore_release(hid_mouse_semaphore);
     } else if(ep == hid_vendor_ep_out) {
         hid_vendor_rx_ep_callback(dev, event, ep);
     }
@@ -629,6 +721,8 @@ static void hid_vendor_txrx_ep_callback(usbd_device* dev, uint8_t event, uint8_t
 static usbd_respond hid_vendor_ep_config(usbd_device* dev, uint8_t cfg) {
     switch(cfg) {
     case 0:
+        usbd_ep_deconfig(dev, HID_MOUSE_EP_IN);
+        usbd_reg_endpoint(dev, HID_MOUSE_EP_IN, 0);
         usbd_ep_deconfig(dev, hid_vendor_ep_out);
         usbd_ep_deconfig(dev, hid_vendor_ep_in);
         usbd_reg_endpoint(dev, hid_vendor_ep_out, 0);
@@ -639,6 +733,9 @@ static usbd_respond hid_vendor_ep_config(usbd_device* dev, uint8_t cfg) {
         }
         return usbd_ack;
     case 1:
+        usbd_ep_config(dev, HID_MOUSE_EP_IN, USB_EPTYPE_INTERRUPT, HID_MOUSE_PACKET_LEN);
+        usbd_reg_endpoint(dev, HID_MOUSE_EP_IN, hid_vendor_txrx_ep_callback);
+        furi_semaphore_release(hid_mouse_semaphore);
         if(hid_keyboard_available) {
             usbd_ep_config(dev, HID_KBD_EP_IN, USB_EPTYPE_INTERRUPT, HID_KBD_PACKET_LEN);
             usbd_reg_endpoint(dev, HID_KBD_EP_IN, hid_vendor_txrx_ep_callback);
@@ -657,6 +754,46 @@ static usbd_respond hid_vendor_ep_config(usbd_device* dev, uint8_t cfg) {
 static usbd_respond
     hid_vendor_control(usbd_device* dev, usbd_ctlreq* req, usbd_rqc_callback* control_callback) {
     UNUSED(control_callback);
+    const uint16_t mouse_interface = hid_keyboard_available ? 2 : 1;
+    if(req->wIndex == mouse_interface &&
+       (req->bmRequestType & USB_REQ_RECIPIENT) == USB_REQ_INTERFACE) {
+        if((req->bmRequestType & USB_REQ_TYPE) == USB_REQ_CLASS) {
+            if(req->bRequest == USB_HID_SETIDLE) {
+                hid_mouse_idle = req->wValue >> 8;
+                return usbd_ack;
+            }
+            if(req->bRequest == USB_HID_SETPROTOCOL && req->wValue <= 1) {
+                hid_mouse_protocol = req->wValue;
+                return usbd_ack;
+            }
+            if(req->bRequest == USB_HID_GETPROTOCOL || req->bRequest == USB_HID_GETIDLE) {
+                dev->status.data_ptr = req->bRequest == USB_HID_GETPROTOCOL ? &hid_mouse_protocol :
+                                                                              &hid_mouse_idle;
+                dev->status.data_count = 1;
+                return usbd_ack;
+            }
+            if(req->bRequest == USB_HID_GETREPORT) {
+                static const uint8_t released[HID_MOUSE_PACKET_LEN] = {0};
+                dev->status.data_ptr = (uint8_t*)released;
+                dev->status.data_count = sizeof(released);
+                return usbd_ack;
+            }
+        } else if(
+            (req->bmRequestType & USB_REQ_TYPE) == USB_REQ_STANDARD &&
+            req->bRequest == USB_STD_GET_DESCRIPTOR) {
+            if((req->wValue >> 8) == USB_DTYPE_HID) {
+                dev->status.data_ptr = (uint8_t*)&mouse_hid_descriptor;
+                dev->status.data_count = sizeof(mouse_hid_descriptor);
+                return usbd_ack;
+            }
+            if((req->wValue >> 8) == USB_DTYPE_HID_REPORT) {
+                dev->status.data_ptr = (uint8_t*)mouse_report_descriptor;
+                dev->status.data_count = sizeof(mouse_report_descriptor);
+                return usbd_ack;
+            }
+        }
+        return usbd_fail;
+    }
     if(((USB_REQ_RECIPIENT | USB_REQ_TYPE) & req->bmRequestType) ==
            (USB_REQ_INTERFACE | USB_REQ_CLASS) &&
        ((req->wIndex == 0) || (hid_keyboard_available && (req->wIndex == 1)))) {

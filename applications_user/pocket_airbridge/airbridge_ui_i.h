@@ -24,6 +24,10 @@ struct AirbridgeUi {
     bool closing;
     bool closing_rendered;
     bool closing_committed;
+    uint32_t password_rendered;
+    uint32_t password_committed;
+    bool password_frame_pending;
+    bool password_frame_ready;
     FuriSemaphore* closing_frame;
     AirbridgeOperationStatus operation;
 };
@@ -32,6 +36,7 @@ void airbridge_ui_snapshot_copy(AirbridgeUi* ui, AirbridgeUiSnapshot* snapshot);
 void airbridge_ui_input_callback(InputEvent* input_event, void* context);
 void airbridge_ui_render_callback(Canvas* canvas, void* context);
 void airbridge_ui_closing_rendered(AirbridgeUi* ui);
+void airbridge_ui_password_rendered(AirbridgeUi* ui, uint32_t generation);
 void airbridge_ui_render_bridge(Canvas* canvas, const AirbridgeUiSnapshot* snapshot);
 void airbridge_ui_render_deploy_prompt(Canvas* canvas, const AirbridgeUiSnapshot* snapshot);
 void airbridge_ui_render_typing(Canvas* canvas, const AirbridgeUiSnapshot* snapshot);

@@ -24,6 +24,7 @@ typedef struct {
     bool key_down;
     bool enter_pending;
     bool enter_done;
+    bool password;
     uint32_t next_tick;
     uint32_t jitter_state;
     /* First tick at which the BLE HID link was up with pairing settled. Typing
@@ -50,6 +51,7 @@ void airbridge_typing_init(
 void airbridge_typing_release_file(AirbridgeTyping* typing);
 void airbridge_typing_deinit(AirbridgeTyping* typing);
 bool airbridge_typing_start(AirbridgeTyping* typing, AirbridgeTypingTransport transport);
+bool airbridge_typing_password_start(AirbridgeTyping* typing, const char* value);
 bool airbridge_typing_step(AirbridgeTyping* typing);
 bool airbridge_typing_abort(AirbridgeTyping* typing);
 bool airbridge_typing_service_release(AirbridgeTyping* typing);

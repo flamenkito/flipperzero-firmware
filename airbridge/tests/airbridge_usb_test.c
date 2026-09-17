@@ -13,14 +13,21 @@ static unsigned frees;
 static unsigned received_events;
 static uint16_t written_size;
 static unsigned write_calls;
+static uint8_t mouse_report[3];
 static void (*on_acquire)(void);
 static usbd_device device;
 static FuriHalUsbInterface* profile;
 
 static const uint8_t fixture_vendor_report[FURI_HAL_USB_SPOOF_VENDOR_REPORT_DESC_LEN] = {0xA5};
-static const uint8_t fixture_keyboard_report[FURI_HAL_USB_SPOOF_KEYBOARD_REPORT_DESC_LEN] = {
-    0x5A};
+static const uint8_t fixture_keyboard_report[FURI_HAL_USB_SPOOF_KEYBOARD_REPORT_DESC_LEN] = {0x5A};
 static const HidCompositeConfigDescriptor fixture_composite = {
+    .config =
+        {
+            .bLength = sizeof(struct usb_config_descriptor),
+            .bDescriptorType = USB_DTYPE_CONFIGURATION,
+            .wTotalLength = sizeof(HidCompositeConfigDescriptor),
+            .bNumInterfaces = 2,
+        },
     .keyboard.hid_desc = {.bLength = sizeof(struct usb_hid_descriptor)},
     .vendor_hid_desc = {.bLength = sizeof(struct usb_hid_descriptor)},
 };
@@ -66,8 +73,7 @@ FuriHalUsbInterface* furi_hal_usb_spoof_get_interface(FuriHalUsbSpoofProfile sel
     return &fixture_spoof_interfaces[selected == FuriHalUsbSpoofProfileDell];
 }
 
-const FuriHalUsbSpoofIdentity*
-    furi_hal_usb_spoof_get_identity(FuriHalUsbSpoofProfile selected) {
+const FuriHalUsbSpoofIdentity* furi_hal_usb_spoof_get_identity(FuriHalUsbSpoofProfile selected) {
     return &fixture_identities[selected == FuriHalUsbSpoofProfileDell];
 }
 
@@ -122,7 +128,7 @@ static uint8_t connect_usb(bool connected) {
 static bool configure_endpoint(uint8_t endpoint, uint8_t type, uint16_t size) {
     UNUSED(endpoint);
     assert(type == USB_EPTYPE_INTERRUPT);
-    assert(size == 8 || size == 64);
+    assert(size == 3 || size == 8 || size == 64);
     UNUSED(type);
     UNUSED(size);
     return true;
@@ -133,7 +139,10 @@ static void deconfigure_endpoint(uint8_t endpoint) {
 }
 
 static int32_t write_endpoint(uint8_t endpoint, const void* data, uint16_t size) {
-    UNUSED(endpoint);
+    if(endpoint == 0x84) {
+        assert(size == sizeof(mouse_report));
+        memcpy(mouse_report, data, size);
+    }
     UNUSED(data);
     written_size = size;
     write_calls++;
@@ -181,11 +190,38 @@ static void assert_profile_control(uint8_t index) {
     profile = airbridge_usb_get_profile(index);
     initialize_profile();
     const bool keyboard = airbridge_usb_profile_has_keyboard(index);
+    const struct usb_config_descriptor* config = profile->cfg_descr;
+    assert(config->bNumInterfaces == (keyboard ? 3 : 2));
+    const size_t mouse_size = sizeof(struct usb_interface_descriptor) +
+                              sizeof(struct usb_hid_descriptor) +
+                              sizeof(struct usb_endpoint_descriptor);
+    const uint8_t* mouse_bytes = (const uint8_t*)config + config->wTotalLength - mouse_size;
+    const struct usb_interface_descriptor* mouse_interface = (const void*)mouse_bytes;
+    assert(mouse_interface->bLength == sizeof(*mouse_interface));
+    assert(mouse_interface->bDescriptorType == USB_DTYPE_INTERFACE);
+    assert(mouse_interface->bInterfaceNumber == (keyboard ? 2 : 1));
+    assert(mouse_interface->bInterfaceClass == USB_CLASS_HID);
+    assert(mouse_interface->bInterfaceProtocol == USB_HID_PROTO_MOUSE);
+    const struct usb_endpoint_descriptor* mouse_endpoint =
+        (const void*)(mouse_bytes + mouse_size - sizeof(*mouse_endpoint));
+    assert(mouse_endpoint->bEndpointAddress == 0x84 && mouse_endpoint->wMaxPacketSize == 3);
+    usbd_ctlreq mouse_request = {
+        .bmRequestType = USB_REQ_INTERFACE | USB_REQ_STANDARD,
+        .bRequest = USB_STD_GET_DESCRIPTOR,
+        .wValue = USB_DTYPE_HID_REPORT << 8,
+        .wIndex = keyboard ? 2 : 1,
+    };
+    assert(device.control_callback(&device, &mouse_request, NULL) == usbd_ack);
+    const struct usb_hid_descriptor* mouse_hid =
+        (const void*)(mouse_bytes + sizeof(*mouse_interface));
+    assert(device.status.data_count == mouse_hid->wDescriptorLength0);
+    assert(device.status.data_count == 50);
+    assert(memcmp(device.status.data_ptr, "\x05\x01\x09\x02", 4) == 0);
     if(keyboard) {
-        const void* keyboard_hid = index == AirbridgeUsbProfileHpKbdVendor ?
-                                       &((const FixtureNoIadConfigDescriptor*)profile->cfg_descr)
-                                            ->keyboard.hid_desc :
-                                       fixture_identities[0].keyboard_hid_desc;
+        const void* keyboard_hid =
+            index == AirbridgeUsbProfileHpKbdVendor ?
+                &((const FixtureNoIadConfigDescriptor*)profile->cfg_descr)->keyboard.hid_desc :
+                fixture_identities[0].keyboard_hid_desc;
         assert_control_descriptor(
             USB_DTYPE_HID, 0, keyboard_hid, sizeof(struct usb_hid_descriptor));
         assert_control_descriptor(
@@ -196,8 +232,7 @@ static void assert_profile_control(uint8_t index) {
     if(index == AirbridgeUsbProfileMsftVendorOnly) {
         vendor_hid = &((const HidVendorConfigDescriptor*)profile->cfg_descr)->vendor.hid_desc;
     } else if(index == AirbridgeUsbProfileHpKbdVendor) {
-        vendor_hid =
-            &((const FixtureNoIadConfigDescriptor*)profile->cfg_descr)->vendor_hid_desc;
+        vendor_hid = &((const FixtureNoIadConfigDescriptor*)profile->cfg_descr)->vendor_hid_desc;
     } else {
         vendor_hid = fixture_identities[0].vendor_hid_desc;
     }
@@ -217,7 +252,7 @@ static void reinitialize_during_send(void) {
     profile->deinit(&device);
     assert(frees == 0);
     initialize_profile();
-    assert(allocations == 2);
+    assert(allocations == 3);
 }
 
 static void complete_vendor_send(void) {
@@ -235,12 +270,15 @@ int main(void) {
     };
     device.driver = &driver;
     assert_profile_control(AirbridgeUsbProfileLogitechKbdVendor);
-    assert(airbridge_usb_get_profile(AirbridgeUsbProfileLogitechKbdVendor)->dev_descr ==
-           fixture_identities[0].device_desc);
-    assert(airbridge_usb_get_profile(AirbridgeUsbProfileDellKbdVendor)->dev_descr ==
-           fixture_identities[1].device_desc);
-    assert(airbridge_usb_get_profile(AirbridgeUsbProfileMsftKbdVendor)->cfg_descr ==
-           (const void*)&fixture_composite);
+    assert(
+        airbridge_usb_get_profile(AirbridgeUsbProfileLogitechKbdVendor)->dev_descr ==
+        fixture_identities[0].device_desc);
+    assert(
+        airbridge_usb_get_profile(AirbridgeUsbProfileDellKbdVendor)->dev_descr ==
+        fixture_identities[1].device_desc);
+    assert(
+        airbridge_usb_get_profile(AirbridgeUsbProfileMsftKbdVendor)->cfg_descr !=
+        (const void*)&fixture_composite);
     for(uint8_t index = 0; index < airbridge_usb_profile_count(); index++) {
         assert(airbridge_usb_profile_vid(index) != 0x0483);
         assert(
@@ -257,6 +295,12 @@ int main(void) {
     }
     profile = airbridge_usb_get_profile(AirbridgeUsbProfileHpKbdVendor);
     initialize_profile();
+    assert(airbridge_usb_mouse_move(1, 0));
+    assert(mouse_report[0] == 0 && mouse_report[1] == 1 && mouse_report[2] == 0);
+    assert(!airbridge_usb_mouse_move(0, 1));
+    device.endpoint[4](&device, usbd_evt_eptx, 0x84);
+    assert(airbridge_usb_mouse_move(-1, 0));
+    assert(mouse_report[0] == 0 && mouse_report[1] == 255 && mouse_report[2] == 0);
     airbridge_usb_vendor_set_callback(receive_event, NULL);
     device.endpoint[3](&device, usbd_evt_eprx, 3);
     assert(received_events == 1);
@@ -279,6 +323,7 @@ int main(void) {
     device.endpoint[3](&device, usbd_evt_eprx, 3);
     assert(received_events == 1);
     profile->suspend(&device);
+    assert(!airbridge_usb_mouse_move(1, 0));
     profile->deinit(&device);
     assert(!device.config_callback && !device.control_callback);
     for(unsigned endpoint = 0; endpoint < COUNT_OF(device.endpoint); endpoint++) {

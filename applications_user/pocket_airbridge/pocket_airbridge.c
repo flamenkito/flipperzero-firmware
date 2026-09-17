@@ -9,6 +9,7 @@
 #include "airbridge_exit_contract.h"
 #include "airbridge_lifecycle.h"
 #include "airbridge_runtime.h"
+#include "airbridge_utilities.h"
 
 #define TAG "AirBridge"
 
@@ -57,9 +58,11 @@ static void airbridge_app_init_services(AirbridgeApp* app) {
     airbridge_ui_open_gui(app->ui);
     airbridge_ui_add_view(app->ui);
     airbridge_config_load(&app->config, app->storage);
+    airbridge_utilities_load(app);
 }
 
 static void airbridge_app_free(AirbridgeApp* app) {
+    airbridge_passwords_clear(&app->passwords);
     airbridge_ui_free_view(app->ui);
     airbridge_ui_free(app->ui);
     airbridge_relay_deinit(&app->relay);

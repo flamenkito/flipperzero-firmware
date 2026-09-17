@@ -23,17 +23,20 @@
 /* BLE Deploy link timing (restored from the pre-USB-only design). The 2500 ms
  * settle covers the macOS HID-daemon CCCD beat: the first ~24 bootstrap chars
  * are silently dropped without it. */
-#define BLE_TYPE_LINK_SETTLE_MS            2500
-#define BLE_TYPING_RETRY_MAX               5
-#define BLE_TYPING_RETRY_DELAY_MS          20
-#define BLE_TYPING_DISCONNECT_TIMEOUT_MS   15000U
-#define BLE_WAITING_PUMP_MS                2500
-#define BLE_WAITING_ZOMBIE_KICK_MS         90000
-#define BLE_DONE_ZOMBIE_GRACE_MS           4000
-#define BLE_STREAM_RETRY_MAX               20
+#define BLE_TYPE_LINK_SETTLE_MS          2500
+#define BLE_TYPING_RETRY_MAX             5
+#define BLE_TYPING_RETRY_DELAY_MS        20
+#define BLE_TYPING_DISCONNECT_TIMEOUT_MS 15000U
+#define BLE_WAITING_PUMP_MS              2500
+#define BLE_WAITING_ZOMBIE_KICK_MS       90000
+#define BLE_DONE_ZOMBIE_GRACE_MS         4000
+#define BLE_STREAM_RETRY_MAX             20
 
 typedef enum {
     AirbridgeScreenBridge,
+    AirbridgeScreenSettings,
+    AirbridgeScreenPasswords,
+    AirbridgeScreenPasswordTyping,
     AirbridgeScreenDeployPrompt,
     AirbridgeScreenTyping,
     AirbridgeScreenWaiting,

@@ -105,11 +105,10 @@ static bool airbridge_usb_switch_safe(AirbridgeRelay* relay, FuriHalUsbInterface
     const bool target_is_cdc = airbridge_usb_is_cdc(target);
     const bool source_is_spoof = airbridge_usb_is_spoof(source);
     const bool target_is_spoof = airbridge_usb_is_spoof(target);
-    const bool direct = (source_is_fap && target_is_cdc) ||
-                        (source_is_cdc && target_is_fap) ||
-                        (source == NULL &&
-                         (target_is_cdc || target == furi_hal_usb_spoof_get_active_interface() ||
-                          (target_is_fap && AIRBRIDGE_SAFE_TEARDOWN_ENABLED)));
+    const bool direct =
+        (source_is_fap && target_is_cdc) || (source_is_cdc && target_is_fap) ||
+        (source == NULL && (target_is_cdc || target == furi_hal_usb_spoof_get_active_interface() ||
+                            (target_is_fap && AIRBRIDGE_SAFE_TEARDOWN_ENABLED)));
 
     if(direct) {
         if(!furi_hal_usb_set_config(target, NULL)) {
@@ -120,9 +119,8 @@ static bool airbridge_usb_switch_safe(AirbridgeRelay* relay, FuriHalUsbInterface
         return true;
     }
 
-    const bool teardown = AIRBRIDGE_SAFE_TEARDOWN_ENABLED &&
-                          ((source_is_spoof && target_is_fap) ||
-                           (source_is_fap && target_is_spoof));
+    const bool teardown = AIRBRIDGE_SAFE_TEARDOWN_ENABLED && ((source_is_spoof && target_is_fap) ||
+                                                              (source_is_fap && target_is_spoof));
     if(!teardown) return false;
 
     /* Experimental: HAL NULL deinitializes and disconnects without resetting the
@@ -261,7 +259,10 @@ AirbridgeRelayResult airbridge_relay_handle(
         if(ble_deploy_request && armed_transport == AirbridgeTypingTransportBle) {
             return AirbridgeRelayDeployRequestedBle;
         }
-    } else if((usb_deploy_request || ble_deploy_request) && screen != AirbridgeScreenBridge) {
+    } else if(
+        (usb_deploy_request || ble_deploy_request) && screen != AirbridgeScreenBridge &&
+        screen != AirbridgeScreenSettings && screen != AirbridgeScreenPasswords &&
+        screen != AirbridgeScreenPasswordTyping) {
         return AirbridgeRelayDeployNotArmed;
     }
     if(be->to_ble) {

@@ -27,9 +27,14 @@ static struct {
     size_t event_count;
     bool fail_release;
     bool fail_release_all;
+    bool disconnected;
     unsigned errors;
     char error[64];
 } platform;
+
+bool airbridge_usb_vendor_is_connected(void) {
+    return !platform.disconnected;
+}
 
 uint32_t furi_get_tick(void) {
     return platform.tick;
@@ -187,7 +192,30 @@ typedef struct {
     AirbridgeTyping typing;
     AirbridgeScreens* screens;
     unsigned aborts;
+    unsigned menu_entries;
+    unsigned menu_moves;
+    unsigned toggles;
 } ScreenFixture;
+
+static void screen_menu_enter(void* context, AirbridgeScreen screen) {
+    UNUSED(screen);
+    ((ScreenFixture*)context)->menu_entries++;
+}
+
+static void screen_menu_move(void* context, int direction) {
+    assert(direction == -1 || direction == 1);
+    ((ScreenFixture*)context)->menu_moves++;
+}
+
+static bool screen_menu_confirm(void* context, AirbridgeScreen screen) {
+    ScreenFixture* fixture = context;
+    if(screen == AirbridgeScreenSettings) {
+        fixture->toggles++;
+        return false;
+    }
+    assert(screen == AirbridgeScreenPasswords);
+    return airbridge_typing_password_start(&fixture->typing, "Ab=");
+}
 
 static bool screen_typing_start(void* context, AirbridgeTypingTransport transport) {
     UNUSED(transport);
@@ -221,6 +249,9 @@ static void screen_fixture_init(ScreenFixture* fixture, const char* payload) {
         .typing_start = screen_typing_start,
         .typing_abort = screen_typing_abort,
         .deploy_supported = screen_deploy_supported,
+        .menu_enter = screen_menu_enter,
+        .menu_move = screen_menu_move,
+        .menu_confirm = screen_menu_confirm,
     };
     fixture->screens = airbridge_screens_alloc(&actions, fixture);
     assert(fixture->screens);
@@ -337,7 +368,72 @@ static void test_back_after_blocked_interval_stops_next_tap(const char* payload)
     pthread_mutex_destroy(&fixture.mutex);
 }
 
+static void test_password_no_enter_and_cleanup(void) {
+    AirbridgeTyping typing = typing_init("unused deploy data");
+    platform.disconnected = true;
+    assert(!airbridge_typing_password_start(&typing, "Ab="));
+    platform.disconnected = false;
+    assert(!airbridge_typing_password_start(&typing, "bad\nvalue"));
+    assert(!airbridge_typing_password_start(&typing, ""));
+    assert(airbridge_typing_password_start(&typing, "Ab="));
+    for(size_t i = 0; i < 3; i++) {
+        platform.tick = typing.next_tick;
+        assert(!airbridge_typing_step(&typing));
+        assert(platform.held_key == HID_KEYBOARD_NONE);
+    }
+    platform.tick = typing.next_tick;
+    assert(airbridge_typing_step(&typing));
+    assert(platform.event_count == 6);
+    assert(platform.events[0].key == HID_ASCII_TO_KEY('A'));
+    assert(platform.events[2].key == HID_ASCII_TO_KEY('b'));
+    assert(platform.events[4].key == HID_ASCII_TO_KEY('='));
+    assert(!typing.bootstrap && !typing.password);
+    airbridge_typing_deinit(&typing);
+}
+
+static void test_utility_navigation_and_abort(void) {
+    ScreenFixture fixture;
+    screen_fixture_init(&fixture, "unused");
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentBack);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentPrevious);
+    assert(airbridge_screens_current(fixture.screens) == AirbridgeScreenPasswords);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentUp);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentResetBle);
+    assert(fixture.menu_moves == 2);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentPrevious);
+    assert(airbridge_screens_current(fixture.screens) == AirbridgeScreenSettings);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentConfirm);
+    assert(fixture.toggles == 1 && platform.event_count == 0);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentNext);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentConfirm);
+    assert(airbridge_screens_current(fixture.screens) == AirbridgeScreenPasswordTyping);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentNext);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentConfirm);
+    assert(airbridge_screens_current(fixture.screens) == AirbridgeScreenPasswordTyping);
+    platform.tick = fixture.typing.next_tick;
+    assert(!airbridge_typing_step(&fixture.typing));
+    assert(platform.event_count == 2);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentBack);
+    assert(airbridge_screens_current(fixture.screens) == AirbridgeScreenPasswords);
+    assert(!fixture.typing.bootstrap && !fixture.typing.password);
+    assert(platform.event_count == 2 && platform.held_key == HID_KEYBOARD_NONE);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentConfirm);
+    for(size_t i = 0; i < 3; i++) {
+        platform.tick = fixture.typing.next_tick;
+        assert(!airbridge_typing_step(&fixture.typing));
+    }
+    platform.tick = fixture.typing.next_tick;
+    assert(airbridge_typing_step(&fixture.typing));
+    airbridge_screens_typing_complete(fixture.screens);
+    assert(airbridge_screens_current(fixture.screens) == AirbridgeScreenPasswords);
+    airbridge_screens_handle_ui_intent(fixture.screens, AirbridgeUiIntentNext);
+    assert(airbridge_screens_current(fixture.screens) == AirbridgeScreenBridge);
+    screen_fixture_free(&fixture);
+}
+
 int main(void) {
+    test_password_no_enter_and_cleanup();
+    test_utility_navigation_and_abort();
     test_step_releases_key_before_return();
     test_failed_release_aborts_and_shows_error(false, false);
     test_failed_release_aborts_and_shows_error(true, false);

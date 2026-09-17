@@ -73,8 +73,7 @@ static void lifecycle_close(LifecycleFixture* fixture) {
         .wait = wait_for_retry,
     };
     fixture->contract = airbridge_exit_contract_initial();
-    airbridge_lifecycle_close(
-        &operations, &fixture->monitor, &fixture->contract);
+    airbridge_lifecycle_close(&operations, &fixture->monitor, &fixture->contract);
 }
 
 static bool configure(AirbridgeRelay* relay) {
@@ -335,7 +334,22 @@ static void test_deploy_classification_is_direction_aware(void) {
             &relay, NULL, &event, AirbridgeScreenWaiting, AirbridgeTypingTransportUsb) ==
         AirbridgeRelayHandled);
 
-    /* 0x42 outside Waiting on a non-Bridge screen → not-armed path. */
+    const AirbridgeScreen utility_screens[] = {
+        AirbridgeScreenSettings, AirbridgeScreenPasswords, AirbridgeScreenPasswordTyping};
+    for(size_t i = 0; i < COUNT_OF(utility_screens); i++) {
+        event.to_ble = true;
+        assert(
+            airbridge_relay_handle(
+                &relay, NULL, &event, utility_screens[i], AirbridgeTypingTransportUsb) ==
+            AirbridgeRelayHandled);
+        event.to_ble = false;
+        assert(
+            airbridge_relay_handle(
+                &relay, NULL, &event, utility_screens[i], AirbridgeTypingTransportBle) ==
+            AirbridgeRelayHandled);
+    }
+
+    /* Deploy screens outside Waiting still reject an unarmed request. */
     event.to_ble = true;
     assert(
         airbridge_relay_handle(

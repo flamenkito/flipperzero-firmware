@@ -11,6 +11,8 @@
 #include "airbridge_typing.h"
 #include "airbridge_ui.h"
 #include "airbridge_operation.h"
+#include "airbridge_passwords.h"
+#include "airbridge_mouse.h"
 
 typedef struct AirbridgeApp {
     bool running;
@@ -26,6 +28,11 @@ typedef struct AirbridgeApp {
     AirbridgeTyping typing;
     AirbridgeScreens* screens;
     AirbridgeUi* ui;
+    AirbridgePasswords passwords;
+    uint8_t password_selected;
+    bool mouse_enabled;
+    AirbridgeMouse mouse;
+    char menu_status[32];
     /* Last observed BLE link generation. A fresh generation means a new link:
      * the deploy-accepted latch clears so a stale accept can never mask a
      * Waiting zombie on the next connection. */

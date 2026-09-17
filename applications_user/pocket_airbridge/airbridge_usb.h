@@ -69,6 +69,7 @@ bool airbridge_usb_vendor_send_response_blocking(uint8_t* data, uint8_t len, uin
 bool airbridge_usb_kb_press(uint16_t button);
 bool airbridge_usb_kb_release(uint16_t button);
 bool airbridge_usb_kb_release_all(void);
+bool airbridge_usb_mouse_move(int8_t x, int8_t y);
 
 #ifdef __cplusplus
 }

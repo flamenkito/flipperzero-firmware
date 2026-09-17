@@ -1,8 +1,66 @@
 #include "airbridge_ui_i.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "airbridge_usb.h"
+
+static void airbridge_ui_menu_row(Canvas* canvas, uint8_t y, const char* name, bool selected) {
+    char text[32];
+    snprintf(text, sizeof(text), "%s", name);
+    while(canvas_string_width(canvas, text) > 120 && strlen(text))
+        text[strlen(text) - 1] = '\0';
+    if(selected) {
+        canvas_draw_box(canvas, 0, y - 9, 128, 12);
+        canvas_set_color(canvas, ColorWhite);
+    }
+    canvas_draw_str(canvas, 3, y, text);
+    canvas_set_color(canvas, ColorBlack);
+}
+
+static void airbridge_ui_render_menu(Canvas* canvas, const AirbridgeUiSnapshot* snapshot) {
+    bool settings = snapshot->screen == AirbridgeScreenSettings;
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 0, 10, settings ? "Settings" : "Passwords");
+    canvas_set_font(canvas, FontSecondary);
+    if(settings) {
+        airbridge_ui_menu_row(
+            canvas, 26, snapshot->mouse_enabled ? "Mouse mover: ON" : "Mouse mover: OFF", true);
+        char mouse_status[32];
+        snprintf(
+            mouse_status,
+            sizeof(mouse_status),
+            "Moves: %lu  Err: %lu",
+            (unsigned long)snapshot->mouse_sent,
+            (unsigned long)snapshot->mouse_failed);
+        canvas_draw_str(canvas, 0, 42, mouse_status);
+        canvas_draw_str(canvas, 0, 53, snapshot->menu_status);
+        canvas_draw_str(canvas, 0, 63, "OK: toggle   BACK: Bridge");
+    } else {
+        if(snapshot->password_count) {
+            for(uint8_t i = 0; i < 3; i++) {
+                if(!snapshot->password_names[i][0]) break;
+                airbridge_ui_menu_row(
+                    canvas,
+                    24 + i * 12,
+                    snapshot->password_names[i],
+                    i == snapshot->password_selected % 3);
+            }
+            char count[12];
+            snprintf(
+                count,
+                sizeof(count),
+                "%u/%u",
+                snapshot->password_selected + 1,
+                snapshot->password_count);
+            canvas_draw_str_aligned(canvas, 127, 10, AlignRight, AlignBottom, count);
+        }
+        if(snapshot->menu_status[0])
+            canvas_draw_str(canvas, 0, 59, snapshot->menu_status);
+        else
+            canvas_draw_str(canvas, 0, 63, "OK: type USB   BACK: Bridge");
+    }
+}
 
 void airbridge_ui_draw_identity(Canvas* canvas, const AirbridgeUiSnapshot* snapshot, uint8_t y) {
     if(snapshot->identity_warning) {
@@ -62,6 +120,18 @@ void airbridge_ui_render_callback(Canvas* canvas, void* context) {
     switch(snapshot.screen) {
     case AirbridgeScreenBridge:
         airbridge_ui_render_bridge(canvas, &snapshot);
+        break;
+    case AirbridgeScreenSettings:
+    case AirbridgeScreenPasswords:
+        airbridge_ui_render_menu(canvas, &snapshot);
+        break;
+    case AirbridgeScreenPasswordTyping:
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str(canvas, 0, 12, "TYPING via USB...");
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_str(canvas, 0, 32, "Password");
+        canvas_draw_str(canvas, 0, 63, "BACK: abort");
+        airbridge_ui_password_rendered(context, snapshot.typing_generation);
         break;
     case AirbridgeScreenDeployPrompt:
         airbridge_ui_render_deploy_prompt(canvas, &snapshot);

@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "airbridge_usb.h"
+#include "airbridge_utilities.h"
 #include <notification/notification_messages.h>
 
 #define TAG "AirBridge"
@@ -46,9 +47,7 @@ static bool airbridge_runtime_ble_profile_installed(void* context) {
     return app->ble.ble_profile_installed;
 }
 
-static bool airbridge_runtime_deploy_supported(
-    void* context,
-    AirbridgeTypingTransport transport) {
+static bool airbridge_runtime_deploy_supported(void* context, AirbridgeTypingTransport transport) {
     const AirbridgeApp* app = context;
     if(transport == AirbridgeTypingTransportBle) {
         return app->ble.ble_profile_installed;
@@ -78,6 +77,9 @@ const AirbridgeScreenActions* airbridge_runtime_screen_actions(void) {
         .deploy_supported = airbridge_runtime_deploy_supported,
         .exit = airbridge_runtime_exit,
         .input_dropped = airbridge_runtime_input_dropped,
+        .menu_enter = airbridge_utilities_enter,
+        .menu_move = airbridge_utilities_move,
+        .menu_confirm = airbridge_utilities_confirm,
     };
     return &actions;
 }
@@ -137,6 +139,7 @@ static void airbridge_runtime_handle_relay(AirbridgeApp* app, BridgeEvent* event
         }
     } else if(event->type == EVENT_TYPE_USB) {
         airbridge_relay_set_usb_connected(&app->relay, event->to_ble);
+        if(!event->to_ble) app->mouse.active = false;
     }
 }
 
@@ -154,11 +157,17 @@ static void airbridge_runtime_service_screen(AirbridgeApp* app) {
 
     const AirbridgeScreen screen = airbridge_screens_current(app->screens);
     const AirbridgeTypingTransport armed = airbridge_screens_armed_transport(app->screens);
-    if(screen == AirbridgeScreenBridge) {
+    if(screen == AirbridgeScreenBridge || screen == AirbridgeScreenSettings ||
+       screen == AirbridgeScreenPasswords) {
         airbridge_operation_start(
             &app->operation, AirbridgeOperationBleReconnect, furi_get_tick());
         airbridge_ble_squatter_watchdog(&app->ble);
         airbridge_operation_end(&app->operation);
+    } else if(screen == AirbridgeScreenPasswordTyping && typing_release_ready) {
+        /* A short password must not finish before its TYPING frame reaches the LCD. */
+        if(airbridge_ui_password_ready(app->ui, app->typing.generation) &&
+           airbridge_typing_step(&app->typing))
+            airbridge_screens_typing_complete(app->screens);
     } else if(screen == AirbridgeScreenTyping && typing_release_ready) {
         /* NO squatter kick on Typing: the HID host link is legitimate AND
          * never subscribes the serial TX CCCD, and typing runs 60-90 s. */
@@ -185,8 +194,7 @@ static void airbridge_runtime_service_screen(AirbridgeApp* app) {
     } else if(screen == AirbridgeScreenWaiting) {
         if(armed == AirbridgeTypingTransportBle) {
             const uint32_t now = furi_get_tick();
-            if(now - airbridge_screens_waiting_pump_tick(app->screens) >=
-               BLE_WAITING_PUMP_MS) {
+            if(now - airbridge_screens_waiting_pump_tick(app->screens) >= BLE_WAITING_PUMP_MS) {
                 airbridge_screens_waiting_pump_mark(app->screens, now);
                 /* Restarts advertising only from GAP idle: never disconnect a
                  * link or a numeric-comparison pairing to recover idle adv. */
@@ -238,16 +246,15 @@ static void airbridge_runtime_update_ui(AirbridgeApp* app) {
         .usb_profile_index = app->config.usb_profile_index,
         .typing_position = app->typing.position,
         .typing_total = app->typing.bootstrap_len,
+        .typing_generation = app->typing.generation,
         .stream_sent = app->stream.sent,
         .stream_total = app->stream.total_len,
         .error = *airbridge_screens_error(app->screens),
     };
     snprintf(
-        snapshot.ble_name,
-        sizeof(snapshot.ble_name),
-        "%s",
-        app->config.ble_identity.device_name);
+        snapshot.ble_name, sizeof(snapshot.ble_name), "%s", app->config.ble_identity.device_name);
     airbridge_relay_metrics_snapshot(&app->relay, &snapshot.metrics);
+    airbridge_utilities_snapshot(app, &snapshot);
     airbridge_ui_update(app->ui, &snapshot);
 }
 
@@ -285,6 +292,7 @@ void airbridge_runtime_run(
         airbridge_ui_service_input(app->ui);
         if(airbridge_runtime_exit_requested(app, exit_latch)) break;
         airbridge_runtime_service_screen(app);
+        airbridge_utilities_mouse(app);
         airbridge_runtime_update_ui(app);
 
         if(furi_get_tick() - app->last_heartbeat >= 500) {

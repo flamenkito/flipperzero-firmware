@@ -37,6 +37,11 @@ static void airbridge_ui_frame_committed(
     furi_check(furi_mutex_acquire(ui->snapshot_mutex, FuriWaitForever) == FuriStatusOk);
     const bool acknowledge = ui->closing_rendered && !ui->closing_committed;
     if(acknowledge) ui->closing_committed = true;
+    if(ui->password_frame_pending) {
+        ui->password_committed = ui->password_rendered;
+        ui->password_frame_pending = false;
+        ui->password_frame_ready = true;
+    }
     furi_mutex_release(ui->snapshot_mutex);
     if(acknowledge) furi_semaphore_release(ui->closing_frame);
 }
@@ -74,6 +79,20 @@ void airbridge_ui_closing_rendered(AirbridgeUi* ui) {
     furi_check(furi_mutex_acquire(ui->snapshot_mutex, FuriWaitForever) == FuriStatusOk);
     ui->closing_rendered = true;
     furi_mutex_release(ui->snapshot_mutex);
+}
+
+void airbridge_ui_password_rendered(AirbridgeUi* ui, uint32_t generation) {
+    furi_check(furi_mutex_acquire(ui->snapshot_mutex, FuriWaitForever) == FuriStatusOk);
+    ui->password_rendered = generation;
+    ui->password_frame_pending = true;
+    furi_mutex_release(ui->snapshot_mutex);
+}
+
+bool airbridge_ui_password_ready(AirbridgeUi* ui, uint32_t generation) {
+    furi_check(furi_mutex_acquire(ui->snapshot_mutex, FuriWaitForever) == FuriStatusOk);
+    const bool ready = ui->password_frame_ready && ui->password_committed == generation;
+    furi_mutex_release(ui->snapshot_mutex);
+    return ready;
 }
 
 void airbridge_ui_set_operation_status(AirbridgeUi* ui, AirbridgeOperationStatus status) {
